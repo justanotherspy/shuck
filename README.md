@@ -54,6 +54,7 @@ GoReleaser).
 
 ```sh
 shuck <owner>/<repo> <pr>   # inspect an explicit PR
+shuck <pr-url>              # inspect a PR from its GitHub URL
 shuck <pr>                  # owner/repo inferred from the local repo's origin
 shuck                       # inspect the open PR for the current branch
 ```
@@ -78,6 +79,9 @@ shuck justanotherspy/shuck 42
 | `--refresh` | false | Ignore and rebuild the cache. |
 | `--no-cache` | false | Do not read or write the cache. |
 | `--offline` | false | Render only from cache, without network access. |
+| `--version` | false | Print the shuck version and exit. |
+
+Run `shuck --help` to print this usage and the full flag list.
 
 Exit codes: `0` no failing checks · `1` failing checks reported · `2` error.
 
@@ -117,6 +121,20 @@ Steps:
       FAIL
       ##[error]Process completed with exit code 1.
       ```
+```
+
+## Claude Code plugin
+
+`shuck` also ships as a [Claude Code](https://claude.com/claude-code) plugin so
+agents can pull failing CI logs for you. It adds a `/shuck` skill and a
+`SessionStart` hook that auto-installs the matching signed `shuck` release binary
+(verified against `checksums.txt`) and checks that a GitHub token is present.
+
+Add the marketplace and install the plugin from within Claude Code:
+
+```
+/plugin marketplace add justanotherspy/shuck
+/plugin install shuck@shuck-marketplace
 ```
 
 ## Development
