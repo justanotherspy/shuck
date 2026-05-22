@@ -35,3 +35,24 @@ jobs:
       - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: ShellCheck
+        run: find . -type f -name '*.sh' -print0 | xargs -0 -r shellcheck
+
+  plugin-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Validate marketplace manifest
+        run: claude plugin validate --strict .
+      - name: Validate shuck plugin manifest
+        run: claude plugin validate --strict ./plugins/shuck
