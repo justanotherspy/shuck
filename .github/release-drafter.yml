@@ -44,20 +44,6 @@ version-resolver:
       - "documentation"
   default: patch
 
-autolabeler:
-  - label: "documentation"
-    files:
-      - "*.md"
-  - label: "feature"
-    branch:
-      - '/^feat(ure)?\/.+/'
-  - label: "fix"
-    branch:
-      - '/^(fix|bug(fix)?)\/.+/'
-  - label: "chore"
-    branch:
-      - '/^chore\/.+/'
-
 template: |
   ## Changes
 
