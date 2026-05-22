@@ -2,8 +2,8 @@
 # Ensure the `shuck` binary is available for the plugin.
 #
 # Strategy: the plugin ships no binary in git (Go binaries are platform
-# specific). Instead, on first use this script downloads the signed release
-# archive that matches the plugin's own version from GitHub Releases, verifies
+# specific). Instead, on first use this script asks GitHub for the latest
+# release, downloads the signed archive that matches the host OS/arch, verifies
 # it against checksums.txt, and drops the `shuck` binary into the plugin's
 # bin/ directory — which Claude Code automatically adds to PATH.
 #
@@ -35,16 +35,55 @@ if command -v shuck >/dev/null 2>&1; then
   exit 0
 fi
 
-# CLI release to fetch. Kept in lockstep with the plugin version so the plugin
-# and the shuck binary it installs always share a version (a plugin vX.Y.Z
-# expects a shuck CLI release vX.Y.Z). Overridable via SHUCK_CLI_VERSION for
-# testing or to pin a different binary release.
-plugin_json="$PLUGIN_ROOT/.claude-plugin/plugin.json"
-version="${SHUCK_CLI_VERSION:-$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$plugin_json" | head -1)}"
-if [ -z "$version" ]; then
-  echo "shuck: could not determine version (set SHUCK_CLI_VERSION or check $plugin_json)" >&2
+fetch() { # url dest
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 -o "$2" "$1"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q --timeout=120 -O "$2" "$1"
+  else
+    echo "shuck: need curl or wget to download the binary" >&2
+    return 1
+  fi
+}
+
+# fetch_stdout url -> prints body (used for the GitHub API, with optional auth).
+fetch_stdout() {
+  local url="$1" auth=()
+  local token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+  if [ -n "$token" ]; then auth=(-H "Authorization: Bearer $token"); fi
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL --connect-timeout 10 --max-time 60 --retry 3 "${auth[@]}" "$url"
+  elif command -v wget >/dev/null 2>&1; then
+    local hdr=()
+    if [ -n "$token" ]; then hdr=(--header="Authorization: Bearer $token"); fi
+    wget -q --timeout=60 "${hdr[@]}" -O - "$url"
+  else
+    echo "shuck: need curl or wget to download the binary" >&2
+    return 1
+  fi
+}
+
+sha256_of() { # file -> prints hash
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
+  else return 1; fi
+}
+
+# CLI release to fetch. Defaults to whatever GitHub reports as the latest
+# release so the plugin always installs the newest published shuck binary.
+# Overridable via SHUCK_CLI_VERSION (e.g. v0.2.0) for testing or to pin one.
+tag="${SHUCK_CLI_VERSION:-}"
+if [ -n "$tag" ]; then
+  case "$tag" in v*) ;; *) tag="v$tag" ;; esac
+else
+  api="https://api.github.com/repos/${REPO}/releases/latest"
+  tag="$(fetch_stdout "$api" 2>/dev/null | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1 || true)"
+fi
+if [ -z "$tag" ]; then
+  echo "shuck: could not resolve the latest release (set SHUCK_CLI_VERSION to pin one)" >&2
   exit 1
 fi
+version="${tag#v}"
 
 # Map uname -> goreleaser os/arch used in the asset names.
 case "$(uname -s)" in
@@ -63,29 +102,12 @@ if [ "$os" = "windows" ]; then ext="zip"; binname="shuck.exe"; else ext="tar.gz"
 
 # Asset names follow .goreleaser.yaml: shuck_<version>_<os>_<arch>.<ext>
 archive="shuck_${version}_${os}_${arch}.${ext}"
-base="https://github.com/${REPO}/releases/download/v${version}"
-
-fetch() { # url dest
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 -o "$2" "$1"
-  elif command -v wget >/dev/null 2>&1; then
-    wget -q --timeout=120 -O "$2" "$1"
-  else
-    echo "shuck: need curl or wget to download the binary" >&2
-    return 1
-  fi
-}
-
-sha256_of() { # file -> prints hash
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
-  elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
-  else return 1; fi
-}
+base="https://github.com/${REPO}/releases/download/${tag}"
 
 tmpd="$(mktemp -d)"
 trap 'rm -rf "$tmpd"' EXIT
 
-echo "shuck: downloading $archive ..." >&2
+echo "shuck: downloading $archive ($tag) ..." >&2
 if ! fetch "$base/$archive" "$tmpd/$archive"; then
   echo "shuck: download failed ($base/$archive)" >&2
   exit 1
@@ -131,4 +153,4 @@ mv "$tmpd/$binname" "$bindir/$binname.partial"
 chmod +x "$bindir/$binname.partial"
 mv "$bindir/$binname.partial" "$bindir/$binname"
 
-echo "shuck v${version} installed into the plugin (${os}/${arch})"
+echo "shuck ${tag} installed into the plugin (${os}/${arch})"

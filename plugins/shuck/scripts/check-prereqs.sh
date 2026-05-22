@@ -2,7 +2,7 @@
 # SessionStart hook for the shuck plugin.
 #
 # 1. Best-effort: make sure the `shuck` binary is installed in the plugin's
-#    bin/ (install-shuck.sh downloads the matching signed release on first use).
+#    bin/ (install-shuck.sh downloads the latest signed release on first use).
 # 2. Verify a GitHub token is available (GITHUB_TOKEN or GH_TOKEN).
 #
 # Stays silent when everything is in order. Otherwise it surfaces a note to the
