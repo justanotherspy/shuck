@@ -1,7 +1,7 @@
 {
   "name": "shuck",
   "version": "0.2.0",
-  "description": "Get the exact failing CI step logs for a GitHub pull request via the shuck CLI. Adds a /shuck skill and a SessionStart hook that auto-installs the matching shuck release binary and checks a GitHub token is present.",
+  "description": "Get the exact failing CI step logs for a GitHub pull request via the shuck CLI. Adds a /shuck skill and a SessionStart hook that auto-installs the latest shuck release binary and checks a GitHub token is present.",
   "author": {
     "name": "justanotherspy",
     "email": "daniel.schwartz@hey.com"
