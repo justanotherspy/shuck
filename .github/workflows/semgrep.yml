@@ -14,6 +14,6 @@ jobs:
     container:
       image: semgrep/semgrep
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Scan (Semgrep CE)
         run: semgrep scan --config p/golang --config p/security-audit --config p/secrets --error --verbose
