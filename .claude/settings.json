@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "shuck-marketplace": {
+      "source": {
+        "source": "github",
+        "repo": "justanotherspy/shuck"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "shuck@shuck-marketplace": true
+  }
+}

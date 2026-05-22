@@ -21,6 +21,9 @@ profile.cov
 /shuck
 /dist/
 
+# Plugin-managed binary (downloaded on demand by the shuck plugin's installer)
+/plugins/shuck/bin/
+
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
