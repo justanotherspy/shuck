@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Plugins for shuck — show the exact failing CI step logs for a GitHub PR.",
-    "version": "0.1.0"
+    "version": "0.2.0"
   },
   "plugins": [
     {

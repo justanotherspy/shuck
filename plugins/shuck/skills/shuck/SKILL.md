@@ -14,9 +14,10 @@ their error logs. Reach for it instead of paging through the Actions UI or `gh`.
 ## Prerequisites
 
 - The `shuck` binary. The plugin's SessionStart hook auto-installs it on first
-  use: it downloads the signed release matching the plugin version, verifies it
-  against `checksums.txt`, and drops it in the plugin's `bin/` (already on PATH).
-  No `go install` needed; a network connection is required the first time only.
+  use: it downloads the signed CLI release pinned in `scripts/install-shuck.sh`
+  for the host OS/arch, verifies it against `checksums.txt`, and drops it in the
+  plugin's `bin/` (already on PATH). No `go install` needed; a network
+  connection is required the first time only.
 - A GitHub token in `GITHUB_TOKEN` or `GH_TOKEN` (or pass `--token`).
 
 The hook stays quiet when both are satisfied, and warns if the binary could not

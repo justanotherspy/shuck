@@ -35,13 +35,11 @@ if command -v shuck >/dev/null 2>&1; then
   exit 0
 fi
 
-# Version to fetch = the plugin's own version (keeps skill/binary in lockstep).
-plugin_json="$PLUGIN_ROOT/.claude-plugin/plugin.json"
-version="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$plugin_json" | head -1)"
-if [ -z "$version" ]; then
-  echo "shuck: could not read version from $plugin_json" >&2
-  exit 1
-fi
+# CLI release to fetch. This tracks the shuck *binary* release tag, which is
+# independent of the plugin's own version: packaging-only plugin bumps must not
+# require a new CLI release. Bump this when a new shuck CLI release is cut, and
+# it can be overridden for testing via SHUCK_CLI_VERSION.
+version="${SHUCK_CLI_VERSION:-0.1.0}"
 
 # Map uname -> goreleaser os/arch used in the asset names.
 case "$(uname -s)" in
