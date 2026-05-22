@@ -1,0 +1,18 @@
+2024-05-01T10:00:00.0000001Z ##[group]Run actions/checkout@v4
+2024-05-01T10:00:00.0000002Z with:
+2024-05-01T10:00:00.0000003Z   repository: owner/repo
+2024-05-01T10:00:00.0000004Z ##[endgroup]
+2024-05-01T10:00:01.0000000Z Syncing repository
+2024-05-01T10:00:02.0000000Z ##[group]Run go test ./...
+2024-05-01T10:00:02.0000001Z go test ./...
+2024-05-01T10:00:02.0000002Z shell: /usr/bin/bash -e {0}
+2024-05-01T10:00:02.0000003Z ##[endgroup]
+2024-05-01T10:00:03.0000000Z ok   example/pkg/a  0.012s
+2024-05-01T10:00:03.5000000Z --- FAIL: TestThing (0.00s)
+2024-05-01T10:00:03.6000000Z     thing_test.go:42: expected 1 got 2
+2024-05-01T10:00:03.7000000Z FAIL
+2024-05-01T10:00:03.8000000Z FAIL	example/pkg/b	0.020s
+2024-05-01T10:00:04.0000000Z ##[error]Process completed with exit code 1.
+2024-05-01T10:00:04.5000000Z ##[group]Run actions/upload-artifact@v4
+2024-05-01T10:00:04.6000000Z ##[endgroup]
+2024-05-01T10:00:05.0000000Z artifact uploaded

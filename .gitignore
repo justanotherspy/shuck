@@ -17,6 +17,10 @@ coverage.*
 *.coverprofile
 profile.cov
 
+# Built binary
+/shuck
+/dist/
+
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
