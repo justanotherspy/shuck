@@ -22,6 +22,7 @@ type Target struct {
 // Resolve interprets the positional args:
 //
 //	shuck <owner>/<repo> <pr>  -> explicit owner/repo + number
+//	shuck <pr-url>             -> owner/repo + number from a GitHub PR URL
 //	shuck <pr>                 -> number, owner/repo from the local repo
 //	shuck                      -> owner/repo + current branch from the local repo
 func Resolve(args []string) (Target, error) {
@@ -38,9 +39,12 @@ func Resolve(args []string) (Target, error) {
 		return Target{Owner: owner, Repo: repo, Number: n}, nil
 
 	case 1:
+		if owner, repo, n, ok := parsePRURL(args[0]); ok {
+			return Target{Owner: owner, Repo: repo, Number: n}, nil
+		}
 		n, err := strconv.Atoi(args[0])
 		if err != nil {
-			return Target{}, fmt.Errorf("invalid PR number %q (expected: shuck <owner>/<repo> <pr> | shuck <pr> | shuck)", args[0])
+			return Target{}, fmt.Errorf("invalid PR number %q (expected: shuck <owner>/<repo> <pr> | shuck <pr-url> | shuck <pr> | shuck)", args[0])
 		}
 		owner, repo, _, err := localRepo()
 		if err != nil {
@@ -66,6 +70,35 @@ func splitSlug(slug string) (string, string, error) {
 		return "", "", fmt.Errorf("invalid repo %q (expected owner/repo)", slug)
 	}
 	return parts[0], parts[1], nil
+}
+
+// parsePRURL extracts owner, repo, and number from a GitHub PR URL such as
+// https://github.com/owner/repo/pull/12 (with or without a scheme, trailing
+// path segments, or a query/fragment). It returns ok=false for anything that
+// is not a recognizable .../<owner>/<repo>/pull/<number> path.
+func parsePRURL(s string) (owner, repo string, number int, ok bool) {
+	s = strings.TrimSpace(s)
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if i := strings.IndexAny(s, "?#"); i >= 0 {
+		s = s[:i]
+	}
+	parts := strings.Split(strings.Trim(s, "/"), "/")
+	for i := 2; i+1 < len(parts); i++ {
+		if parts[i] != "pull" && parts[i] != "pulls" {
+			continue
+		}
+		n, err := strconv.Atoi(parts[i+1])
+		if err != nil || n <= 0 {
+			return "", "", 0, false
+		}
+		if parts[i-2] == "" || parts[i-1] == "" {
+			return "", "", 0, false
+		}
+		return parts[i-2], parts[i-1], n, true
+	}
+	return "", "", 0, false
 }
 
 // localRepo reads owner/repo and the current branch from the repo containing the
