@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"regexp"
+	"runtime/debug"
 	"time"
 
 	"github.com/justanotherspy/shuck/internal/cache"
@@ -20,6 +21,24 @@ import (
 	"github.com/justanotherspy/shuck/internal/render"
 	"github.com/justanotherspy/shuck/internal/target"
 )
+
+// version is the shuck version. It can be overridden at build time with
+// -ldflags "-X github.com/justanotherspy/shuck/internal/cli.version=v1.2.3";
+// otherwise it falls back to the module version baked in by `go install`.
+var version = ""
+
+// versionString reports the shuck version, preferring the ldflags-injected
+// value and falling back to the Go build info (set when installed from a
+// tagged module) or "dev" for plain `go build` from source.
+func versionString() string {
+	if version != "" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return "dev"
+}
 
 const usage = `shuck — show the exact failing CI step logs for a PR.
 
@@ -44,6 +63,7 @@ type options struct {
 	refresh        bool
 	noCache        bool
 	offline        bool
+	version        bool
 }
 
 // Run executes shuck and returns the process exit code:
@@ -66,9 +86,15 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	fs.BoolVar(&o.refresh, "refresh", false, "ignore and rebuild the cache")
 	fs.BoolVar(&o.noCache, "no-cache", false, "do not read or write the cache")
 	fs.BoolVar(&o.offline, "offline", false, "render only from cache, without network access")
+	fs.BoolVar(&o.version, "version", false, "print the shuck version and exit")
 
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+
+	if o.version {
+		fmt.Fprintln(stdout, "shuck", versionString())
+		return 0
 	}
 
 	exit, err := run(context.Background(), fs.Args(), o, stdout)
