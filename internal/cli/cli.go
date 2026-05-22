@@ -275,6 +275,18 @@ func (a *app) buildFailedSteps(job model.JobResult, raw string) []model.FailedSt
 }
 
 func buildExtractOptions(o options) (logs.Options, error) {
+	for _, f := range []struct {
+		name string
+		val  int
+	}{
+		{"--context", o.context},
+		{"--short-threshold", o.shortThreshold},
+		{"--tail", o.tail},
+	} {
+		if f.val < 0 {
+			return logs.Options{}, fmt.Errorf("%s must be non-negative, got %d", f.name, f.val)
+		}
+	}
 	opts := logs.Options{
 		ShortThreshold: o.shortThreshold,
 		Context:        o.context,

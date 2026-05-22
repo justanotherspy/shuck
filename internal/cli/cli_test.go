@@ -112,6 +112,19 @@ func TestVersionString(t *testing.T) {
 	}
 }
 
+func TestBuildExtractOptionsRejectsNegative(t *testing.T) {
+	cases := map[string]options{
+		"context":         {context: -1},
+		"short-threshold": {shortThreshold: -1},
+		"tail":            {tail: -1},
+	}
+	for name, o := range cases {
+		if _, err := buildExtractOptions(o); err == nil {
+			t.Errorf("negative %s should be rejected", name)
+		}
+	}
+}
+
 func TestExitFor(t *testing.T) {
 	if exitFor(&model.Report{}) != 0 {
 		t.Errorf("clean report should exit 0")
