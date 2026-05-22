@@ -17,6 +17,10 @@ set -euo pipefail
 
 REPO="justanotherspy/shuck"
 
+# Temp dir for downloads; cleaned up by the EXIT trap. Declared at file scope so
+# it stays in scope when the trap fires (after main returns) under `set -u`.
+tmpd=""
+
 log() { echo "shuck-install: $*" >&2; }
 die() { log "$*"; exit 1; }
 
@@ -98,7 +102,7 @@ pick_install_dir() {
 }
 
 main() {
-  local tag version os arch ext binname archive base tmpd
+  local tag version os arch ext binname archive base
   tag="$(resolve_tag)"
   version="${tag#v}"
   os="$(detect_os)"
