@@ -1,0 +1,18 @@
+{
+  "name": "shuck-marketplace",
+  "owner": {
+    "name": "justanotherspy",
+    "email": "daniel.schwartz@hey.com"
+  },
+  "metadata": {
+    "description": "Plugins for shuck — show the exact failing CI step logs for a GitHub PR.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "shuck",
+      "source": "./plugins/shuck",
+      "description": "Get the exact failing CI step logs for a GitHub pull request via the shuck CLI."
+    }
+  ]
+}
