@@ -1,0 +1,19 @@
+version: "2"
+
+linters:
+  enable:
+    - misspell
+    - revive
+  # errcheck, govet, ineffassign, staticcheck and unused are on by default.
+  settings:
+    errcheck:
+      # Writes to stdout/stderr in a CLI conventionally ignore the error.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

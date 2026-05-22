@@ -1,0 +1,288 @@
+// Package cli wires shuck's pipeline together: parse args, resolve the PR, read
+// checks from GitHub (using the cache to avoid redundant log downloads), and
+// render the failures.
+package cli
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"io"
+	"math"
+	"os"
+	"regexp"
+	"time"
+
+	"github.com/justanotherspy/shuck/internal/cache"
+	"github.com/justanotherspy/shuck/internal/gh"
+	"github.com/justanotherspy/shuck/internal/logs"
+	"github.com/justanotherspy/shuck/internal/model"
+	"github.com/justanotherspy/shuck/internal/render"
+	"github.com/justanotherspy/shuck/internal/target"
+)
+
+const usage = `shuck — show the exact failing CI step logs for a PR.
+
+Usage:
+  shuck <owner>/<repo> <pr>   inspect an explicit PR
+  shuck <pr>                  inspect a PR (owner/repo from the local repo)
+  shuck                       inspect the open PR for the current branch
+
+Auth:
+  Set GITHUB_TOKEN (or GH_TOKEN), or pass --token.
+
+Flags:
+`
+
+type options struct {
+	context        int
+	shortThreshold int
+	tail           int
+	pattern        string
+	full           bool
+	token          string
+	refresh        bool
+	noCache        bool
+	offline        bool
+}
+
+// Run executes shuck and returns the process exit code:
+// 0 = no failing checks, 1 = failing checks reported, 2 = operational error.
+func Run(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("shuck", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		fmt.Fprint(stderr, usage)
+		fs.PrintDefaults()
+	}
+
+	var o options
+	fs.IntVar(&o.context, "context", 10, "lines of context kept around each error match")
+	fs.IntVar(&o.shortThreshold, "short-threshold", 100, "logs with at most this many lines are shown whole")
+	fs.IntVar(&o.tail, "tail", 100, "lines tailed when a long log has no error match")
+	fs.StringVar(&o.pattern, "pattern", "", "override the error-matching regexp")
+	fs.BoolVar(&o.full, "full", false, "show full, untrimmed logs for failed steps")
+	fs.StringVar(&o.token, "token", "", "GitHub token (overrides GITHUB_TOKEN/GH_TOKEN)")
+	fs.BoolVar(&o.refresh, "refresh", false, "ignore and rebuild the cache")
+	fs.BoolVar(&o.noCache, "no-cache", false, "do not read or write the cache")
+	fs.BoolVar(&o.offline, "offline", false, "render only from cache, without network access")
+
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	exit, err := run(context.Background(), fs.Args(), o, stdout)
+	if err != nil {
+		fmt.Fprintln(stderr, "shuck:", err)
+		return 2
+	}
+	return exit
+}
+
+func run(ctx context.Context, args []string, o options, stdout io.Writer) (int, error) {
+	extractOpts, err := buildExtractOptions(o)
+	if err != nil {
+		return 0, err
+	}
+
+	tgt, err := target.Resolve(args)
+	if err != nil {
+		return 0, err
+	}
+
+	if o.offline {
+		return runOffline(tgt, stdout)
+	}
+
+	token, err := resolveToken(o.token)
+	if err != nil {
+		return 0, err
+	}
+	client := gh.New(token)
+	a := &app{client: client, opts: extractOpts}
+
+	number := tgt.Number
+	if number == 0 {
+		number, err = client.FindOpenPR(ctx, tgt.Owner, tgt.Repo, tgt.Owner, tgt.Branch)
+		if err != nil {
+			return 0, err
+		}
+	}
+
+	pr, err := client.GetPR(ctx, tgt.Owner, tgt.Repo, number)
+	if err != nil {
+		return 0, err
+	}
+
+	var cached *model.Report
+	if !o.refresh && !o.noCache {
+		if cached, err = cache.Load(tgt.Owner, tgt.Repo, number); err != nil {
+			return 0, err
+		}
+	}
+
+	failed, running, err := client.ListJobs(ctx, tgt.Owner, tgt.Repo, pr.HeadSHA)
+	if err != nil {
+		return 0, err
+	}
+	other, err := client.OtherChecks(ctx, tgt.Owner, tgt.Repo, pr.HeadSHA)
+	if err != nil {
+		return 0, err
+	}
+
+	var reuseFrom *model.Report
+	if cached != nil && cached.PR.HeadSHA == pr.HeadSHA {
+		reuseFrom = cached
+	}
+	inspected := cache.InspectedJobs(reuseFrom)
+
+	for i := range failed {
+		key := cache.JobKey{ID: failed[i].ID, RunAttempt: failed[i].RunAttempt}
+		if prev, ok := inspected[key]; ok {
+			failed[i].FailedSteps = prev.FailedSteps
+			failed[i].Inspected = true
+			continue
+		}
+		a.drill(ctx, tgt.Owner, tgt.Repo, &failed[i])
+	}
+
+	report := &model.Report{
+		PR:          pr,
+		FailedJobs:  failed,
+		RunningJobs: running,
+		OtherChecks: other,
+		CheckedAt:   time.Now(),
+	}
+
+	if !o.noCache {
+		if err := cache.Save(report); err != nil {
+			fmt.Fprintln(os.Stderr, "shuck: warning: could not write cache:", err)
+		}
+	}
+
+	render.Report(stdout, report)
+	return exitFor(report), nil
+}
+
+func runOffline(tgt target.Target, stdout io.Writer) (int, error) {
+	if tgt.Number == 0 {
+		return 0, fmt.Errorf("--offline requires an explicit PR number")
+	}
+	cached, err := cache.Load(tgt.Owner, tgt.Repo, tgt.Number)
+	if err != nil {
+		return 0, err
+	}
+	if cached == nil {
+		return 0, fmt.Errorf("no cache for %s/%s#%d; run online first", tgt.Owner, tgt.Repo, tgt.Number)
+	}
+	render.Report(stdout, cached)
+	return exitFor(cached), nil
+}
+
+// app holds the dependencies needed to drill into a failed job's logs.
+type app struct {
+	client *gh.Client
+	opts   logs.Options
+}
+
+func (a *app) drill(ctx context.Context, owner, repo string, job *model.JobResult) {
+	job.Inspected = true
+	raw, err := a.client.JobLog(ctx, owner, repo, job.ID)
+	if err != nil {
+		job.FailedSteps = []model.FailedStep{{
+			Name:    "(logs unavailable)",
+			Excerpt: fmt.Sprintf("could not download logs: %v", err),
+		}}
+		return
+	}
+	job.FailedSteps = a.buildFailedSteps(*job, raw)
+}
+
+// buildFailedSteps pairs the API's failed steps with the log's error-bearing
+// sections (by order) to recover each failed step's command and error excerpt.
+func (a *app) buildFailedSteps(job model.JobResult, raw string) []model.FailedStep {
+	sections := logs.Parse(raw)
+	errSecs := logs.ErrorSections(sections)
+
+	var failedSteps []model.StepOverview
+	for _, s := range job.Steps {
+		if model.IsFailureConclusion(s.Conclusion) {
+			failedSteps = append(failedSteps, s)
+		}
+	}
+
+	if len(errSecs) == 0 {
+		var all []string
+		for _, sec := range sections {
+			all = append(all, sec.Body...)
+		}
+		fs := model.FailedStep{Name: "(job log)", Excerpt: logs.Extract(all, a.opts)}
+		if len(failedSteps) > 0 {
+			fs.Name = failedSteps[0].Name
+			fs.Number = failedSteps[0].Number
+		}
+		return []model.FailedStep{fs}
+	}
+
+	n := len(failedSteps)
+	if len(errSecs) > n {
+		n = len(errSecs)
+	}
+	out := make([]model.FailedStep, 0, n)
+	for i := 0; i < n; i++ {
+		fs := model.FailedStep{Name: "(unnamed step)"}
+		if i < len(failedSteps) {
+			fs.Number = failedSteps[i].Number
+			fs.Name = failedSteps[i].Name
+		}
+		if i < len(errSecs) {
+			sec := errSecs[i]
+			fs.Command = sec.Command()
+			fs.Kind = sec.Kind()
+			fs.Excerpt = logs.Extract(sec.Body, a.opts)
+		} else {
+			fs.Excerpt = "(no matching error log section found)"
+		}
+		out = append(out, fs)
+	}
+	return out
+}
+
+func buildExtractOptions(o options) (logs.Options, error) {
+	opts := logs.Options{
+		ShortThreshold: o.shortThreshold,
+		Context:        o.context,
+		Tail:           o.tail,
+		Pattern:        logs.DefaultPattern(),
+	}
+	if o.pattern != "" {
+		re, err := regexp.Compile(o.pattern)
+		if err != nil {
+			return logs.Options{}, fmt.Errorf("invalid --pattern: %w", err)
+		}
+		opts.Pattern = re
+	}
+	if o.full {
+		opts.ShortThreshold = math.MaxInt
+	}
+	return opts, nil
+}
+
+func resolveToken(flagVal string) (string, error) {
+	if flagVal != "" {
+		return flagVal, nil
+	}
+	for _, k := range []string{"GITHUB_TOKEN", "GH_TOKEN"} {
+		if v := os.Getenv(k); v != "" {
+			return v, nil
+		}
+	}
+	return "", fmt.Errorf("no GitHub token found: set GITHUB_TOKEN (or GH_TOKEN), or pass --token")
+}
+
+func exitFor(r *model.Report) int {
+	if r.HasFailures() {
+		return 1
+	}
+	return 0
+}
