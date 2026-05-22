@@ -1,4 +1,4 @@
-# shuck
+# 🌽 shuck
 
 **shuck the husk, keep the kernel.**
 
@@ -113,3 +113,4 @@ make cover   # coverage report
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
