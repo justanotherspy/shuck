@@ -44,6 +44,7 @@ const usage = `shuck — show the exact failing CI step logs for a PR.
 
 Usage:
   shuck <owner>/<repo> <pr>   inspect an explicit PR
+  shuck <pr-url>              inspect a PR from its GitHub URL
   shuck <pr>                  inspect a PR (owner/repo from the local repo)
   shuck                       inspect the open PR for the current branch
 
