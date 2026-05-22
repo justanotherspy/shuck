@@ -84,6 +84,34 @@ func TestBuildExtractOptionsFull(t *testing.T) {
 	}
 }
 
+func TestRunVersionFlag(t *testing.T) {
+	var stdout, stderr strings.Builder
+	if code := Run([]string{"--version"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("--version exit code = %d, want 0", code)
+	}
+	if got := stdout.String(); !strings.HasPrefix(got, "shuck ") {
+		t.Errorf("--version output = %q, want it to start with %q", got, "shuck ")
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("--version wrote to stderr: %q", stderr.String())
+	}
+}
+
+func TestVersionString(t *testing.T) {
+	orig := version
+	t.Cleanup(func() { version = orig })
+
+	version = "v9.9.9"
+	if got := versionString(); got != "v9.9.9" {
+		t.Errorf("versionString() = %q, want injected value %q", got, "v9.9.9")
+	}
+
+	version = ""
+	if got := versionString(); got == "" {
+		t.Errorf("versionString() returned empty with no injected version")
+	}
+}
+
 func TestExitFor(t *testing.T) {
 	if exitFor(&model.Report{}) != 0 {
 		t.Errorf("clean report should exit 0")

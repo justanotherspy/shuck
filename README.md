@@ -25,12 +25,30 @@ logs for job attempts it has already inspected on the same commit.
 
 ## Install
 
+Download a prebuilt binary (no Go toolchain needed). The script picks the
+archive for your OS/arch, verifies its checksum, and installs `shuck` into an
+on-PATH directory:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/justanotherspy/shuck/main/install.sh | bash
+```
+
+Pin a version or target directory with environment variables:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/justanotherspy/shuck/main/install.sh \
+  | SHUCK_VERSION=v0.2.0 SHUCK_INSTALL_DIR=/usr/local/bin bash
+```
+
+Or build from source:
+
 ```sh
 go install github.com/justanotherspy/shuck@latest
 ```
 
-Or grab a binary from the [releases](https://github.com/justanotherspy/shuck/releases)
-page (built with GoReleaser).
+Binaries are also available on the
+[releases](https://github.com/justanotherspy/shuck/releases) page (built with
+GoReleaser).
 
 ## Usage
 
