@@ -61,17 +61,18 @@ func (c *Client) FindOpenPR(ctx context.Context, owner, repo, headOwner, branch 
 	return prs[0].GetNumber(), nil
 }
 
-// ListJobs returns the failed and still-running Actions jobs for a head commit.
-// Failed jobs come back with their step overview populated but no log detail yet.
-func (c *Client) ListJobs(ctx context.Context, owner, repo, headSHA string) (failed []model.JobResult, running []model.RunningJob, err error) {
+// ListJobs returns the failed, cancelled, and still-running Actions jobs for a
+// head commit. Failed jobs come back with their step overview populated but no
+// log detail yet; cancelled jobs are listed without log detail.
+func (c *Client) ListJobs(ctx context.Context, owner, repo, headSHA string) (failed []model.JobResult, cancelled []model.CancelledJob, running []model.RunningJob, err error) {
 	runs, err := c.listRuns(ctx, owner, repo, headSHA)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	for _, run := range runs {
 		jobs, jerr := c.listRunJobs(ctx, owner, repo, run.GetID())
 		if jerr != nil {
-			return nil, nil, jerr
+			return nil, nil, nil, jerr
 		}
 		for _, job := range jobs {
 			if job.GetStatus() != "completed" {
@@ -82,13 +83,19 @@ func (c *Client) ListJobs(ctx context.Context, owner, repo, headSHA string) (fai
 				})
 				continue
 			}
-			if !model.IsFailureConclusion(job.GetConclusion()) {
-				continue
+			switch {
+			case model.IsFailureConclusion(job.GetConclusion()):
+				failed = append(failed, jobResult(run, job))
+			case model.IsCancelledConclusion(job.GetConclusion()):
+				cancelled = append(cancelled, model.CancelledJob{
+					Name:         job.GetName(),
+					Conclusion:   job.GetConclusion(),
+					WorkflowName: job.GetWorkflowName(),
+				})
 			}
-			failed = append(failed, jobResult(run, job))
 		}
 	}
-	return failed, running, nil
+	return failed, cancelled, running, nil
 }
 
 func jobResult(run *github.WorkflowRun, job *github.WorkflowJob) model.JobResult {

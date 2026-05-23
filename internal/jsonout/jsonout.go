@@ -17,12 +17,13 @@ const SchemaVersion = 1
 
 // Document is the top-level JSON value emitted for an inspection.
 type Document struct {
-	SchemaVersion int          `json:"schema_version"`
-	PR            PR           `json:"pr"`
-	Summary       Summary      `json:"summary"`
-	FailedJobs    []Job        `json:"failed_jobs"`
-	OtherChecks   []OtherCheck `json:"other_checks"`
-	RunningJobs   []RunningJob `json:"running_jobs"`
+	SchemaVersion int            `json:"schema_version"`
+	PR            PR             `json:"pr"`
+	Summary       Summary        `json:"summary"`
+	FailedJobs    []Job          `json:"failed_jobs"`
+	CancelledJobs []CancelledJob `json:"cancelled_jobs"`
+	OtherChecks   []OtherCheck   `json:"other_checks"`
+	RunningJobs   []RunningJob   `json:"running_jobs"`
 }
 
 // PR identifies the inspected pull request and its head commit.
@@ -39,6 +40,7 @@ type PR struct {
 // walking every list.
 type Summary struct {
 	Failed      int `json:"failed"`
+	Cancelled   int `json:"cancelled"`
 	Running     int `json:"running"`
 	OtherFailed int `json:"other_failed"`
 }
@@ -70,6 +72,13 @@ type OtherCheck struct {
 	URL        string `json:"url"`
 }
 
+// CancelledJob is a completed job whose run was cancelled (no logs drilled).
+type CancelledJob struct {
+	Name         string `json:"name"`
+	Conclusion   string `json:"conclusion"`
+	WorkflowName string `json:"workflow_name"`
+}
+
 // RunningJob is a job not yet in a terminal state.
 type RunningJob struct {
 	Name         string `json:"name"`
@@ -97,13 +106,15 @@ func newDocument(r *model.Report) Document {
 		},
 		Summary: Summary{
 			Failed:      len(r.FailedJobs),
+			Cancelled:   len(r.CancelledJobs),
 			Running:     len(r.RunningJobs),
 			OtherFailed: len(r.OtherChecks),
 		},
 		// Initialize as empty (not nil) so each list serializes as [] not null.
-		FailedJobs:  make([]Job, 0, len(r.FailedJobs)),
-		OtherChecks: make([]OtherCheck, 0, len(r.OtherChecks)),
-		RunningJobs: make([]RunningJob, 0, len(r.RunningJobs)),
+		FailedJobs:    make([]Job, 0, len(r.FailedJobs)),
+		CancelledJobs: make([]CancelledJob, 0, len(r.CancelledJobs)),
+		OtherChecks:   make([]OtherCheck, 0, len(r.OtherChecks)),
+		RunningJobs:   make([]RunningJob, 0, len(r.RunningJobs)),
 	}
 
 	for _, j := range r.FailedJobs {
@@ -126,6 +137,14 @@ func newDocument(r *model.Report) Document {
 			})
 		}
 		doc.FailedJobs = append(doc.FailedJobs, job)
+	}
+
+	for _, j := range r.CancelledJobs {
+		doc.CancelledJobs = append(doc.CancelledJobs, CancelledJob{
+			Name:         j.Name,
+			Conclusion:   j.Conclusion,
+			WorkflowName: j.WorkflowName,
+		})
 	}
 
 	for _, c := range r.OtherChecks {
