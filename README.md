@@ -103,7 +103,9 @@ shuck justanotherspy/shuck 42
 
 Run `shuck --help` to print this usage and the full flag list. Flags may appear
 before or after the target (`shuck owner/repo 42 --json` works), and accept one
-or two dashes (`-json` and `--json` are equivalent).
+or two dashes (`-json` and `--json` are equivalent). A leading Unicode dash is
+tolerated too, so a flag mangled by macOS "smart dashes" or a rich-text
+copy-paste (`shuck 42 —full`) still works.
 
 Exit codes: `0` no failing checks · `1` failing checks reported · `2` error.
 Cancelled jobs are reported in the summary but do **not** by themselves set a
