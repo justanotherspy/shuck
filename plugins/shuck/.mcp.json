@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "shuck": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/shuck",
+      "args": ["mcp"]
+    }
+  }
+}

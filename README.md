@@ -197,12 +197,51 @@ Steps:
       ```
 ```
 
+## MCP server
+
+`shuck` doubles as a local [Model Context Protocol](https://modelcontextprotocol.io)
+server so any MCP-aware agent can pull failing CI logs as typed tool calls
+instead of scraping CLI text. Start it over stdio with:
+
+```sh
+shuck mcp
+```
+
+It exposes two read-only tools:
+
+| Tool | Purpose | Key inputs |
+| --- | --- | --- |
+| `inspect_pr` | Failing CI step logs for a PR. | `repo` (`owner/repo`), `pr`, `url`; or none → the open PR for the current branch |
+| `inspect_run` | Failing steps for a single Actions run or job. | `url`; or `repo` + `run_id` (+ optional `job_id`) |
+
+Both accept the same log-extraction knobs as the CLI (`context`,
+`short_threshold`, `tail`, `pattern`, `full`); `inspect_pr` also takes the cache
+flags (`refresh`, `no_cache`, `offline`). Each call returns the rendered,
+human-readable report as text **and** the same stable [`--json`](#json-output)
+document as typed structured output, so programmatic consumers get the schema
+for free. Authentication uses `GITHUB_TOKEN`/`GH_TOKEN` from the server's
+environment.
+
+Register it with any MCP client. For Claude Code, add it to `.mcp.json`:
+
+```jsonc
+{
+  "mcpServers": {
+    "shuck": { "command": "shuck", "args": ["mcp"] }
+  }
+}
+```
+
+The [Claude Code plugin](#claude-code-plugin) registers this server for you, so
+installing the plugin is usually all you need.
+
 ## Claude Code plugin
 
 `shuck` also ships as a [Claude Code](https://claude.com/claude-code) plugin so
-agents can pull failing CI logs for you. It adds a `/shuck` skill and a
-`SessionStart` hook that auto-installs the matching signed `shuck` release binary
-(verified against `checksums.txt`) and checks that a GitHub token is present.
+agents can pull failing CI logs for you. It adds a `/shuck` skill, a bundled MCP
+server (the `inspect_pr` / `inspect_run` tools above), and a `SessionStart` hook
+that auto-installs the matching signed `shuck` release binary (verified against
+`checksums.txt`) and checks that a GitHub token is present.
 
 Add the marketplace and install the plugin from within Claude Code:
 

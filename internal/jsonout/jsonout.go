@@ -106,10 +106,13 @@ type RunningJob struct {
 func Encode(w io.Writer, r *model.Report) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	return enc.Encode(newDocument(r))
+	return enc.Encode(NewDocument(r))
 }
 
-func newDocument(r *model.Report) Document {
+// NewDocument projects an inspection Report onto the stable, versioned JSON
+// view. Non-CLI consumers (such as the MCP server) use it to return the same
+// document shape as --json without going through the byte encoder.
+func NewDocument(r *model.Report) Document {
 	doc := Document{
 		SchemaVersion: SchemaVersion,
 		PR: PR{

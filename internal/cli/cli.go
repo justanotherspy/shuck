@@ -51,6 +51,7 @@ Usage:
   shuck <job-url>             inspect a single GitHub Actions job
   shuck <pr>                  inspect a PR (owner/repo from the local repo)
   shuck                       inspect the open PR for the current branch
+  shuck mcp                   run as a local MCP (stdio) server exposing shuck tools
 
 Auth:
   Set GITHUB_TOKEN (or GH_TOKEN), or pass --token.
@@ -124,61 +125,112 @@ func parseArgs(args []string, stderr io.Writer) (options, []string, error) {
 }
 
 func run(ctx context.Context, args []string, o options, stdout io.Writer) (int, error) {
-	extractOpts, err := buildExtractOptions(o)
-	if err != nil {
-		return 0, err
-	}
-
 	tgt, err := target.Resolve(args)
 	if err != nil {
 		return 0, err
 	}
+	report, err := inspectWith(ctx, tgt, o)
+	if err != nil {
+		return 0, err
+	}
+	return emit(stdout, report, o.json)
+}
+
+// InspectOptions controls a single inspection: the log-extraction tuning that
+// mirrors the CLI flags plus the cache behavior. It is the front-end-agnostic
+// input to [Inspect], used by alternative entry points such as the MCP server.
+type InspectOptions struct {
+	Context        int
+	ShortThreshold int
+	Tail           int
+	Pattern        string
+	Full           bool
+	Token          string
+	Refresh        bool
+	NoCache        bool
+	Offline        bool
+}
+
+// Inspect runs shuck's pipeline for an already-resolved target and returns the
+// report without rendering it. It is the reusable core behind the CLI and the
+// MCP server: callers decide how to present the result (text, JSON, or a
+// structured tool response).
+func Inspect(ctx context.Context, tgt target.Target, opts InspectOptions) (*model.Report, error) {
+	return inspectWith(ctx, tgt, options{
+		context:        opts.Context,
+		shortThreshold: opts.ShortThreshold,
+		tail:           opts.Tail,
+		pattern:        opts.Pattern,
+		full:           opts.Full,
+		token:          opts.Token,
+		refresh:        opts.Refresh,
+		noCache:        opts.NoCache,
+		offline:        opts.Offline,
+	})
+}
+
+// Version reports the shuck version for non-CLI front-ends (e.g. the MCP
+// server advertises it in its server info).
+func Version() string { return versionString() }
+
+// inspectWith builds the report for a resolved target: it validates the
+// extraction options, then dispatches to the offline, run, or PR path.
+func inspectWith(ctx context.Context, tgt target.Target, o options) (*model.Report, error) {
+	extractOpts, err := buildExtractOptions(o)
+	if err != nil {
+		return nil, err
+	}
 
 	if o.offline {
 		if tgt.RunID != 0 {
-			return 0, fmt.Errorf("--offline is not supported for run/job URLs; it works only with PR targets, which are cached")
+			return nil, fmt.Errorf("offline is not supported for run/job URLs; it works only with PR targets, which are cached")
 		}
-		return runOffline(tgt, o.json, stdout)
+		return loadOffline(tgt)
 	}
 
 	token, err := resolveToken(o.token)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	client := gh.New(token)
-	a := &app{client: client, opts: extractOpts}
+	a := &app{client: gh.New(token), opts: extractOpts}
 
 	if tgt.RunID != 0 {
-		return a.inspectRun(ctx, tgt, o.json, stdout)
+		return a.runReport(ctx, tgt)
 	}
+	return a.prReport(ctx, tgt, o.refresh, o.noCache)
+}
 
+// prReport resolves and drills a PR target, reusing cached per-job log detail
+// for job attempts already inspected on the same head commit.
+func (a *app) prReport(ctx context.Context, tgt target.Target, refresh, noCache bool) (*model.Report, error) {
 	number := tgt.Number
 	if number == 0 {
-		number, err = client.FindOpenPR(ctx, tgt.Owner, tgt.Repo, tgt.Owner, tgt.Branch)
+		var err error
+		number, err = a.client.FindOpenPR(ctx, tgt.Owner, tgt.Repo, tgt.Owner, tgt.Branch)
 		if err != nil {
-			return 0, err
+			return nil, err
 		}
 	}
 
-	pr, err := client.GetPR(ctx, tgt.Owner, tgt.Repo, number)
+	pr, err := a.client.GetPR(ctx, tgt.Owner, tgt.Repo, number)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	var cached *model.Report
-	if !o.refresh && !o.noCache {
+	if !refresh && !noCache {
 		if cached, err = cache.Load(tgt.Owner, tgt.Repo, number); err != nil {
-			return 0, err
+			return nil, err
 		}
 	}
 
-	failed, cancelled, running, err := client.ListJobs(ctx, tgt.Owner, tgt.Repo, pr.HeadSHA)
+	failed, cancelled, running, err := a.client.ListJobs(ctx, tgt.Owner, tgt.Repo, pr.HeadSHA)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	other, err := client.OtherChecks(ctx, tgt.Owner, tgt.Repo, pr.HeadSHA)
+	other, err := a.client.OtherChecks(ctx, tgt.Owner, tgt.Repo, pr.HeadSHA)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	var reuseFrom *model.Report
@@ -206,48 +258,47 @@ func run(ctx context.Context, args []string, o options, stdout io.Writer) (int, 
 		CheckedAt:     time.Now(),
 	}
 
-	if !o.noCache {
+	if !noCache {
 		if err := cache.Save(report); err != nil {
 			fmt.Fprintln(os.Stderr, "shuck: warning: could not write cache:", err)
 		}
 	}
-
-	return emit(stdout, report, o.json)
+	return report, nil
 }
 
-func runOffline(tgt target.Target, jsonOut bool, stdout io.Writer) (int, error) {
+// loadOffline renders a PR target only from its cache, without network access.
+func loadOffline(tgt target.Target) (*model.Report, error) {
 	if tgt.Number == 0 {
-		return 0, fmt.Errorf("--offline requires an explicit PR number")
+		return nil, fmt.Errorf("offline requires an explicit PR number")
 	}
 	cached, err := cache.Load(tgt.Owner, tgt.Repo, tgt.Number)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	if cached == nil {
-		return 0, fmt.Errorf("no cache for %s/%s#%d; run online first", tgt.Owner, tgt.Repo, tgt.Number)
+		return nil, fmt.Errorf("no cache for %s/%s#%d; run online first", tgt.Owner, tgt.Repo, tgt.Number)
 	}
-	return emit(stdout, cached, jsonOut)
+	return cached, nil
 }
 
-// inspectRun handles a run/job URL target: it fetches the run's jobs (or a
-// single job), drills the failed ones for their error logs, and renders. Run
-// targets bypass the PR-keyed cache, so logs are always re-downloaded.
-func (a *app) inspectRun(ctx context.Context, tgt target.Target, jsonOut bool, stdout io.Writer) (int, error) {
+// runReport handles a run/job URL target: it fetches the run's jobs (or a
+// single job) and drills the failed ones for their error logs. Run targets
+// bypass the PR-keyed cache, so logs are always re-downloaded.
+func (a *app) runReport(ctx context.Context, tgt target.Target) (*model.Report, error) {
 	info, failed, cancelled, running, err := a.client.RunReport(ctx, tgt.Owner, tgt.Repo, tgt.RunID, tgt.JobID)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	for i := range failed {
 		a.drill(ctx, tgt.Owner, tgt.Repo, &failed[i])
 	}
-	report := &model.Report{
+	return &model.Report{
 		Run:           &info,
 		FailedJobs:    failed,
 		CancelledJobs: cancelled,
 		RunningJobs:   running,
 		CheckedAt:     time.Now(),
-	}
-	return emit(stdout, report, jsonOut)
+	}, nil
 }
 
 // emit renders the report as JSON or human-readable text and returns the
