@@ -55,6 +55,20 @@ Go's `flag` package stops parsing at the first non-flag argument, so
 arguments"), while `shuck --json owner/repo 42` works. An agent will naturally
 write the first form. Fixed with an arg-permutation pre-pass (below).
 
+### Cross-cutting footgun: Unicode dashes — **DONE**
+
+macOS "smart dashes" and rich-text copy-paste (Slack, docs, the web) silently
+turn `--` into an em-dash, so a pasted `shuck 42 —full` arrived with a `—full`
+token. `permuteArgs` keyed flag detection off a leading ASCII `-`, so `—full`
+fell through to the positionals and `shuck 42 —full` failed with the misleading
+`invalid repo "42"` (it was read as `owner/repo` + a stray token). Fixed by
+`canonicalDashes`, a pre-pass inside `permuteArgs` that rewrites a leading run of
+Unicode dash runes (en/em dash and horizontal bar → `--`; hyphen-width variants
+and the minus sign → `-`) back to ASCII before flag classification. Positionals
+(numbers, `owner/repo`, URLs) never start with a dash, so they pass through
+untouched, and a lone wide dash still maps to the `--` positional separator.
+Covered by a flag×target×ordering×dash-style matrix in `cli_test.go`.
+
 ## Locked decisions
 
 - **JSON schema:** dedicated DTO in a new `internal/jsonout` package with a

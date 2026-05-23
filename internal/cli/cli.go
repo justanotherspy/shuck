@@ -75,6 +75,28 @@ type options struct {
 // Run executes shuck and returns the process exit code:
 // 0 = no failing checks, 1 = failing checks reported, 2 = operational error.
 func Run(args []string, stdout, stderr io.Writer) int {
+	o, positional, err := parseArgs(args, stderr)
+	if err != nil {
+		return 2
+	}
+
+	if o.version {
+		fmt.Fprintln(stdout, "shuck", versionString())
+		return 0
+	}
+
+	exit, err := run(context.Background(), positional, o, stdout)
+	if err != nil {
+		fmt.Fprintln(stderr, "shuck:", err)
+		return 2
+	}
+	return exit
+}
+
+// parseArgs defines shuck's flags, runs the arg-permutation pre-pass, and parses
+// args into the options and the leftover positional target tokens. Splitting it
+// out of Run keeps the real flag set (not a test copy) exercisable in tests.
+func parseArgs(args []string, stderr io.Writer) (options, []string, error) {
 	fs := flag.NewFlagSet("shuck", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
@@ -96,20 +118,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	fs.BoolVar(&o.version, "version", false, "print the shuck version and exit")
 
 	if err := fs.Parse(permuteArgs(fs, args)); err != nil {
-		return 2
+		return options{}, nil, err
 	}
-
-	if o.version {
-		fmt.Fprintln(stdout, "shuck", versionString())
-		return 0
-	}
-
-	exit, err := run(context.Background(), fs.Args(), o, stdout)
-	if err != nil {
-		fmt.Fprintln(stderr, "shuck:", err)
-		return 2
-	}
-	return exit
+	return o, fs.Args(), nil
 }
 
 func run(ctx context.Context, args []string, o options, stdout io.Writer) (int, error) {
@@ -257,10 +268,16 @@ func emit(stdout io.Writer, report *model.Report, jsonOut bool) (int, error) {
 // would otherwise treat --json as a positional. Everything after a literal "--"
 // is preserved verbatim as positional. A "--" separator is always emitted so
 // flag.Parse terminates flag scanning exactly where the positionals begin.
+//
+// Each token's leading dashes are first run through canonicalDashes so a flag
+// typed with a Unicode dash ("—full", from macOS smart dashes or rich-text
+// copy-paste) is recognized as a flag rather than mistaken for a positional —
+// otherwise "shuck 42 —full" would see two positionals and fail with the
+// misleading "invalid repo" error. Flag values are passed through verbatim.
 func permuteArgs(fs *flag.FlagSet, args []string) []string {
 	var flags, positional []string
 	for i := 0; i < len(args); i++ {
-		a := args[i]
+		a := canonicalDashes(args[i])
 		if a == "--" {
 			positional = append(positional, args[i+1:]...)
 			break
@@ -273,10 +290,56 @@ func permuteArgs(fs *flag.FlagSet, args []string) []string {
 			}
 			continue
 		}
-		positional = append(positional, a)
+		positional = append(positional, args[i])
 	}
 	out := append(flags, "--")
 	return append(out, positional...)
+}
+
+// canonicalDashes rewrites a leading run of Unicode dash characters into the
+// ASCII hyphens the user meant, so "—full" becomes "--full". This recovers
+// flags mangled by macOS "smart dashes" (which turn "--" into an em-dash) or by
+// copy-pasting a command out of rich text. Only a leading run is touched, so
+// every positional target form (a number, owner/repo, or a URL — none of which
+// begin with a dash) is returned unchanged.
+func canonicalDashes(arg string) string {
+	runes := []rune(arg)
+	var b strings.Builder
+	i := 0
+	for i < len(runes) {
+		repl, ok := dashReplacement(runes[i])
+		if !ok {
+			break
+		}
+		b.WriteString(repl)
+		i++
+	}
+	if i == 0 {
+		return arg
+	}
+	b.WriteString(string(runes[i:]))
+	return b.String()
+}
+
+// dashReplacement maps a dash-like rune to the ASCII hyphens it stands in for:
+// the wide dashes (en/em dash, horizontal bar) replace "--", while ASCII '-' and
+// the hyphen-width variants replace a single "-". Go's flag package treats "-x"
+// and "--x" identically, so the single/double choice only matters for keeping a
+// lone wide dash as the "--" positional separator. ok is false for non-dashes.
+func dashReplacement(r rune) (string, bool) {
+	switch r {
+	case '-',
+		'‐', // hyphen
+		'‑', // non-breaking hyphen
+		'‒', // figure dash
+		'−': // minus sign
+		return "-", true
+	case '–', // en dash
+		'—', // em dash
+		'―': // horizontal bar
+		return "--", true
+	}
+	return "", false
 }
 
 // flagTakesValue reports whether arg names a defined non-boolean flag, which

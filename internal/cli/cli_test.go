@@ -3,6 +3,8 @@ package cli
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
+	"io"
 	"strings"
 	"testing"
 
@@ -10,6 +12,7 @@ import (
 	"github.com/justanotherspy/shuck/internal/jsonout"
 	"github.com/justanotherspy/shuck/internal/logs"
 	"github.com/justanotherspy/shuck/internal/model"
+	"github.com/justanotherspy/shuck/internal/target"
 )
 
 const failLog = `2024-05-01T10:00:00.0000000Z ##[group]Run actions/checkout@v4
@@ -218,4 +221,213 @@ func TestExitFor(t *testing.T) {
 	if exitFor(withFail) != 1 {
 		t.Errorf("report with failures should exit 1")
 	}
+}
+
+func TestCanonicalDashes(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"--full", "--full"},
+		{"-full", "-full"},
+		{"—full", "--full"}, // em dash (U+2014) — macOS smart-dash "--"
+		{"–full", "--full"}, // en dash (U+2013)
+		{"―full", "--full"}, // horizontal bar (U+2015)
+		{"—context=5", "--context=5"},
+		{"—no-cache", "--no-cache"}, // inner ASCII hyphen is untouched
+		{"−full", "-full"},          // minus sign (U+2212) → single hyphen
+		{"‐full", "-full"},          // hyphen (U+2010)
+		{"‑full", "-full"},          // non-breaking hyphen (U+2011)
+		{"‒full", "-full"},          // figure dash (U+2012)
+		{"—", "--"},                 // lone em dash stays the "--" separator
+		{"42", "42"},                // positionals are untouched
+		{"o/r", "o/r"},
+		{"https://github.com/o/r/pull/42", "https://github.com/o/r/pull/42"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := canonicalDashes(c.in); got != c.want {
+			t.Errorf("canonicalDashes(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestParseArgsReportedEmDashBug pins the exact reported regression:
+// "shuck 42 —full" (em dash, flag after a bare PR number) used to be read as two
+// positionals and fail with "invalid repo \"42\"".
+func TestParseArgsReportedEmDashBug(t *testing.T) {
+	o, pos, err := parseArgs([]string{"42", "—full"}, io.Discard)
+	if err != nil {
+		t.Fatalf("parseArgs: %v", err)
+	}
+	if !o.full {
+		t.Errorf("--full (em dash) not parsed: %+v", o)
+	}
+	if len(pos) != 1 || pos[0] != "42" {
+		t.Errorf("positionals = %v, want [42]", pos)
+	}
+}
+
+// TestParseArgsFlagTargetMatrix proves every flag parses correctly with every
+// target form, in any flag ordering, whether the flag is written with ASCII
+// hyphens or a Unicode em/en dash. In all cases the flag must be set and the
+// leftover positionals must equal exactly the target tokens.
+func TestParseArgsFlagTargetMatrix(t *testing.T) {
+	type flagSpec struct {
+		name  string
+		toks  []string
+		check func(options) bool
+	}
+	flagSpecs := []flagSpec{
+		{"full", []string{"--full"}, func(o options) bool { return o.full }},
+		{"json", []string{"--json"}, func(o options) bool { return o.json }},
+		{"refresh", []string{"--refresh"}, func(o options) bool { return o.refresh }},
+		{"no-cache", []string{"--no-cache"}, func(o options) bool { return o.noCache }},
+		{"offline", []string{"--offline"}, func(o options) bool { return o.offline }},
+		{"context-space", []string{"--context", "5"}, func(o options) bool { return o.context == 5 }},
+		{"context-equals", []string{"--context=5"}, func(o options) bool { return o.context == 5 }},
+		{"short-threshold", []string{"--short-threshold", "7"}, func(o options) bool { return o.shortThreshold == 7 }},
+		{"tail", []string{"--tail", "3"}, func(o options) bool { return o.tail == 3 }},
+		{"pattern", []string{"--pattern", "boom"}, func(o options) bool { return o.pattern == "boom" }},
+		{"token", []string{"--token", "tok"}, func(o options) bool { return o.token == "tok" }},
+	}
+	targets := [][]string{
+		{"o/r", "42"},
+		{"https://github.com/o/r/pull/42"},
+		{"https://github.com/o/r/actions/runs/123"},
+		{"https://github.com/o/r/actions/runs/123/job/456"},
+		{"42"},
+		{},
+	}
+	dashes := []struct {
+		name string
+		conv func(string) string
+	}{
+		{"ascii", func(s string) string { return s }},
+		{"emdash", func(s string) string { return replaceLeadingDashes(s, "—") }},
+		{"endash", func(s string) string { return replaceLeadingDashes(s, "–") }},
+	}
+	orderings := []string{"flags-first", "flags-last", "flags-between"}
+
+	for _, fsp := range flagSpecs {
+		for _, tgt := range targets {
+			for _, d := range dashes {
+				for _, ord := range orderings {
+					if ord == "flags-between" && len(tgt) < 2 {
+						continue
+					}
+					ftoks := make([]string, len(fsp.toks))
+					for i, tk := range fsp.toks {
+						ftoks[i] = d.conv(tk)
+					}
+					var args []string
+					switch ord {
+					case "flags-first":
+						args = append(append([]string{}, ftoks...), tgt...)
+					case "flags-last":
+						args = append(append([]string{}, tgt...), ftoks...)
+					case "flags-between":
+						args = append(args, tgt[0])
+						args = append(args, ftoks...)
+						args = append(args, tgt[1:]...)
+					}
+					name := fmt.Sprintf("%s/%s/%s/%d-tgt", fsp.name, d.name, ord, len(tgt))
+					t.Run(name, func(t *testing.T) {
+						o, pos, err := parseArgs(args, io.Discard)
+						if err != nil {
+							t.Fatalf("parseArgs(%q): %v", args, err)
+						}
+						if !fsp.check(o) {
+							t.Errorf("parseArgs(%q): flag %s not set: %+v", args, fsp.name, o)
+						}
+						if !equalStrings(pos, tgt) {
+							t.Errorf("parseArgs(%q): positionals = %v, want %v", args, pos, tgt)
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+// TestParseArgsThenResolveRouting checks that a flag (with a Unicode dash)
+// alongside each fully-qualified target form leaves positionals that target
+// resolution routes to the right PR / run / job.
+func TestParseArgsThenResolveRouting(t *testing.T) {
+	cases := []struct {
+		args         []string
+		owner, repo  string
+		number       int
+		runID, jobID int64
+	}{
+		{[]string{"o/r", "42", "—json"}, "o", "r", 42, 0, 0},
+		{[]string{"—full", "https://github.com/o/r/pull/42"}, "o", "r", 42, 0, 0},
+		{[]string{"https://github.com/o/r/actions/runs/123", "—json"}, "o", "r", 0, 123, 0},
+		{[]string{"https://github.com/o/r/actions/runs/123/job/456", "—full"}, "o", "r", 0, 123, 456},
+	}
+	for _, c := range cases {
+		_, pos, err := parseArgs(c.args, io.Discard)
+		if err != nil {
+			t.Fatalf("parseArgs(%q): %v", c.args, err)
+		}
+		tgt, err := target.Resolve(pos)
+		if err != nil {
+			t.Fatalf("Resolve(%v) from %q: %v", pos, c.args, err)
+		}
+		if tgt.Owner != c.owner || tgt.Repo != c.repo || tgt.Number != c.number ||
+			tgt.RunID != c.runID || tgt.JobID != c.jobID {
+			t.Errorf("Resolve(%v) = %+v, want owner=%s repo=%s num=%d run=%d job=%d",
+				pos, tgt, c.owner, c.repo, c.number, c.runID, c.jobID)
+		}
+	}
+}
+
+// TestRunUnicodeDashFlagsEndToEnd drives the full Run path, including the
+// reported shape (slug + number first, flags after) written with em dashes,
+// against a seeded offline cache so no network is needed.
+func TestRunUnicodeDashFlagsEndToEnd(t *testing.T) {
+	t.Setenv("SHUCK_HOME", t.TempDir())
+	report := &model.Report{
+		PR: model.PR{Owner: "o", Repo: "r", Number: 42, Title: "fix", HeadSHA: "abc1234"},
+		FailedJobs: []model.JobResult{{
+			ID: 1, Name: "build", Conclusion: "failure", Inspected: true,
+			FailedSteps: []model.FailedStep{{Number: 2, Name: "Run tests", Excerpt: "boom"}},
+		}},
+	}
+	if err := cache.Save(report); err != nil {
+		t.Fatalf("seed cache: %v", err)
+	}
+
+	var stdout, stderr strings.Builder
+	code := Run([]string{"o/r", "42", "—offline", "—json"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (failures present); stderr=%q", code, stderr.String())
+	}
+
+	var doc jsonout.Document
+	if err := json.Unmarshal([]byte(stdout.String()), &doc); err != nil {
+		t.Fatalf("output not valid JSON: %v\n%s", err, stdout.String())
+	}
+	if doc.Summary.Failed != 1 {
+		t.Errorf("summary.failed = %d, want 1", doc.Summary.Failed)
+	}
+}
+
+// replaceLeadingDashes rewrites a token's leading "--" into the given (Unicode)
+// dash so tests can simulate macOS smart-dash / rich-text mangling. Value tokens
+// (which don't start with "--") pass through unchanged.
+func replaceLeadingDashes(tok, dash string) string {
+	if strings.HasPrefix(tok, "--") {
+		return dash + tok[len("--"):]
+	}
+	return tok
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
