@@ -93,6 +93,45 @@ func TestEncodeGolden(t *testing.T) {
 	}
 }
 
+func TestEncodeRunTarget(t *testing.T) {
+	r := &model.Report{
+		Run: &model.RunInfo{
+			Owner: "o", Repo: "r", RunID: 123, JobID: 456,
+			Title: "fix parser", HeadSHA: "abc123", HeadBranch: "feat", WorkflowName: "CI",
+		},
+		FailedJobs: []model.JobResult{{ID: 456, Name: "build", Conclusion: "failure"}},
+	}
+	var buf strings.Builder
+	if err := Encode(&buf, r); err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	out := buf.String()
+
+	var doc Document
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("output not valid JSON: %v\n%s", err, out)
+	}
+	if doc.Run == nil {
+		t.Fatalf("run target should populate the run object:\n%s", out)
+	}
+	if doc.Run.RunID != 123 || doc.Run.JobID != 456 || doc.Run.WorkflowName != "CI" {
+		t.Errorf("unexpected run object: %+v", doc.Run)
+	}
+	if doc.Summary.Failed != 1 {
+		t.Errorf("summary.failed = %d, want 1", doc.Summary.Failed)
+	}
+}
+
+func TestEncodeOmitsRunForPRTarget(t *testing.T) {
+	var buf strings.Builder
+	if err := Encode(&buf, &model.Report{PR: model.PR{Owner: "o", Repo: "r", Number: 1}}); err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	if strings.Contains(buf.String(), `"run"`) {
+		t.Errorf("PR target must not emit a run object:\n%s", buf.String())
+	}
+}
+
 func TestEncodeEmptyListsAreNotNull(t *testing.T) {
 	var buf strings.Builder
 	if err := Encode(&buf, &model.Report{PR: model.PR{Owner: "o", Repo: "r", Number: 1}}); err != nil {

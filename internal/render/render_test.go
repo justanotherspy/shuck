@@ -89,6 +89,49 @@ func TestReportAllGreen(t *testing.T) {
 	}
 }
 
+func TestReportRunTargetHeader(t *testing.T) {
+	r := &model.Report{
+		Run: &model.RunInfo{
+			Owner: "o", Repo: "r", RunID: 123, JobID: 456,
+			Title: "fix flaky parser", HeadSHA: "abcdef1234567", WorkflowName: "CI",
+		},
+		FailedJobs: []model.JobResult{{
+			Name: "build", Conclusion: "failure", WorkflowName: "CI",
+			FailedSteps: []model.FailedStep{{Number: 2, Name: "Run tests", Excerpt: "boom"}},
+		}},
+	}
+	var buf bytes.Buffer
+	Report(&buf, r)
+	out := buf.String()
+
+	for _, want := range []string{
+		"o/r job 456 (run 123) — fix flaky parser",
+		"commit abcdef1",
+		"Summary: 1 failed",
+		"▸ Step 2 — Run tests (failed)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q\n---\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "PR #") {
+		t.Errorf("run target should not print a PR header:\n%s", out)
+	}
+}
+
+func TestReportRunTargetAllClear(t *testing.T) {
+	r := &model.Report{Run: &model.RunInfo{Owner: "o", Repo: "r", RunID: 99, HeadSHA: "abc1234", Title: "CI"}}
+	var buf bytes.Buffer
+	Report(&buf, r)
+	out := buf.String()
+	if !strings.Contains(out, "no failures in run 99") {
+		t.Errorf("expected run-mode all-clear message, got %q", out)
+	}
+	if strings.Contains(out, "PR #") {
+		t.Errorf("run target should not reference a PR:\n%s", out)
+	}
+}
+
 func TestReportActionLabel(t *testing.T) {
 	r := &model.Report{
 		PR: model.PR{Owner: "o", Repo: "r", Number: 1, HeadSHA: "abc1234"},

@@ -83,9 +83,27 @@ type CancelledJob struct {
 	WorkflowName string `json:"workflow_name"`
 }
 
-// Report is the full inspection result for a PR: what we render and what we cache.
+// RunInfo identifies a workflow-run inspection: shuck was pointed at a run URL
+// (the whole run) or a single-job URL rather than a PR. When a Report's Run is
+// non-nil, render and jsonout show a run-oriented header in place of the PR line
+// and there is no associated PR number.
+type RunInfo struct {
+	Owner        string `json:"owner"`
+	Repo         string `json:"repo"`
+	RunID        int64  `json:"run_id"`
+	JobID        int64  `json:"job_id,omitempty"` // 0 when the whole run was targeted
+	Title        string `json:"title"`
+	HeadSHA      string `json:"head_sha"`
+	HeadBranch   string `json:"head_branch"`
+	WorkflowName string `json:"workflow_name"`
+}
+
+// Report is the full inspection result for a target: what we render and (for PR
+// targets) what we cache. Exactly one of PR / Run is meaningful: Run is non-nil
+// for run/job URL targets, otherwise the report is PR-anchored.
 type Report struct {
 	PR            PR             `json:"pr"`
+	Run           *RunInfo       `json:"run,omitempty"`
 	FailedJobs    []JobResult    `json:"failed_jobs"`
 	CancelledJobs []CancelledJob `json:"cancelled_jobs"`
 	RunningJobs   []RunningJob   `json:"running_jobs"`

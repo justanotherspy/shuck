@@ -45,7 +45,7 @@ as items land.
 | In-progress banner | **Done** | `writeSummary` prints a top `⚠ N still running — failures shown may be incomplete` banner when failures coexist with running jobs. |
 | `--watch` | **New** | No polling loop. |
 | GNU double-dash | **Already works** | Go's `flag` accepts one or two dashes for every flag. No aliases needed. |
-| Target job/run | **New** | Pipeline is PR-anchored (`Resolve` → `GetPR`/`FindOpenPR` → `ListJobs(headSHA)`); `gh.Client` has no single-job fetch. |
+| Target job/run | **Done** | `shuck <run-url>` / `shuck <job-url>` (positional, no flags). `target.parseActionsURL` + `Target.RunID/JobID`; `gh.RunReport` fetches run metadata and classifies its jobs (or one job); `cli.inspectRun` drills and renders with a run-aware header. Bypasses the PR-keyed cache; JSON gains an additive `run` object. |
 | MCP server | **Defer** | No server/dep today. A `/shuck` Claude Code plugin already exists (`plugins/shuck/`) providing discovery + auto-install. |
 
 ### Cross-cutting footgun: flag ordering
@@ -88,9 +88,21 @@ write the first form. Fixed with an arg-permutation pre-pass (below).
      `schema_version` unchanged).
    - **Decision:** cancelled-only stays exit `0` (cancellation is often
      deliberate); only `HasFailures()` drives exit `1`.
-3. **Target job/run.** `--job <url>` / `--run <id>`; a job-URL parser; new
-   `gh.GetJob`/`ListRunJobs`; a PR-bypass branch in `run()`; a no-PR render
-   header. Bypass the PR-keyed cache initially.
+3. **Target job/run.** — **DONE.** Shipped as a single positional URL
+   (`shuck <run-url>` / `shuck <job-url>`) rather than `--job`/`--run` flags, to
+   keep one simple interface alongside the existing `shuck <pr-url>`.
+   - `target.parseActionsURL` recognizes `.../actions/runs/<run>` and
+     `.../actions/runs/<run>/job/<job>`; `Target` gains `RunID`/`JobID`.
+   - `gh.RunReport` fetches the run's head context and classifies its jobs
+     (whole run) or a single job (job URL); `classifyJobs` is shared with
+     `ListJobs`.
+   - `cli.inspectRun` is a PR-bypass branch in `run()` that drills the failed
+     jobs and renders. Run targets bypass the PR-keyed cache (always re-download).
+   - `render` shows a run/job header and all-clear message in place of the PR
+     line; `jsonout` adds an additive optional `run` object (no `schema_version`
+     bump). `--offline` is rejected for run/job URLs (nothing is cached).
+   - **Deferred:** the `/pull/<n>/checks?check_run_id=` URL form and run-attempt
+     selection (the attempt segment is currently ignored — latest is used).
 4. **In-progress banner.** — **DONE.** `writeSummary` prints a top-of-output
    `⚠ N still running — failures shown may be incomplete` banner when failures
    coexist with running jobs. `--watch` still deferred to a follow-up.

@@ -74,28 +74,74 @@ func (c *Client) ListJobs(ctx context.Context, owner, repo, headSHA string) (fai
 		if jerr != nil {
 			return nil, nil, nil, jerr
 		}
-		for _, job := range jobs {
-			if job.GetStatus() != "completed" {
-				running = append(running, model.RunningJob{
-					Name:         job.GetName(),
-					Status:       job.GetStatus(),
-					WorkflowName: job.GetWorkflowName(),
-				})
-				continue
-			}
-			switch {
-			case model.IsFailureConclusion(job.GetConclusion()):
-				failed = append(failed, jobResult(run, job))
-			case model.IsCancelledConclusion(job.GetConclusion()):
-				cancelled = append(cancelled, model.CancelledJob{
-					Name:         job.GetName(),
-					Conclusion:   job.GetConclusion(),
-					WorkflowName: job.GetWorkflowName(),
-				})
-			}
-		}
+		f, c2, r2 := classifyJobs(run, jobs)
+		failed = append(failed, f...)
+		cancelled = append(cancelled, c2...)
+		running = append(running, r2...)
 	}
 	return failed, cancelled, running, nil
+}
+
+// RunReport inspects a single workflow run by ID. When jobID is non-zero it
+// restricts the result to that one job (a job-URL target); otherwise it
+// classifies every job in the run. It also returns the run's head context for
+// the report header. Non-Actions checks do not apply to a run, so none are
+// returned.
+func (c *Client) RunReport(ctx context.Context, owner, repo string, runID, jobID int64) (model.RunInfo, []model.JobResult, []model.CancelledJob, []model.RunningJob, error) {
+	run, _, err := c.gh.Actions.GetWorkflowRunByID(ctx, owner, repo, runID)
+	if err != nil {
+		return model.RunInfo{}, nil, nil, nil, fmt.Errorf("get run %d for %s/%s: %w", runID, owner, repo, err)
+	}
+	info := model.RunInfo{
+		Owner:        owner,
+		Repo:         repo,
+		RunID:        runID,
+		JobID:        jobID,
+		Title:        run.GetDisplayTitle(),
+		HeadSHA:      run.GetHeadSHA(),
+		HeadBranch:   run.GetHeadBranch(),
+		WorkflowName: run.GetName(),
+	}
+
+	var jobs []*github.WorkflowJob
+	if jobID != 0 {
+		job, _, jerr := c.gh.Actions.GetWorkflowJobByID(ctx, owner, repo, jobID)
+		if jerr != nil {
+			return info, nil, nil, nil, fmt.Errorf("get job %d for %s/%s: %w", jobID, owner, repo, jerr)
+		}
+		jobs = []*github.WorkflowJob{job}
+	} else if jobs, err = c.listRunJobs(ctx, owner, repo, runID); err != nil {
+		return info, nil, nil, nil, err
+	}
+
+	failed, cancelled, running := classifyJobs(run, jobs)
+	return info, failed, cancelled, running, nil
+}
+
+// classifyJobs sorts a run's jobs into the failed (drillable), cancelled, and
+// still-running buckets shuck reports.
+func classifyJobs(run *github.WorkflowRun, jobs []*github.WorkflowJob) (failed []model.JobResult, cancelled []model.CancelledJob, running []model.RunningJob) {
+	for _, job := range jobs {
+		if job.GetStatus() != "completed" {
+			running = append(running, model.RunningJob{
+				Name:         job.GetName(),
+				Status:       job.GetStatus(),
+				WorkflowName: job.GetWorkflowName(),
+			})
+			continue
+		}
+		switch {
+		case model.IsFailureConclusion(job.GetConclusion()):
+			failed = append(failed, jobResult(run, job))
+		case model.IsCancelledConclusion(job.GetConclusion()):
+			cancelled = append(cancelled, model.CancelledJob{
+				Name:         job.GetName(),
+				Conclusion:   job.GetConclusion(),
+				WorkflowName: job.GetWorkflowName(),
+			})
+		}
+	}
+	return failed, cancelled, running
 }
 
 func jobResult(run *github.WorkflowRun, job *github.WorkflowJob) model.JobResult {

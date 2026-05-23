@@ -12,14 +12,13 @@ import (
 
 // Report writes the human-readable summary for r to w.
 func Report(w io.Writer, r *model.Report) {
-	fmt.Fprintf(w, "%s/%s PR #%d — %s   (commit %s)\n",
-		r.PR.Owner, r.PR.Repo, r.PR.Number, r.PR.Title, shortSHA(r.PR.HeadSHA))
+	writeHeader(w, r)
 
 	writeSummary(w, r)
 
 	if !r.HasFailures() && len(r.CancelledJobs) == 0 {
 		if r.IsTerminal() {
-			fmt.Fprintf(w, "\n✓ all checks passing for PR #%d\n", r.PR.Number)
+			fmt.Fprintf(w, "\n✓ %s\n", allClearLabel(r))
 		} else {
 			fmt.Fprintf(w, "\n⏳ no failures yet — some checks are still running\n")
 		}
@@ -145,6 +144,40 @@ func stepState(s model.StepOverview) string {
 		return s.Conclusion
 	}
 	return s.Status
+}
+
+// writeHeader prints the one-line target header: a PR line for PR targets, or a
+// run/job line when the report came from a GitHub Actions URL.
+func writeHeader(w io.Writer, r *model.Report) {
+	if r.Run == nil {
+		fmt.Fprintf(w, "%s/%s PR #%d — %s   (commit %s)\n",
+			r.PR.Owner, r.PR.Repo, r.PR.Number, r.PR.Title, shortSHA(r.PR.HeadSHA))
+		return
+	}
+	rn := r.Run
+	title := rn.Title
+	if title == "" {
+		title = rn.WorkflowName
+	}
+	fmt.Fprintf(w, "%s/%s %s — %s   (commit %s)\n",
+		rn.Owner, rn.Repo, runLabel(rn), title, shortSHA(rn.HeadSHA))
+}
+
+// allClearLabel is the trailing clause of the "✓ …" line when nothing failed.
+func allClearLabel(r *model.Report) string {
+	if r.Run != nil {
+		return "no failures in " + runLabel(r.Run)
+	}
+	return fmt.Sprintf("all checks passing for PR #%d", r.PR.Number)
+}
+
+// runLabel names a run/job target for headers and messages, e.g. "run 123" or
+// "job 456 (run 123)".
+func runLabel(rn *model.RunInfo) string {
+	if rn.JobID != 0 {
+		return fmt.Sprintf("job %d (run %d)", rn.JobID, rn.RunID)
+	}
+	return fmt.Sprintf("run %d", rn.RunID)
 }
 
 func shortSHA(sha string) string {
