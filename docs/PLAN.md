@@ -46,7 +46,7 @@ as items land.
 | `--watch` | **New** | No polling loop. |
 | GNU double-dash | **Already works** | Go's `flag` accepts one or two dashes for every flag. No aliases needed. |
 | Target job/run | **Done** | `shuck <run-url>` / `shuck <job-url>` (positional, no flags). `target.parseActionsURL` + `Target.RunID/JobID`; `gh.RunReport` fetches run metadata and classifies its jobs (or one job); `cli.inspectRun` drills and renders with a run-aware header. Bypasses the PR-keyed cache; JSON gains an additive `run` object. |
-| MCP server | **Defer** | No server/dep today. A `/shuck` Claude Code plugin already exists (`plugins/shuck/`) providing discovery + auto-install. |
+| MCP server | **Done** | `internal/mcp` serves `inspect_pr` / `inspect_run` over stdio (`shuck mcp`), reusing `cli.Inspect`. Typed input/output schemas via the official Go SDK; returns rendered text + the `jsonout` document. Auto-registered by the Claude Code plugin (`plugins/shuck/.mcp.json`). |
 
 ### Cross-cutting footgun: flag ordering
 
@@ -114,10 +114,29 @@ write the first form. Fixed with an arg-permutation pre-pass (below).
 
 - Exit codes (#2), `--version` (#3), GNU double-dash (#6) — already satisfied.
 
+### MCP server — DONE
+
+Shipped after the deferral once typed discovery for non-Claude agents became the
+explicit goal.
+
+- New `internal/mcp` package hosts a stdio server (the official
+  `github.com/modelcontextprotocol/go-sdk`). Launched via a `shuck mcp`
+  subcommand dispatched from `main.go`.
+- Two typed tools — `inspect_pr` (PR target: `repo`/`pr`/`url`, or local branch)
+  and `inspect_run` (run/job `url`, or `repo`+`run_id`+`job_id`) — both taking
+  the CLI's extraction knobs (and, for PRs, the cache flags). Input/output JSON
+  schemas are inferred from Go structs by the SDK, so agents get typed discovery.
+- The pipeline is shared, not duplicated: `cli.run` was refactored into
+  `inspectWith` + an exported `cli.Inspect` that returns a `*model.Report`; the
+  CLI emits it as text/JSON and the MCP handlers wrap it as a tool result.
+- Each tool returns the rendered report as text content **and** the stable
+  `jsonout.Document` as structured output (`jsonout.NewDocument` exported for
+  this). Token comes from `GITHUB_TOKEN`/`GH_TOKEN` in the server env (no secret
+  in tool args).
+- The Claude Code plugin bundles it via `plugins/shuck/.mcp.json`
+  (`${CLAUDE_PLUGIN_ROOT}/bin/shuck mcp`), auto-registered when the plugin loads.
+
 ### Pushed back / deferred
 
-- **MCP server.** `--json` plus the existing Claude Code plugin (`/shuck` skill
-  + SessionStart auto-install) already deliver structured results and discovery.
-  Revisit only if non-Claude agents need typed discovery.
 - **Unprompted triage hint** on every run — noise in pipes and `--json`;
   `--help` already serves that role.

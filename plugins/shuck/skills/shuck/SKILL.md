@@ -71,6 +71,15 @@ failure on its own:
 - `--offline` — render only from the local cache, no network.
 - `--no-cache` — do not read or write the cache.
 
+## MCP tools
+
+This plugin also bundles a local MCP server (`shuck mcp`), auto-registered when
+the plugin is enabled. It exposes the same capability as typed tools:
+`inspect_pr` (a PR's failing CI) and `inspect_run` (a single run or job). They
+return the rendered report plus the stable JSON document as structured output.
+Prefer them when you want typed results to act on; reach for the Bash commands
+above when you just want to read the logs.
+
 ## Notes
 
 - Results are cached under `~/.shuck`, keyed by job + run attempt, so repeat runs

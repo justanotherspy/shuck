@@ -6,13 +6,13 @@
   },
   "metadata": {
     "description": "Plugins for shuck — show the exact failing CI step logs for a GitHub PR.",
-    "version": "0.3.0"
+    "version": "0.4.0"
   },
   "plugins": [
     {
       "name": "shuck",
       "source": "./plugins/shuck",
-      "description": "Get the exact failing CI step logs for a GitHub pull request via the shuck CLI."
+      "description": "Get the exact failing CI step logs for a GitHub pull request via the shuck CLI, with a /shuck skill and a local MCP server (inspect_pr / inspect_run tools)."
     }
   ]
 }
