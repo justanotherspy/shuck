@@ -1,7 +1,7 @@
 {
   "name": "shuck",
   "version": "0.4.0",
-  "description": "Get the exact failing CI step logs for a GitHub pull request via the shuck CLI. Adds a /shuck skill, a local MCP server (inspect_pr / inspect_run tools), and a SessionStart hook that auto-installs the latest shuck release binary and checks a GitHub token is present.",
+  "description": "Get the exact failing CI step logs for a GitHub pull request via the shuck CLI. Adds a /shuck skill, a local MCP server (inspect_pr / inspect_run tools) that runs the shuck binary from your PATH, and a SessionStart hook that checks shuck is installed, recent enough for the MCP server, and that a GitHub token is present. Install shuck yourself and keep it current with `shuck upgrade`.",
   "author": {
     "name": "justanotherspy",
     "email": "daniel.schwartz@hey.com"
