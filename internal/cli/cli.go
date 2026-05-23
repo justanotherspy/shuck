@@ -10,6 +10,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"os/signal"
 	"regexp"
 	"runtime/debug"
 	"strings"
@@ -51,6 +52,7 @@ Usage:
   shuck <job-url>             inspect a single GitHub Actions job
   shuck <pr>                  inspect a PR (owner/repo from the local repo)
   shuck                       inspect the open PR for the current branch
+  shuck --watch [target]      poll until every check finishes, then print the report
   shuck mcp                   run as a local MCP (stdio) server exposing shuck tools
   shuck version [--check]     print the installed version; --check looks for a newer release
   shuck upgrade               download and install the latest release in place
@@ -73,6 +75,9 @@ type options struct {
 	offline        bool
 	json           bool
 	version        bool
+	watch          bool
+	interval       time.Duration
+	watchTimeout   time.Duration
 }
 
 // Run executes shuck and returns the process exit code:
@@ -97,7 +102,16 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	exit, err := run(context.Background(), positional, o, stdout)
+	ctx := context.Background()
+	if o.watch {
+		// In watch mode we block for a long time, so honour Ctrl-C: cancelling
+		// the context stops the poll loop and prints the latest result.
+		var stop context.CancelFunc
+		ctx, stop = signal.NotifyContext(ctx, os.Interrupt)
+		defer stop()
+	}
+
+	exit, err := run(ctx, positional, o, stdout, stderr)
 	if err != nil {
 		fmt.Fprintln(stderr, "shuck:", err)
 		return 2
@@ -128,6 +142,9 @@ func parseArgs(args []string, stderr io.Writer) (options, []string, error) {
 	fs.BoolVar(&o.offline, "offline", false, "render only from cache, without network access")
 	fs.BoolVar(&o.json, "json", false, "emit machine-readable JSON (stable schema) instead of text")
 	fs.BoolVar(&o.version, "version", false, "print the shuck version and exit")
+	fs.BoolVar(&o.watch, "watch", false, "poll until every check reaches a terminal state, then print the report")
+	fs.DurationVar(&o.interval, "interval", 15*time.Second, "poll interval for --watch")
+	fs.DurationVar(&o.watchTimeout, "watch-timeout", 0, "give up watching after this long (0 = no limit)")
 
 	if err := fs.Parse(permuteArgs(fs, args)); err != nil {
 		return options{}, nil, err
@@ -135,16 +152,98 @@ func parseArgs(args []string, stderr io.Writer) (options, []string, error) {
 	return o, fs.Args(), nil
 }
 
-func run(ctx context.Context, args []string, o options, stdout io.Writer) (int, error) {
+func run(ctx context.Context, args []string, o options, stdout, stderr io.Writer) (int, error) {
 	tgt, err := target.Resolve(args)
 	if err != nil {
 		return 0, err
+	}
+	if o.watch {
+		return runWatch(ctx, tgt, o, stdout, stderr)
 	}
 	report, err := inspectWith(ctx, tgt, o)
 	if err != nil {
 		return 0, err
 	}
 	return emit(stdout, report, o.json)
+}
+
+// runWatch validates the watch knobs and drives the poll loop for tgt, wiring
+// in the real inspection and a context-aware sleep.
+func runWatch(ctx context.Context, tgt target.Target, o options, stdout, stderr io.Writer) (int, error) {
+	if o.offline {
+		return 0, fmt.Errorf("--watch cannot be combined with --offline: the cache does not change while you wait")
+	}
+	if o.interval <= 0 {
+		return 0, fmt.Errorf("--interval must be positive, got %s", o.interval)
+	}
+	if o.watchTimeout < 0 {
+		return 0, fmt.Errorf("--watch-timeout must not be negative, got %s", o.watchTimeout)
+	}
+	inspect := func(ctx context.Context) (*model.Report, error) {
+		return inspectWith(ctx, tgt, o)
+	}
+	return watch(ctx, o, inspect, sleepCtx, stdout, stderr)
+}
+
+// watch polls inspect until the report is terminal (no jobs still running),
+// the watch-timeout elapses, or ctx is cancelled, then emits the latest report.
+// inspect and sleep are injected so the loop's termination logic is testable
+// without network or real waiting. sleep reports false when ctx was cancelled.
+func watch(
+	ctx context.Context,
+	o options,
+	inspect func(context.Context) (*model.Report, error),
+	sleep func(context.Context, time.Duration) bool,
+	stdout, stderr io.Writer,
+) (int, error) {
+	var deadline time.Time
+	if o.watchTimeout > 0 {
+		deadline = time.Now().Add(o.watchTimeout)
+	}
+
+	for {
+		report, err := inspect(ctx)
+		if err != nil {
+			return 0, err
+		}
+		if report.IsTerminal() {
+			return emit(stdout, report, o.json)
+		}
+
+		wait := o.interval
+		if !deadline.IsZero() {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				fmt.Fprintf(stderr, "shuck: gave up watching after %s with %d job(s) still running\n",
+					o.watchTimeout, len(report.RunningJobs))
+				return emit(stdout, report, o.json)
+			}
+			if remaining < wait {
+				wait = remaining
+			}
+		}
+
+		fmt.Fprintf(stderr, "shuck: %d running, %d failed so far — re-checking in %s\n",
+			len(report.RunningJobs), len(report.FailedJobs), wait.Round(time.Second))
+
+		if !sleep(ctx, wait) {
+			fmt.Fprintln(stderr, "shuck: stopped watching — printing the latest result")
+			return emit(stdout, report, o.json)
+		}
+	}
+}
+
+// sleepCtx waits for d or until ctx is cancelled, reporting true if the full
+// duration elapsed and false if ctx ended first.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }
 
 // InspectOptions controls a single inspection: the log-extraction tuning that

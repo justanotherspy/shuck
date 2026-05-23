@@ -43,7 +43,7 @@ as items land.
 | Multi-job summary | **Done** | `render.writeSummary` prints an upfront `N failed, M cancelled, …` line; `jsonout.Summary` carries the counts. |
 | Cancelled legs | **Done** | `model.IsCancelledConclusion` + a `CancelledJobs` bucket; surfaced in text/JSON, never drilled. Stays exit `0` on its own (cancellation is often deliberate). |
 | In-progress banner | **Done** | `writeSummary` prints a top `⚠ N still running — failures shown may be incomplete` banner when failures coexist with running jobs. |
-| `--watch` | **New** | No polling loop. |
+| `--watch` | **Done** | `cli.watch` polls `inspectWith` every `--interval` (default 15s) until `Report.IsTerminal()` (no running jobs), then emits with the failure-aware exit code. `--watch-timeout` bounds the wait; Ctrl-C (SIGINT) stops it and prints the latest snapshot. Rejected with `--offline`. |
 | GNU double-dash | **Already works** | Go's `flag` accepts one or two dashes for every flag. No aliases needed. |
 | Target job/run | **Done** | `shuck <run-url>` / `shuck <job-url>` (positional, no flags). `target.parseActionsURL` + `Target.RunID/JobID`; `gh.RunReport` fetches run metadata and classifies its jobs (or one job); `cli.inspectRun` drills and renders with a run-aware header. Bypasses the PR-keyed cache; JSON gains an additive `run` object. |
 | MCP server | **Done** | `internal/mcp` serves `inspect_pr` / `inspect_run` over stdio (`shuck mcp`), reusing `cli.Inspect`. Typed input/output schemas via the official Go SDK; returns rendered text + the `jsonout` document. Auto-registered by the Claude Code plugin (`plugins/shuck/.mcp.json`). |
@@ -119,7 +119,18 @@ Covered by a flag×target×ordering×dash-style matrix in `cli_test.go`.
      selection (the attempt segment is currently ignored — latest is used).
 4. **In-progress banner.** — **DONE.** `writeSummary` prints a top-of-output
    `⚠ N still running — failures shown may be incomplete` banner when failures
-   coexist with running jobs. `--watch` still deferred to a follow-up.
+   coexist with running jobs.
+   - **`--watch` follow-up — DONE.** `cli.watch` is a poll-until-complete loop:
+     it re-runs `inspectWith` every `--interval` (default 15s) and returns only
+     once `Report.IsTerminal()` holds (the running bucket is empty, i.e. every
+     check is success/failure/cancelled/…), then emits with the normal 0/1 exit
+     code so callers get a clear "CI finished" signal. `--watch-timeout` bounds
+     the wait (0 = unlimited; on timeout it prints the latest snapshot); a
+     SIGINT-aware context lets Ctrl-C stop the loop and still print the latest
+     result. Rejected with `--offline` (the cache can't change while waiting).
+     The loop takes injected `inspect`/`sleep` funcs so its termination logic is
+     unit-tested without network or real waiting. Stays CLI-only — the one-shot
+     MCP tools are unchanged.
 5. **README "first move" wording.** — **DONE.** README frames `shuck <pr>` as
    the first move on a CI failure and notes the plugin may already put the
    binary on `PATH`.
