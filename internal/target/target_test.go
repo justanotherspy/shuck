@@ -96,3 +96,58 @@ func TestResolvePRURL(t *testing.T) {
 		t.Errorf("Resolve(PR URL) = %+v", tgt)
 	}
 }
+
+func TestParseActionsURL(t *testing.T) {
+	cases := []struct {
+		in           string
+		owner, repo  string
+		runID, jobID int64
+		wantOK       bool
+	}{
+		{"https://github.com/justanotherspy/shuck/actions/runs/123", "justanotherspy", "shuck", 123, 0, true},
+		{"http://github.com/justanotherspy/shuck/actions/runs/123", "justanotherspy", "shuck", 123, 0, true},
+		{"github.com/justanotherspy/shuck/actions/runs/123", "justanotherspy", "shuck", 123, 0, true},
+		{"https://github.com/justanotherspy/shuck/actions/runs/123/job/456", "justanotherspy", "shuck", 123, 456, true},
+		{"https://github.com/justanotherspy/shuck/actions/runs/123/jobs/456", "justanotherspy", "shuck", 123, 456, true},
+		{"https://github.com/justanotherspy/shuck/actions/runs/123/job/456?pr=42", "justanotherspy", "shuck", 123, 456, true},
+		{"https://github.com/justanotherspy/shuck/actions/runs/123/attempts/2", "justanotherspy", "shuck", 123, 0, true},
+		{"https://github.example.com/acme/widgets/actions/runs/7/job/8", "acme", "widgets", 7, 8, true},
+		// Not Actions URLs: fall through to other resolution.
+		{"https://github.com/justanotherspy/shuck/pull/12", "", "", 0, 0, false},
+		{"https://github.com/justanotherspy/shuck/actions/runs/notanumber", "", "", 0, 0, false},
+		{"https://github.com/justanotherspy/shuck/actions/runs/0", "", "", 0, 0, false},
+		{"https://github.com/justanotherspy/shuck/actions/runs/123/job/0", "", "", 0, 0, false},
+		{"https://github.com/justanotherspy/shuck/actions", "", "", 0, 0, false},
+		{"42", "", "", 0, 0, false},
+	}
+	for _, c := range cases {
+		owner, repo, runID, jobID, ok := parseActionsURL(c.in)
+		if ok != c.wantOK {
+			t.Errorf("parseActionsURL(%q) ok = %v, want %v", c.in, ok, c.wantOK)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		if owner != c.owner || repo != c.repo || runID != c.runID || jobID != c.jobID {
+			t.Errorf("parseActionsURL(%q) = %q/%q run=%d job=%d, want %q/%q run=%d job=%d",
+				c.in, owner, repo, runID, jobID, c.owner, c.repo, c.runID, c.jobID)
+		}
+	}
+
+	run, err := Resolve([]string{"https://github.com/justanotherspy/shuck/actions/runs/55"})
+	if err != nil {
+		t.Fatalf("Resolve(run URL): unexpected error: %v", err)
+	}
+	if run.Owner != "justanotherspy" || run.Repo != "shuck" || run.RunID != 55 || run.JobID != 0 || run.Number != 0 {
+		t.Errorf("Resolve(run URL) = %+v", run)
+	}
+
+	job, err := Resolve([]string{"https://github.com/justanotherspy/shuck/actions/runs/55/job/66"})
+	if err != nil {
+		t.Fatalf("Resolve(job URL): unexpected error: %v", err)
+	}
+	if job.RunID != 55 || job.JobID != 66 {
+		t.Errorf("Resolve(job URL) = %+v", job)
+	}
+}

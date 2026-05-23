@@ -15,15 +15,31 @@ import (
 // bumped only on a breaking change; additive fields keep the same version.
 const SchemaVersion = 1
 
-// Document is the top-level JSON value emitted for an inspection.
+// Document is the top-level JSON value emitted for an inspection. Exactly one
+// of pr / run carries the target's head context: run is present (and pr left
+// zero-valued) for run/job URL targets, otherwise the report is PR-anchored.
 type Document struct {
 	SchemaVersion int            `json:"schema_version"`
 	PR            PR             `json:"pr"`
+	Run           *Run           `json:"run,omitempty"`
 	Summary       Summary        `json:"summary"`
 	FailedJobs    []Job          `json:"failed_jobs"`
 	CancelledJobs []CancelledJob `json:"cancelled_jobs"`
 	OtherChecks   []OtherCheck   `json:"other_checks"`
 	RunningJobs   []RunningJob   `json:"running_jobs"`
+}
+
+// Run identifies a workflow-run (or single-job) target and its head context. It
+// is present only when shuck was pointed at a GitHub Actions URL.
+type Run struct {
+	Owner        string `json:"owner"`
+	Repo         string `json:"repo"`
+	RunID        int64  `json:"run_id"`
+	JobID        int64  `json:"job_id,omitempty"`
+	Title        string `json:"title"`
+	HeadSHA      string `json:"head_sha"`
+	HeadBranch   string `json:"head_branch"`
+	WorkflowName string `json:"workflow_name"`
 }
 
 // PR identifies the inspected pull request and its head commit.
@@ -115,6 +131,19 @@ func newDocument(r *model.Report) Document {
 		CancelledJobs: make([]CancelledJob, 0, len(r.CancelledJobs)),
 		OtherChecks:   make([]OtherCheck, 0, len(r.OtherChecks)),
 		RunningJobs:   make([]RunningJob, 0, len(r.RunningJobs)),
+	}
+
+	if r.Run != nil {
+		doc.Run = &Run{
+			Owner:        r.Run.Owner,
+			Repo:         r.Run.Repo,
+			RunID:        r.Run.RunID,
+			JobID:        r.Run.JobID,
+			Title:        r.Run.Title,
+			HeadSHA:      r.Run.HeadSHA,
+			HeadBranch:   r.Run.HeadBranch,
+			WorkflowName: r.Run.WorkflowName,
+		}
 	}
 
 	for _, j := range r.FailedJobs {

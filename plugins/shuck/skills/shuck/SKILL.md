@@ -31,11 +31,21 @@ Pick the invocation that matches what the user gave you, and run it with Bash:
 | Situation | Command |
 | --- | --- |
 | Explicit PR | `shuck <owner>/<repo> <pr>` |
+| PR from its URL | `shuck <pr-url>` |
+| A single Actions run | `shuck <run-url>` |
+| A single Actions job | `shuck <job-url>` |
 | PR number, current repo | `shuck <pr>` |
 | Open PR for the current branch | `shuck` |
 
 ```sh
 shuck justanotherspy/shuck 42
+```
+
+When a CI-failure notification points at one job or run, pass its GitHub Actions
+URL directly to skip the PR-wide scan and drill just that target:
+
+```sh
+shuck https://github.com/justanotherspy/shuck/actions/runs/123/job/456
 ```
 
 ## Reading the exit code

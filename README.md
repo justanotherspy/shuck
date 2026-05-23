@@ -61,9 +61,22 @@ GoReleaser).
 ```sh
 shuck <owner>/<repo> <pr>   # inspect an explicit PR
 shuck <pr-url>              # inspect a PR from its GitHub URL
+shuck <run-url>             # inspect a single GitHub Actions run
+shuck <job-url>             # inspect a single GitHub Actions job
 shuck <pr>                  # owner/repo inferred from the local repo's origin
 shuck                       # inspect the open PR for the current branch
 ```
+
+Pass a GitHub Actions URL to skip the PR-wide scan and look at just one run or
+job — handy when a CI-failure notification already points at the failing job:
+
+```sh
+shuck https://github.com/justanotherspy/shuck/actions/runs/123          # whole run
+shuck https://github.com/justanotherspy/shuck/actions/runs/123/job/456  # one job
+```
+
+A run/job target reports only that run's Actions jobs (no PR-wide non-Actions
+checks) and bypasses the cache, so its logs are always freshly downloaded.
 
 Authentication uses `GITHUB_TOKEN` (or `GH_TOKEN`), or pass `--token`.
 
@@ -125,8 +138,22 @@ unchanged, so `--json` still composes in pipelines.
 }
 ```
 
-`schema_version` is bumped only on a breaking change; new fields are added
-without a bump. Lists are always present (`[]`, never `null`).
+For a run/job URL target the `pr` object is left zero-valued and a `run` object
+carries the head context instead:
+
+```jsonc
+{
+  "schema_version": 1,
+  "pr": { "owner": "", "repo": "", "number": 0, "title": "", "head_sha": "", "head_branch": "" },
+  "run": { "owner": "…", "repo": "…", "run_id": 123, "job_id": 456,
+           "title": "…", "head_sha": "…", "head_branch": "…", "workflow_name": "CI" },
+  "summary": { "failed": 1, "cancelled": 0, "running": 0, "other_failed": 0 },
+  "failed_jobs": [ /* … */ ]
+}
+```
+
+`schema_version` is bumped only on a breaking change; new fields (like `run`)
+are added without a bump. Lists are always present (`[]`, never `null`).
 
 ### How log extraction works
 

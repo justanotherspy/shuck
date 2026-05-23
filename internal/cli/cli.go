@@ -47,6 +47,8 @@ const usage = `shuck — show the exact failing CI step logs for a PR.
 Usage:
   shuck <owner>/<repo> <pr>   inspect an explicit PR
   shuck <pr-url>              inspect a PR from its GitHub URL
+  shuck <run-url>             inspect a single GitHub Actions run
+  shuck <job-url>             inspect a single GitHub Actions job
   shuck <pr>                  inspect a PR (owner/repo from the local repo)
   shuck                       inspect the open PR for the current branch
 
@@ -122,6 +124,9 @@ func run(ctx context.Context, args []string, o options, stdout io.Writer) (int, 
 	}
 
 	if o.offline {
+		if tgt.RunID != 0 {
+			return 0, fmt.Errorf("--offline is not supported for run/job URLs; it works only with PR targets, which are cached")
+		}
 		return runOffline(tgt, o.json, stdout)
 	}
 
@@ -131,6 +136,10 @@ func run(ctx context.Context, args []string, o options, stdout io.Writer) (int, 
 	}
 	client := gh.New(token)
 	a := &app{client: client, opts: extractOpts}
+
+	if tgt.RunID != 0 {
+		return a.inspectRun(ctx, tgt, o.json, stdout)
+	}
 
 	number := tgt.Number
 	if number == 0 {
@@ -207,6 +216,27 @@ func runOffline(tgt target.Target, jsonOut bool, stdout io.Writer) (int, error) 
 		return 0, fmt.Errorf("no cache for %s/%s#%d; run online first", tgt.Owner, tgt.Repo, tgt.Number)
 	}
 	return emit(stdout, cached, jsonOut)
+}
+
+// inspectRun handles a run/job URL target: it fetches the run's jobs (or a
+// single job), drills the failed ones for their error logs, and renders. Run
+// targets bypass the PR-keyed cache, so logs are always re-downloaded.
+func (a *app) inspectRun(ctx context.Context, tgt target.Target, jsonOut bool, stdout io.Writer) (int, error) {
+	info, failed, cancelled, running, err := a.client.RunReport(ctx, tgt.Owner, tgt.Repo, tgt.RunID, tgt.JobID)
+	if err != nil {
+		return 0, err
+	}
+	for i := range failed {
+		a.drill(ctx, tgt.Owner, tgt.Repo, &failed[i])
+	}
+	report := &model.Report{
+		Run:           &info,
+		FailedJobs:    failed,
+		CancelledJobs: cancelled,
+		RunningJobs:   running,
+		CheckedAt:     time.Now(),
+	}
+	return emit(stdout, report, jsonOut)
 }
 
 // emit renders the report as JSON or human-readable text and returns the

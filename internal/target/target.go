@@ -10,19 +10,25 @@ import (
 	git "github.com/go-git/go-git/v5"
 )
 
-// Target identifies the PR to inspect. When Number is 0 the PR must be found by
-// matching Branch against open PRs.
+// Target identifies what to inspect. For a PR target, Number is the PR (or 0
+// when it must be found by matching Branch against open PRs). For a run/job
+// target (a GitHub Actions URL), RunID is set and JobID is the specific job
+// (0 means inspect the whole run).
 type Target struct {
 	Owner  string
 	Repo   string
 	Number int
 	Branch string
+	RunID  int64
+	JobID  int64
 }
 
 // Resolve interprets the positional args:
 //
 //	shuck <owner>/<repo> <pr>  -> explicit owner/repo + number
 //	shuck <pr-url>             -> owner/repo + number from a GitHub PR URL
+//	shuck <run-url>            -> owner/repo + run ID from a GitHub Actions run URL
+//	shuck <job-url>            -> owner/repo + run/job ID from a job URL
 //	shuck <pr>                 -> number, owner/repo from the local repo
 //	shuck                      -> owner/repo + current branch from the local repo
 func Resolve(args []string) (Target, error) {
@@ -42,9 +48,12 @@ func Resolve(args []string) (Target, error) {
 		if owner, repo, n, ok := parsePRURL(args[0]); ok {
 			return Target{Owner: owner, Repo: repo, Number: n}, nil
 		}
+		if owner, repo, runID, jobID, ok := parseActionsURL(args[0]); ok {
+			return Target{Owner: owner, Repo: repo, RunID: runID, JobID: jobID}, nil
+		}
 		n, err := strconv.Atoi(args[0])
 		if err != nil {
-			return Target{}, fmt.Errorf("invalid PR number %q (expected: shuck <owner>/<repo> <pr> | shuck <pr-url> | shuck <pr> | shuck)", args[0])
+			return Target{}, fmt.Errorf("invalid PR number %q (expected: shuck <owner>/<repo> <pr> | shuck <pr-url> | shuck <run-url> | shuck <job-url> | shuck <pr> | shuck)", args[0])
 		}
 		owner, repo, _, err := localRepo()
 		if err != nil {
@@ -99,6 +108,48 @@ func parsePRURL(s string) (owner, repo string, number int, ok bool) {
 		return parts[i-2], parts[i-1], n, true
 	}
 	return "", "", 0, false
+}
+
+// parseActionsURL extracts owner, repo, run ID, and (optionally) job ID from a
+// GitHub Actions URL such as
+//
+//	https://github.com/owner/repo/actions/runs/123
+//	https://github.com/owner/repo/actions/runs/123/job/456
+//
+// (with or without a scheme, trailing path segments, or a query/fragment). It
+// returns ok=false for anything that is not a recognizable
+// .../<owner>/<repo>/actions/runs/<run> path.
+func parseActionsURL(s string) (owner, repo string, runID, jobID int64, ok bool) {
+	s = strings.TrimSpace(s)
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if i := strings.IndexAny(s, "?#"); i >= 0 {
+		s = s[:i]
+	}
+	parts := strings.Split(strings.Trim(s, "/"), "/")
+	for i := 2; i+2 < len(parts); i++ {
+		if parts[i] != "actions" || parts[i+1] != "runs" {
+			continue
+		}
+		if parts[i-2] == "" || parts[i-1] == "" {
+			return "", "", 0, 0, false
+		}
+		rid, err := strconv.ParseInt(parts[i+2], 10, 64)
+		if err != nil || rid <= 0 {
+			return "", "", 0, 0, false
+		}
+		owner, repo, runID = parts[i-2], parts[i-1], rid
+		if i+4 < len(parts) && (parts[i+3] == "job" || parts[i+3] == "jobs") {
+			jid, err := strconv.ParseInt(parts[i+4], 10, 64)
+			if err != nil || jid <= 0 {
+				return "", "", 0, 0, false
+			}
+			jobID = jid
+		}
+		return owner, repo, runID, jobID, true
+	}
+	return "", "", 0, 0, false
 }
 
 // localRepo reads owner/repo and the current branch from the repo containing the
