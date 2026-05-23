@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/justanotherspy/shuck/internal/cache"
 	"github.com/justanotherspy/shuck/internal/jsonout"
@@ -223,6 +225,131 @@ func TestExitFor(t *testing.T) {
 	}
 }
 
+// reportSeq returns an inspect function that yields the given reports in order,
+// then keeps returning the last one. It records how many times it was called.
+func reportSeq(calls *int, reports ...*model.Report) func(context.Context) (*model.Report, error) {
+	return func(context.Context) (*model.Report, error) {
+		i := *calls
+		*calls++
+		if i >= len(reports) {
+			i = len(reports) - 1
+		}
+		return reports[i], nil
+	}
+}
+
+func running(n int) *model.Report {
+	r := &model.Report{}
+	for i := 0; i < n; i++ {
+		r.RunningJobs = append(r.RunningJobs, model.RunningJob{Name: fmt.Sprintf("job-%d", i), Status: "in_progress"})
+	}
+	return r
+}
+
+// TestWatchStopsWhenTerminal: the loop ends as soon as a report has no running
+// jobs, drives emit once, and reports the failure-aware exit code.
+func TestWatchStopsWhenTerminal(t *testing.T) {
+	terminal := &model.Report{FailedJobs: []model.JobResult{{ID: 1, Name: "build", Conclusion: "failure"}}}
+	var calls, sleeps int
+	sleep := func(context.Context, time.Duration) bool { sleeps++; return true }
+
+	var stdout, stderr strings.Builder
+	code, err := watch(context.Background(), options{interval: time.Second}, reportSeq(&calls, terminal), sleep, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("watch: %v", err)
+	}
+	if code != 1 {
+		t.Errorf("exit = %d, want 1 (failures present)", code)
+	}
+	if calls != 1 {
+		t.Errorf("inspect calls = %d, want 1", calls)
+	}
+	if sleeps != 0 {
+		t.Errorf("sleeps = %d, want 0 (already terminal)", sleeps)
+	}
+}
+
+// TestWatchPollsUntilTerminal: running reports keep the loop going (one sleep
+// between polls) until a terminal report ends it.
+func TestWatchPollsUntilTerminal(t *testing.T) {
+	terminal := &model.Report{} // no running, no failures => clean, terminal
+	var calls, sleeps int
+	sleep := func(context.Context, time.Duration) bool { sleeps++; return true }
+
+	var stdout, stderr strings.Builder
+	code, err := watch(context.Background(), options{interval: time.Second},
+		reportSeq(&calls, running(2), running(1), terminal), sleep, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("watch: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("exit = %d, want 0 (clean)", code)
+	}
+	if calls != 3 {
+		t.Errorf("inspect calls = %d, want 3", calls)
+	}
+	if sleeps != 2 {
+		t.Errorf("sleeps = %d, want 2 (between the three polls)", sleeps)
+	}
+}
+
+// TestWatchStopsOnCancel: when sleep reports a cancelled context, the loop ends
+// and prints the latest (still-running) report instead of spinning forever.
+func TestWatchStopsOnCancel(t *testing.T) {
+	var calls int
+	sleep := func(context.Context, time.Duration) bool { return false } // cancelled
+
+	var stdout, stderr strings.Builder
+	code, err := watch(context.Background(), options{interval: time.Second},
+		reportSeq(&calls, running(1)), sleep, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("watch: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("exit = %d, want 0 (no failures yet)", code)
+	}
+	if calls != 1 {
+		t.Errorf("inspect calls = %d, want 1", calls)
+	}
+	if !strings.Contains(stderr.String(), "stopped watching") {
+		t.Errorf("expected a stop notice on stderr, got %q", stderr.String())
+	}
+}
+
+// TestWatchTimesOut: with a near-zero deadline the loop bails after the first
+// non-terminal poll, without sleeping, and notes the timeout on stderr.
+func TestWatchTimesOut(t *testing.T) {
+	var calls, sleeps int
+	sleep := func(context.Context, time.Duration) bool { sleeps++; return true }
+
+	var stdout, stderr strings.Builder
+	code, err := watch(context.Background(), options{interval: time.Minute, watchTimeout: time.Nanosecond},
+		reportSeq(&calls, running(1)), sleep, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("watch: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("exit = %d, want 0", code)
+	}
+	if sleeps != 0 {
+		t.Errorf("sleeps = %d, want 0 (deadline already passed)", sleeps)
+	}
+	if !strings.Contains(stderr.String(), "gave up watching") {
+		t.Errorf("expected a timeout notice on stderr, got %q", stderr.String())
+	}
+}
+
+// TestRunWatchRejectsOffline: --watch + --offline is a usage error (the cache
+// cannot change while you wait).
+func TestRunWatchRejectsOffline(t *testing.T) {
+	var stdout, stderr strings.Builder
+	_, err := runWatch(context.Background(), target.Target{Owner: "o", Repo: "r", Number: 1},
+		options{watch: true, offline: true, interval: time.Second}, &stdout, &stderr)
+	if err == nil {
+		t.Fatalf("expected an error for --watch --offline")
+	}
+}
+
 func TestCanonicalDashes(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"--full", "--full"},
@@ -287,6 +414,9 @@ func TestParseArgsFlagTargetMatrix(t *testing.T) {
 		{"tail", []string{"--tail", "3"}, func(o options) bool { return o.tail == 3 }},
 		{"pattern", []string{"--pattern", "boom"}, func(o options) bool { return o.pattern == "boom" }},
 		{"token", []string{"--token", "tok"}, func(o options) bool { return o.token == "tok" }},
+		{"watch", []string{"--watch"}, func(o options) bool { return o.watch }},
+		{"interval", []string{"--interval", "30s"}, func(o options) bool { return o.interval == 30*time.Second }},
+		{"watch-timeout", []string{"--watch-timeout", "5m"}, func(o options) bool { return o.watchTimeout == 5*time.Minute }},
 	}
 	targets := [][]string{
 		{"o/r", "42"},

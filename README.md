@@ -80,6 +80,7 @@ shuck <run-url>             # inspect a single GitHub Actions run
 shuck <job-url>             # inspect a single GitHub Actions job
 shuck <pr>                  # owner/repo inferred from the local repo's origin
 shuck                       # inspect the open PR for the current branch
+shuck --watch [target]      # poll until every check finishes, then print the report
 shuck version [--check]     # print the installed version; --check looks for an update
 shuck upgrade               # download and install the latest release in place
 ```
@@ -117,6 +118,9 @@ shuck justanotherspy/shuck 42
 | `--offline` | false | Render only from cache, without network access. |
 | `--json` | false | Emit machine-readable JSON (stable schema) instead of text. |
 | `--version` | false | Print the shuck version and exit. |
+| `--watch` | false | Poll until every check reaches a terminal state, then print the report. |
+| `--interval D` | 15s | Poll interval for `--watch`. |
+| `--watch-timeout D` | 0 | Give up watching after this long (`0` = no limit). |
 
 Run `shuck --help` to print this usage and the full flag list. Flags may appear
 before or after the target (`shuck owner/repo 42 --json` works), and accept one
@@ -128,6 +132,30 @@ Exit codes: `0` no failing checks · `1` failing checks reported · `2` error.
 Cancelled jobs are reported in the summary but do **not** by themselves set a
 non-zero exit code — cancellation is often deliberate (a superseded run, a
 manual stop), so it stays `0` unless a real failure is also present.
+
+### Watching until CI finishes
+
+`--watch` turns shuck into a poll-until-complete loop: it re-checks the target
+every `--interval` (default 15s) and returns **only when no jobs are still
+running** — every check has reached a terminal state (success, failure,
+cancelled, timed out, …) — then prints the final report. The exit code is the
+verdict (`0` clean, `1` failures, `2` error), so it composes in scripts and
+gives an agent a clear "watching is done" signal.
+
+```sh
+shuck --watch justanotherspy/shuck 42                 # wait, then print
+shuck --watch --watch-timeout 30m --json <pr-url>     # bounded, machine-readable
+```
+
+Progress lines go to stderr; the final report (text or `--json`) is the only
+thing on stdout. Bound an open-ended wait with `--watch-timeout D` (on timeout,
+shuck prints the latest snapshot instead of blocking forever). `--watch` works
+with any target (PR, run, or job) and cannot be combined with `--offline`, since
+the cache does not change while you wait.
+
+Watch keys off "no jobs still running", so if you start it before CI has
+registered any runs for the head commit it reports all-clear immediately — start
+watching once at least one check exists.
 
 ### JSON output
 
