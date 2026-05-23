@@ -1,9 +1,13 @@
 package cli
 
 import (
+	"encoding/json"
+	"flag"
 	"strings"
 	"testing"
 
+	"github.com/justanotherspy/shuck/internal/cache"
+	"github.com/justanotherspy/shuck/internal/jsonout"
 	"github.com/justanotherspy/shuck/internal/logs"
 	"github.com/justanotherspy/shuck/internal/model"
 )
@@ -122,6 +126,87 @@ func TestBuildExtractOptionsRejectsNegative(t *testing.T) {
 		if _, err := buildExtractOptions(o); err == nil {
 			t.Errorf("negative %s should be rejected", name)
 		}
+	}
+}
+
+func TestPermuteArgs(t *testing.T) {
+	cases := []struct {
+		name     string
+		in       []string
+		wantBool bool
+		wantStr  string
+		wantArgs []string
+	}{
+		{"flags already first", []string{"--flag", "--str", "v", "a", "b"}, true, "v", []string{"a", "b"}},
+		{"bool flag after positionals", []string{"a", "b", "--flag"}, true, "", []string{"a", "b"}},
+		{"value flag after positionals", []string{"a", "--str", "v"}, false, "v", []string{"a"}},
+		{"combined value flag", []string{"a", "--str=v"}, false, "v", []string{"a"}},
+		{"double dash keeps the rest positional", []string{"a", "--", "--flag"}, false, "", []string{"a", "--flag"}},
+		{"no args", nil, false, "", nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fs := flag.NewFlagSet("test", flag.ContinueOnError)
+			var b bool
+			var s string
+			fs.BoolVar(&b, "flag", false, "")
+			fs.StringVar(&s, "str", "", "")
+			if err := fs.Parse(permuteArgs(fs, c.in)); err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if b != c.wantBool {
+				t.Errorf("bool flag = %v, want %v", b, c.wantBool)
+			}
+			if s != c.wantStr {
+				t.Errorf("str flag = %q, want %q", s, c.wantStr)
+			}
+			got := fs.Args()
+			same := len(got) == len(c.wantArgs)
+			for i := 0; same && i < len(got); i++ {
+				same = got[i] == c.wantArgs[i]
+			}
+			if !same {
+				t.Errorf("args = %v, want %v", got, c.wantArgs)
+			}
+		})
+	}
+}
+
+// TestRunJSONOfflineFlagsAfterTarget exercises the full --json path through the
+// cache (no network) and, by placing flags after the positionals, also proves
+// the arg-permutation pre-pass.
+func TestRunJSONOfflineFlagsAfterTarget(t *testing.T) {
+	t.Setenv("SHUCK_HOME", t.TempDir())
+	report := &model.Report{
+		PR: model.PR{Owner: "o", Repo: "r", Number: 42, Title: "fix", HeadSHA: "abc1234"},
+		FailedJobs: []model.JobResult{{
+			ID: 1, Name: "build", Conclusion: "failure", Inspected: true,
+			FailedSteps: []model.FailedStep{{Number: 2, Name: "Run tests", Excerpt: "boom"}},
+		}},
+	}
+	if err := cache.Save(report); err != nil {
+		t.Fatalf("seed cache: %v", err)
+	}
+
+	var stdout, stderr strings.Builder
+	code := Run([]string{"--offline", "o/r", "42", "--json"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (failures present); stderr=%q", code, stderr.String())
+	}
+
+	var doc jsonout.Document
+	if err := json.Unmarshal([]byte(stdout.String()), &doc); err != nil {
+		t.Fatalf("output not valid JSON: %v\n%s", err, stdout.String())
+	}
+	if doc.SchemaVersion != jsonout.SchemaVersion {
+		t.Errorf("schema_version = %d, want %d", doc.SchemaVersion, jsonout.SchemaVersion)
+	}
+	if doc.Summary.Failed != 1 {
+		t.Errorf("summary.failed = %d, want 1", doc.Summary.Failed)
+	}
+	if len(doc.FailedJobs) != 1 || len(doc.FailedJobs[0].FailedSteps) != 1 ||
+		doc.FailedJobs[0].FailedSteps[0].Name != "Run tests" {
+		t.Errorf("unexpected failed jobs: %+v", doc.FailedJobs)
 	}
 }
 

@@ -79,11 +79,44 @@ shuck justanotherspy/shuck 42
 | `--refresh` | false | Ignore and rebuild the cache. |
 | `--no-cache` | false | Do not read or write the cache. |
 | `--offline` | false | Render only from cache, without network access. |
+| `--json` | false | Emit machine-readable JSON (stable schema) instead of text. |
 | `--version` | false | Print the shuck version and exit. |
 
-Run `shuck --help` to print this usage and the full flag list.
+Run `shuck --help` to print this usage and the full flag list. Flags may appear
+before or after the target (`shuck owner/repo 42 --json` works), and accept one
+or two dashes (`-json` and `--json` are equivalent).
 
 Exit codes: `0` no failing checks · `1` failing checks reported · `2` error.
+
+### JSON output
+
+`--json` emits a stable, versioned document instead of the pretty text, so an
+agent or script can consume results deterministically. The exit code is
+unchanged, so `--json` still composes in pipelines.
+
+```jsonc
+{
+  "schema_version": 1,
+  "pr": { "owner": "…", "repo": "…", "number": 42, "title": "…",
+          "head_sha": "…", "head_branch": "…" },
+  "summary": { "failed": 1, "running": 0, "other_failed": 0 },
+  "failed_jobs": [
+    {
+      "id": 7, "run_id": 9, "name": "build", "conclusion": "failure",
+      "workflow_name": "CI", "workflow_path": ".github/workflows/ci.yml",
+      "failed_steps": [
+        { "number": 3, "name": "Run tests", "kind": "bash",
+          "command": "go test ./...", "excerpt": "--- FAIL: TestParse …" }
+      ]
+    }
+  ],
+  "other_checks": [],
+  "running_jobs": []
+}
+```
+
+`schema_version` is bumped only on a breaking change; new fields are added
+without a bump. Lists are always present (`[]`, never `null`).
 
 ### How log extraction works
 

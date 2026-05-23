@@ -12,10 +12,12 @@ import (
 	"os"
 	"regexp"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"github.com/justanotherspy/shuck/internal/cache"
 	"github.com/justanotherspy/shuck/internal/gh"
+	"github.com/justanotherspy/shuck/internal/jsonout"
 	"github.com/justanotherspy/shuck/internal/logs"
 	"github.com/justanotherspy/shuck/internal/model"
 	"github.com/justanotherspy/shuck/internal/render"
@@ -64,6 +66,7 @@ type options struct {
 	refresh        bool
 	noCache        bool
 	offline        bool
+	json           bool
 	version        bool
 }
 
@@ -87,9 +90,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	fs.BoolVar(&o.refresh, "refresh", false, "ignore and rebuild the cache")
 	fs.BoolVar(&o.noCache, "no-cache", false, "do not read or write the cache")
 	fs.BoolVar(&o.offline, "offline", false, "render only from cache, without network access")
+	fs.BoolVar(&o.json, "json", false, "emit machine-readable JSON (stable schema) instead of text")
 	fs.BoolVar(&o.version, "version", false, "print the shuck version and exit")
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(permuteArgs(fs, args)); err != nil {
 		return 2
 	}
 
@@ -118,7 +122,7 @@ func run(ctx context.Context, args []string, o options, stdout io.Writer) (int, 
 	}
 
 	if o.offline {
-		return runOffline(tgt, stdout)
+		return runOffline(tgt, o.json, stdout)
 	}
 
 	token, err := resolveToken(o.token)
@@ -187,11 +191,10 @@ func run(ctx context.Context, args []string, o options, stdout io.Writer) (int, 
 		}
 	}
 
-	render.Report(stdout, report)
-	return exitFor(report), nil
+	return emit(stdout, report, o.json)
 }
 
-func runOffline(tgt target.Target, stdout io.Writer) (int, error) {
+func runOffline(tgt target.Target, jsonOut bool, stdout io.Writer) (int, error) {
 	if tgt.Number == 0 {
 		return 0, fmt.Errorf("--offline requires an explicit PR number")
 	}
@@ -202,8 +205,63 @@ func runOffline(tgt target.Target, stdout io.Writer) (int, error) {
 	if cached == nil {
 		return 0, fmt.Errorf("no cache for %s/%s#%d; run online first", tgt.Owner, tgt.Repo, tgt.Number)
 	}
-	render.Report(stdout, cached)
-	return exitFor(cached), nil
+	return emit(stdout, cached, jsonOut)
+}
+
+// emit renders the report as JSON or human-readable text and returns the
+// process exit code for its failure state.
+func emit(stdout io.Writer, report *model.Report, jsonOut bool) (int, error) {
+	if jsonOut {
+		if err := jsonout.Encode(stdout, report); err != nil {
+			return 0, err
+		}
+		return exitFor(report), nil
+	}
+	render.Report(stdout, report)
+	return exitFor(report), nil
+}
+
+// permuteArgs reorders args so flags may appear after positional arguments. Go's
+// flag package stops at the first non-flag token, so "shuck owner/repo 42 --json"
+// would otherwise treat --json as a positional. Everything after a literal "--"
+// is preserved verbatim as positional. A "--" separator is always emitted so
+// flag.Parse terminates flag scanning exactly where the positionals begin.
+func permuteArgs(fs *flag.FlagSet, args []string) []string {
+	var flags, positional []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			positional = append(positional, args[i+1:]...)
+			break
+		}
+		if len(a) > 1 && a[0] == '-' {
+			flags = append(flags, a)
+			if !strings.Contains(a, "=") && flagTakesValue(fs, a) && i+1 < len(args) {
+				i++
+				flags = append(flags, args[i])
+			}
+			continue
+		}
+		positional = append(positional, a)
+	}
+	out := append(flags, "--")
+	return append(out, positional...)
+}
+
+// flagTakesValue reports whether arg names a defined non-boolean flag, which
+// consumes the following token as its value. Unknown flags return false so
+// flag.Parse surfaces the error instead of this swallowing the next argument.
+func flagTakesValue(fs *flag.FlagSet, arg string) bool {
+	name := strings.TrimLeft(arg, "-")
+	if eq := strings.IndexByte(name, '='); eq >= 0 {
+		name = name[:eq]
+	}
+	f := fs.Lookup(name)
+	if f == nil {
+		return false
+	}
+	bf, ok := f.Value.(interface{ IsBoolFlag() bool })
+	return !ok || !bf.IsBoolFlag()
 }
 
 // app holds the dependencies needed to drill into a failed job's logs.
