@@ -10,8 +10,8 @@ agents who want the signal without the fluff.
 
 **When CI goes red on a PR, `shuck <pr>` is the first move.** One command takes
 you from "a check failed" to the precise error lines — no tab-hopping, no log
-scrolling. If you use the [Claude Code plugin](#claude-code-plugin), the binary
-may already be on your `PATH`.
+scrolling. The [Claude Code plugin](#claude-code-plugin) wires the same
+capability in as a skill and an MCP server.
 
 ## What it does
 
@@ -56,6 +56,21 @@ Binaries are also available on the
 [releases](https://github.com/justanotherspy/shuck/releases) page (built with
 GoReleaser).
 
+### Keeping shuck up to date
+
+Check whether a newer release exists, then upgrade in place:
+
+```sh
+shuck version --check   # query GitHub for the latest release
+shuck upgrade           # download + verify the latest and replace this binary
+```
+
+`shuck upgrade` replaces the binary wherever it currently lives (the same place
+`install.sh` put it), verifying the download against `checksums.txt` first. If
+shuck was installed with `go install`, it says so and leaves the upgrade to the
+Go toolchain (`go install …@latest`). Plain `shuck version` is offline; it only
+surfaces an "update available" hint from the last `--check`.
+
 ## Usage
 
 ```sh
@@ -65,6 +80,8 @@ shuck <run-url>             # inspect a single GitHub Actions run
 shuck <job-url>             # inspect a single GitHub Actions job
 shuck <pr>                  # owner/repo inferred from the local repo's origin
 shuck                       # inspect the open PR for the current branch
+shuck version [--check]     # print the installed version; --check looks for an update
+shuck upgrade               # download and install the latest release in place
 ```
 
 Pass a GitHub Actions URL to skip the PR-wide scan and look at just one run or
@@ -232,18 +249,20 @@ Register it with any MCP client. For Claude Code, add it to `.mcp.json`:
 }
 ```
 
-The [Claude Code plugin](#claude-code-plugin) registers this server for you, so
-installing the plugin is usually all you need.
+The [Claude Code plugin](#claude-code-plugin) registers this server for you; it
+runs the `shuck` on your `PATH`, so install shuck first (see [Install](#install)).
 
 ## Claude Code plugin
 
 `shuck` also ships as a [Claude Code](https://claude.com/claude-code) plugin so
-agents can pull failing CI logs for you. It adds a `/shuck` skill, a bundled MCP
-server (the `inspect_pr` / `inspect_run` tools above), and a `SessionStart` hook
-that auto-installs the matching signed `shuck` release binary (verified against
-`checksums.txt`) and checks that a GitHub token is present.
+agents can pull failing CI logs for you. It adds a `/shuck` skill, an MCP server
+(the `inspect_pr` / `inspect_run` tools above) that runs the `shuck` binary from
+your `PATH`, and a `SessionStart` hook that checks shuck is installed, recent
+enough to run the MCP server, and that a GitHub token is present.
 
-Add the marketplace and install the plugin from within Claude Code:
+The plugin does not install shuck — [install it yourself](#install) and keep it
+current with `shuck upgrade`. Then add the marketplace and install the plugin
+from within Claude Code:
 
 ```
 /plugin marketplace add justanotherspy/shuck

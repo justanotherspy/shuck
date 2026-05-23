@@ -13,16 +13,19 @@ their error logs. Reach for it instead of paging through the Actions UI or `gh`.
 
 ## Prerequisites
 
-- The `shuck` binary. The plugin's SessionStart hook auto-installs it on first
-  use: it downloads the signed CLI release matching the plugin version for the
-  host OS/arch, verifies it against `checksums.txt`, and drops it in the
-  plugin's `bin/` (already on PATH). No `go install` needed; a network
-  connection is required the first time only.
+- The `shuck` binary on your PATH. Install it once:
+
+  ```sh
+  curl -fsSL https://raw.githubusercontent.com/justanotherspy/shuck/main/install.sh | bash
+  # or: go install github.com/justanotherspy/shuck@latest
+  ```
+
+  Keep it current with `shuck upgrade` (and check with `shuck version --check`).
 - A GitHub token in `GITHUB_TOKEN` or `GH_TOKEN` (or pass `--token`).
 
-The hook stays quiet when both are satisfied, and warns if the binary could not
-be installed (fall back to `go install github.com/justanotherspy/shuck@latest`)
-or a token is missing.
+The plugin's SessionStart hook stays quiet when both are satisfied. It warns
+(without blocking) if `shuck` is not on PATH, is too old to run the MCP server
+(`shuck upgrade` fixes that), or a token is missing.
 
 ## How to run
 

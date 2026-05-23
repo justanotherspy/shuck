@@ -52,6 +52,8 @@ Usage:
   shuck <pr>                  inspect a PR (owner/repo from the local repo)
   shuck                       inspect the open PR for the current branch
   shuck mcp                   run as a local MCP (stdio) server exposing shuck tools
+  shuck version [--check]     print the installed version; --check looks for a newer release
+  shuck upgrade               download and install the latest release in place
 
 Auth:
   Set GITHUB_TOKEN (or GH_TOKEN), or pass --token.
@@ -76,6 +78,15 @@ type options struct {
 // Run executes shuck and returns the process exit code:
 // 0 = no failing checks, 1 = failing checks reported, 2 = operational error.
 func Run(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 {
+		switch args[0] {
+		case "version":
+			return runVersion(args[1:], stdout, stderr)
+		case "upgrade":
+			return runUpgrade(args[1:], stdout, stderr)
+		}
+	}
+
 	o, positional, err := parseArgs(args, stderr)
 	if err != nil {
 		return 2

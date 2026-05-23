@@ -15,16 +15,26 @@ import (
 
 const fileName = "cache.json"
 
+// Base returns shuck's base directory (~/.shuck), honoring SHUCK_HOME. It is the
+// parent of the per-PR cache and of cross-cutting state such as the
+// version-check record.
+func Base() (string, error) {
+	if base := os.Getenv("SHUCK_HOME"); base != "" {
+		return base, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("locate home directory: %w", err)
+	}
+	return filepath.Join(home, ".shuck"), nil
+}
+
 // Dir returns the cache directory for a PR: ~/.shuck/cache/<owner>/<repo>/<pr>.
 // SHUCK_HOME overrides the base (~/.shuck) for testing.
 func Dir(owner, repo string, pr int) (string, error) {
-	base := os.Getenv("SHUCK_HOME")
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("locate home directory: %w", err)
-		}
-		base = filepath.Join(home, ".shuck")
+	base, err := Base()
+	if err != nil {
+		return "", err
 	}
 	return filepath.Join(base, "cache", owner, repo, strconv.Itoa(pr)), nil
 }
