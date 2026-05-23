@@ -22,8 +22,9 @@ func TestReportWithFailure(t *testing.T) {
 				Number: 2, Name: "Run tests", Command: "go test ./...", Kind: model.KindBash, Excerpt: "--- FAIL: TestX",
 			}},
 		}},
-		OtherChecks: []model.OtherCheck{{Name: "codecov/project", Conclusion: "failure", URL: "https://codecov.example"}},
-		RunningJobs: []model.RunningJob{{Name: "integration", Status: "in_progress"}},
+		CancelledJobs: []model.CancelledJob{{Name: "e2e", Conclusion: "cancelled", WorkflowName: "CI"}},
+		OtherChecks:   []model.OtherCheck{{Name: "codecov/project", Conclusion: "failure", URL: "https://codecov.example"}},
+		RunningJobs:   []model.RunningJob{{Name: "integration", Status: "in_progress"}},
 	}
 
 	var buf bytes.Buffer
@@ -33,6 +34,8 @@ func TestReportWithFailure(t *testing.T) {
 	for _, want := range []string{
 		"justanotherspy/shuck PR #12 — add thing",
 		"commit abcdef1",
+		"Summary: 1 failed, 1 cancelled, 1 other failed, 1 running",
+		"⚠ 1 still running — failures shown may be incomplete",
 		"Workflow: CI (.github/workflows/ci.yml)",
 		"Job: build  [failure]",
 		"2. Run tests (failure)",
@@ -43,12 +46,37 @@ func TestReportWithFailure(t *testing.T) {
 		"--- FAIL: TestX",
 		"Other checks (no logs available):",
 		"codecov/project (failure) — https://codecov.example",
+		"Cancelled (no logs drilled):",
+		"⊘ e2e (CI)",
 		"Still running:",
 		`⏳ Job "integration" (in_progress)`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q\n---\n%s", want, out)
 		}
+	}
+}
+
+func TestReportCancelledOnly(t *testing.T) {
+	r := &model.Report{
+		PR:            model.PR{Owner: "o", Repo: "r", Number: 5, HeadSHA: "abc1234"},
+		CancelledJobs: []model.CancelledJob{{Name: "deploy", Conclusion: "cancelled"}},
+	}
+	var buf bytes.Buffer
+	Report(&buf, r)
+	out := buf.String()
+
+	if strings.Contains(out, "all checks passing") {
+		t.Errorf("a cancelled-only run must not be reported as all green:\n%s", out)
+	}
+	for _, want := range []string{"Summary: 1 cancelled", "Cancelled (no logs drilled):", "⊘ deploy"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q\n---\n%s", want, out)
+		}
+	}
+	// No failures coexisting with running jobs, so there is no banner.
+	if strings.Contains(out, "may be incomplete") {
+		t.Errorf("unexpected banner with no running jobs:\n%s", out)
 	}
 }
 

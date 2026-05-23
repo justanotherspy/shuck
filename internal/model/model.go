@@ -74,13 +74,23 @@ type RunningJob struct {
 	WorkflowName string `json:"workflow_name"`
 }
 
+// CancelledJob is a completed job whose run was cancelled. We surface it so it
+// is not silently dropped, but we do not drill its logs: a cancelled job has no
+// genuine failure to extract.
+type CancelledJob struct {
+	Name         string `json:"name"`
+	Conclusion   string `json:"conclusion"`
+	WorkflowName string `json:"workflow_name"`
+}
+
 // Report is the full inspection result for a PR: what we render and what we cache.
 type Report struct {
-	PR          PR           `json:"pr"`
-	FailedJobs  []JobResult  `json:"failed_jobs"`
-	RunningJobs []RunningJob `json:"running_jobs"`
-	OtherChecks []OtherCheck `json:"other_checks"`
-	CheckedAt   time.Time    `json:"checked_at"`
+	PR            PR             `json:"pr"`
+	FailedJobs    []JobResult    `json:"failed_jobs"`
+	CancelledJobs []CancelledJob `json:"cancelled_jobs"`
+	RunningJobs   []RunningJob   `json:"running_jobs"`
+	OtherChecks   []OtherCheck   `json:"other_checks"`
+	CheckedAt     time.Time      `json:"checked_at"`
 }
 
 // HasFailures reports whether any failing checks were found.
@@ -102,4 +112,10 @@ func IsFailureConclusion(conclusion string) bool {
 	default:
 		return false
 	}
+}
+
+// IsCancelledConclusion reports whether a terminal conclusion is a cancellation.
+// shuck surfaces cancelled jobs in the summary but does not drill their logs.
+func IsCancelledConclusion(conclusion string) bool {
+	return conclusion == "cancelled"
 }

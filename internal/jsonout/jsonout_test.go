@@ -21,8 +21,9 @@ func TestEncodeGolden(t *testing.T) {
 				Command: "go test ./...", Excerpt: "--- FAIL",
 			}},
 		}},
-		OtherChecks: []model.OtherCheck{{Name: "lint", Conclusion: "failure", URL: "http://x"}},
-		RunningJobs: []model.RunningJob{{Name: "deploy", Status: "in_progress", WorkflowName: "CD"}},
+		CancelledJobs: []model.CancelledJob{{Name: "e2e", Conclusion: "cancelled", WorkflowName: "CI"}},
+		OtherChecks:   []model.OtherCheck{{Name: "lint", Conclusion: "failure", URL: "http://x"}},
+		RunningJobs:   []model.RunningJob{{Name: "deploy", Status: "in_progress", WorkflowName: "CD"}},
 	}
 
 	want := `{
@@ -37,6 +38,7 @@ func TestEncodeGolden(t *testing.T) {
   },
   "summary": {
     "failed": 1,
+    "cancelled": 1,
     "running": 1,
     "other_failed": 1
   },
@@ -57,6 +59,13 @@ func TestEncodeGolden(t *testing.T) {
           "excerpt": "--- FAIL"
         }
       ]
+    }
+  ],
+  "cancelled_jobs": [
+    {
+      "name": "e2e",
+      "conclusion": "cancelled",
+      "workflow_name": "CI"
     }
   ],
   "other_checks": [
@@ -97,7 +106,7 @@ func TestEncodeEmptyListsAreNotNull(t *testing.T) {
 		t.Fatalf("output not valid JSON: %v\n%s", err, out)
 	}
 
-	for _, key := range []string{`"failed_jobs": []`, `"other_checks": []`, `"running_jobs": []`} {
+	for _, key := range []string{`"failed_jobs": []`, `"cancelled_jobs": []`, `"other_checks": []`, `"running_jobs": []`} {
 		if !strings.Contains(out, key) {
 			t.Errorf("empty list should serialize as [] not null; missing %q in:\n%s", key, out)
 		}

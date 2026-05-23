@@ -37,12 +37,12 @@ as items land.
 
 | Item | Status | Notes |
 | --- | --- | --- |
-| `--json` | **New** | `render` is text-only; `model` already has `json` tags. |
+| `--json` | **Done (#20)** | `internal/jsonout` emits a versioned `Document`; wired through live + `--offline`. |
 | Exit codes | **Already done** | `Run` returns 0/1/2; `exitFor` keys off `HasFailures()`. Documented in README and the plugin SKILL.md. |
 | `--version` | **Already done** | Added in #13 (`cli.go` defines it). Both `-version` and `--version` work; the agent hit a stale binary. |
-| Multi-job summary | **New** | No upfront count today. |
-| Cancelled legs | **Real gap** | `model.IsFailureConclusion` excludes `cancelled`, so cancelled jobs are silently dropped (neither failed, running, nor counted). |
-| In-progress banner | **Partial** | Running jobs are tracked and listed at the bottom; no top banner; `IsTerminal()` exists. |
+| Multi-job summary | **Done** | `render.writeSummary` prints an upfront `N failed, M cancelled, …` line; `jsonout.Summary` carries the counts. |
+| Cancelled legs | **Done** | `model.IsCancelledConclusion` + a `CancelledJobs` bucket; surfaced in text/JSON, never drilled. Stays exit `0` on its own (cancellation is often deliberate). |
+| In-progress banner | **Done** | `writeSummary` prints a top `⚠ N still running — failures shown may be incomplete` banner when failures coexist with running jobs. |
 | `--watch` | **New** | No polling loop. |
 | GNU double-dash | **Already works** | Go's `flag` accepts one or two dashes for every flag. No aliases needed. |
 | Target job/run | **New** | Pipeline is PR-anchored (`Resolve` → `GetPR`/`FindOpenPR` → `ListJobs(headSHA)`); `gh.Client` has no single-job fetch. |
@@ -68,7 +68,7 @@ write the first form. Fixed with an arg-permutation pre-pass (below).
 
 ## Roadmap (separate PRs unless noted)
 
-1. **`--json` + arg permutation** *(this PR)*
+1. **`--json` + arg permutation** — **DONE (#20).**
    - New `internal/jsonout`: versioned `Document` DTO + `Encode(w, *model.Report)`.
    - Schema: `schema_version`, `pr`, `summary{failed,running,other_failed}`,
      `failed_jobs[]{id,run_id,name,conclusion,workflow_name,workflow_path,
@@ -79,16 +79,24 @@ write the first form. Fixed with an arg-permutation pre-pass (below).
    - `permuteArgs` reorders flags ahead of positionals before `flag.Parse`.
    - Ship `excerpt` as a single string first; add `error_blocks[]` (split on
      the omission markers) only if agents ask.
-2. **Cancelled + summary.** Track cancelled jobs in a non-drilled bucket; print
-   an upfront `N failed, M cancelled` line. Decide whether cancelled-only exits
-   `1` or stays `0`.
+2. **Cancelled + summary.** — **DONE.**
+   - `model.CancelledJob` + `Report.CancelledJobs`; `gh.ListJobs` now returns a
+     non-drilled cancelled bucket via `model.IsCancelledConclusion`.
+   - `render.writeSummary` prints an upfront `N failed, M cancelled, …` line; a
+     cancelled-only run is no longer mislabelled "all checks passing".
+   - JSON gains `summary.cancelled` and a `cancelled_jobs[]` array (additive;
+     `schema_version` unchanged).
+   - **Decision:** cancelled-only stays exit `0` (cancellation is often
+     deliberate); only `HasFailures()` drives exit `1`.
 3. **Target job/run.** `--job <url>` / `--run <id>`; a job-URL parser; new
    `gh.GetJob`/`ListRunJobs`; a PR-bypass branch in `run()`; a no-PR render
    header. Bypass the PR-keyed cache initially.
-4. **In-progress banner.** Top-of-output warning when failures coexist with
-   running jobs. `--watch` deferred to a follow-up.
-5. **README "first move" wording.** Frame `shuck <pr>` as the first move on a CI
-   failure; note the binary may already be on PATH.
+4. **In-progress banner.** — **DONE.** `writeSummary` prints a top-of-output
+   `⚠ N still running — failures shown may be incomplete` banner when failures
+   coexist with running jobs. `--watch` still deferred to a follow-up.
+5. **README "first move" wording.** — **DONE.** README frames `shuck <pr>` as
+   the first move on a CI failure and notes the plugin may already put the
+   binary on `PATH`.
 
 ### No code needed
 

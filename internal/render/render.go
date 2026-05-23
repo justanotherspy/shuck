@@ -15,7 +15,9 @@ func Report(w io.Writer, r *model.Report) {
 	fmt.Fprintf(w, "%s/%s PR #%d — %s   (commit %s)\n",
 		r.PR.Owner, r.PR.Repo, r.PR.Number, r.PR.Title, shortSHA(r.PR.HeadSHA))
 
-	if !r.HasFailures() {
+	writeSummary(w, r)
+
+	if !r.HasFailures() && len(r.CancelledJobs) == 0 {
 		if r.IsTerminal() {
 			fmt.Fprintf(w, "\n✓ all checks passing for PR #%d\n", r.PR.Number)
 		} else {
@@ -29,7 +31,33 @@ func Report(w io.Writer, r *model.Report) {
 		writeJob(w, job)
 	}
 	writeOther(w, r.OtherChecks)
+	writeCancelled(w, r.CancelledJobs)
 	writeRunning(w, r.RunningJobs)
+}
+
+// writeSummary prints an upfront count of what was found and, when failures
+// coexist with still-running jobs, a banner that the view may be incomplete.
+func writeSummary(w io.Writer, r *model.Report) {
+	var parts []string
+	if n := len(r.FailedJobs); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d failed", n))
+	}
+	if n := len(r.CancelledJobs); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d cancelled", n))
+	}
+	if n := len(r.OtherChecks); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d other failed", n))
+	}
+	if n := len(r.RunningJobs); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d running", n))
+	}
+	if len(parts) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "\nSummary: %s\n", strings.Join(parts, ", "))
+	if r.HasFailures() && len(r.RunningJobs) > 0 {
+		fmt.Fprintf(w, "⚠ %d still running — failures shown may be incomplete\n", len(r.RunningJobs))
+	}
 }
 
 func writeJob(w io.Writer, job model.JobResult) {
@@ -65,6 +93,20 @@ func writeOther(w io.Writer, checks []model.OtherCheck) {
 			fmt.Fprintf(w, "  ✗ %s (%s) — %s\n", c.Name, c.Conclusion, c.URL)
 		} else {
 			fmt.Fprintf(w, "  ✗ %s (%s)\n", c.Name, c.Conclusion)
+		}
+	}
+}
+
+func writeCancelled(w io.Writer, jobs []model.CancelledJob) {
+	if len(jobs) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "\nCancelled (no logs drilled):")
+	for _, j := range jobs {
+		if j.WorkflowName != "" {
+			fmt.Fprintf(w, "  ⊘ %s (%s)\n", j.Name, j.WorkflowName)
+		} else {
+			fmt.Fprintf(w, "  ⊘ %s\n", j.Name)
 		}
 	}
 }

@@ -8,6 +8,11 @@ the one error that matters, `shuck` drills GitHub Actions failures down to the
 failing **steps** and prints just their error logs. It's built for devs and
 agents who want the signal without the fluff.
 
+**When CI goes red on a PR, `shuck <pr>` is the first move.** One command takes
+you from "a check failed" to the precise error lines — no tab-hopping, no log
+scrolling. If you use the [Claude Code plugin](#claude-code-plugin), the binary
+may already be on your `PATH`.
+
 ## What it does
 
 Given a PR, `shuck`:
@@ -18,7 +23,8 @@ Given a PR, `shuck`:
 4. Downloads only those jobs' logs and extracts the relevant error lines.
 5. Lists non-Actions failures (external checks / commit statuses) by name — no
    logs are available for those.
-6. Reports any checks still running.
+6. Surfaces cancelled jobs and any checks still running, with an upfront
+   `N failed, M cancelled, …` summary so nothing is silently dropped.
 
 A local cache under `~/.shuck` makes repeat runs cheap: it avoids re-downloading
 logs for job attempts it has already inspected on the same commit.
@@ -87,6 +93,9 @@ before or after the target (`shuck owner/repo 42 --json` works), and accept one
 or two dashes (`-json` and `--json` are equivalent).
 
 Exit codes: `0` no failing checks · `1` failing checks reported · `2` error.
+Cancelled jobs are reported in the summary but do **not** by themselves set a
+non-zero exit code — cancellation is often deliberate (a superseded run, a
+manual stop), so it stays `0` unless a real failure is also present.
 
 ### JSON output
 
@@ -99,7 +108,7 @@ unchanged, so `--json` still composes in pipelines.
   "schema_version": 1,
   "pr": { "owner": "…", "repo": "…", "number": 42, "title": "…",
           "head_sha": "…", "head_branch": "…" },
-  "summary": { "failed": 1, "running": 0, "other_failed": 0 },
+  "summary": { "failed": 1, "cancelled": 0, "running": 0, "other_failed": 0 },
   "failed_jobs": [
     {
       "id": 7, "run_id": 9, "name": "build", "conclusion": "failure",
@@ -110,6 +119,7 @@ unchanged, so `--json` still composes in pipelines.
       ]
     }
   ],
+  "cancelled_jobs": [],
   "other_checks": [],
   "running_jobs": []
 }
@@ -132,6 +142,8 @@ For each failed step:
 
 ```
 justanotherspy/shuck PR #42 — fix flaky parser   (commit a1b2c3d)
+
+Summary: 1 failed
 
 Workflow: CI (.github/workflows/ci.yml)
 Job: build  [failure]

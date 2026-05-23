@@ -152,7 +152,7 @@ func run(ctx context.Context, args []string, o options, stdout io.Writer) (int, 
 		}
 	}
 
-	failed, running, err := client.ListJobs(ctx, tgt.Owner, tgt.Repo, pr.HeadSHA)
+	failed, cancelled, running, err := client.ListJobs(ctx, tgt.Owner, tgt.Repo, pr.HeadSHA)
 	if err != nil {
 		return 0, err
 	}
@@ -178,11 +178,12 @@ func run(ctx context.Context, args []string, o options, stdout io.Writer) (int, 
 	}
 
 	report := &model.Report{
-		PR:          pr,
-		FailedJobs:  failed,
-		RunningJobs: running,
-		OtherChecks: other,
-		CheckedAt:   time.Now(),
+		PR:            pr,
+		FailedJobs:    failed,
+		CancelledJobs: cancelled,
+		RunningJobs:   running,
+		OtherChecks:   other,
+		CheckedAt:     time.Now(),
 	}
 
 	if !o.noCache {
