@@ -81,6 +81,7 @@ shuck <job-url>             # inspect a single GitHub Actions job
 shuck <pr>                  # owner/repo inferred from the local repo's origin
 shuck                       # inspect the open PR for the current branch
 shuck --watch [target]      # poll until every check finishes, then print the report
+shuck action <owner>/<action>[@<version>]  # resolve an Action to its latest tag + SHA for pinning
 shuck setup                 # install the shuck skill + CLAUDE.md note for Claude Code
 shuck version [--check]     # print the installed version; --check looks for an update
 shuck upgrade               # download and install the latest release in place
@@ -203,6 +204,50 @@ carries the head context instead:
 
 `schema_version` is bumped only on a breaking change; new fields (like `run`)
 are added without a bump. Lists are always present (`[]`, never `null`).
+
+### Pinning GitHub Actions to a SHA
+
+`shuck action <owner>/<action>` resolves an Action to the latest release tag and
+the immutable commit SHA it points to, so you can pin a workflow `uses:` line to
+a SHA (what GitHub and Dependabot recommend) without hunting through the
+Releases page:
+
+```sh
+shuck action actions/checkout            # latest stable release
+shuck action actions/checkout@v4         # latest v4.x.x
+shuck action actions/checkout@4.2        # latest 4.2.x
+shuck action actions/checkout 4.2        # version as a separate argument
+shuck action github/codeql-action/init   # a subpath action resolves its repo's tags
+```
+
+It prints the resolved tag, the SHA, and a ready-to-paste pin line:
+
+```
+actions/checkout
+  tag: v4.2.2
+  sha: 08c6903cd8c0fde910a37f88322edcfb5dd907a8
+  pin: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v4.2.2
+```
+
+Drop the `pin:` value straight after `uses:` in your workflow. The latest
+**stable** release wins; a prerelease (e.g. `-rc1`) is chosen only when nothing
+stable matches. Add `--json` for a machine-readable document:
+
+```jsonc
+{
+  "schema_version": 1,
+  "action": "actions/checkout", "owner": "actions", "repo": "checkout",
+  "requested": "v4", "tag": "v4.2.2",
+  "sha": "08c6903cd8c0fde910a37f88322edcfb5dd907a8",
+  "ref": "actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8",
+  "pin": "actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v4.2.2"
+}
+```
+
+Resolved tags are cached under `~/.shuck/actions/<owner>/<repo>` for a day to
+avoid re-listing; `--refresh` re-fetches immediately. Authentication is optional
+for public repos — set `GITHUB_TOKEN`/`GH_TOKEN` (or `--token`) to lift the
+unauthenticated rate limit.
 
 ### How log extraction works
 
