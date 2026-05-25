@@ -81,6 +81,7 @@ shuck <job-url>             # inspect a single GitHub Actions job
 shuck <pr>                  # owner/repo inferred from the local repo's origin
 shuck                       # inspect the open PR for the current branch
 shuck --watch [target]      # poll until every check finishes, then print the report
+shuck setup                 # install the shuck skill + CLAUDE.md note for Claude Code
 shuck version [--check]     # print the installed version; --check looks for an update
 shuck upgrade               # download and install the latest release in place
 ```
@@ -296,6 +297,29 @@ from within Claude Code:
 /plugin marketplace add justanotherspy/shuck
 /plugin install shuck@shuck-marketplace
 ```
+
+### Without the marketplace: `shuck setup`
+
+Prefer not to use the plugin marketplace? `shuck setup` wires the same skill in
+at the user level:
+
+```sh
+shuck setup
+```
+
+It:
+
+- installs the `shuck` skill into `~/.claude/skills/shuck/SKILL.md` (the same
+  skill the plugin ships, embedded in the binary);
+- adds a short, managed note to your `~/.claude/CLAUDE.md` saying you can reach
+  shuck through either the skill (CLI) or the MCP; and
+- offers to register the local MCP server at user scope — in an interactive
+  terminal it prompts; otherwise pass `--mcp` to install it (via
+  `claude mcp add --scope user shuck -- shuck mcp`) or `--no-mcp` to skip.
+
+Re-running is safe: the skill and the CLAUDE.md block are refreshed in place, not
+duplicated. Writes go under `$CLAUDE_CONFIG_DIR` (default `~/.claude`); use
+`--dry-run` to preview. As with the plugin, install the `shuck` binary first.
 
 ## Development
 
