@@ -51,9 +51,10 @@ var (
 )
 
 type options struct {
-	mcp    bool
-	noMCP  bool
-	dryRun bool
+	mcp          bool
+	noMCP        bool
+	dryRun       bool
+	refreshSkill bool
 }
 
 // Run executes `shuck setup`. skill is the embedded SKILL.md content; stdin is
@@ -76,6 +77,17 @@ func Run(args []string, skill string, stdin io.Reader, stdout, stderr io.Writer)
 	if err != nil {
 		fmt.Fprintln(stderr, "shuck:", err)
 		return 2
+	}
+
+	// --refresh-skill is the skill-only path `shuck upgrade` invokes on the
+	// freshly-installed binary: refresh just the skill (from this binary's own
+	// embedded copy) and touch nothing else — no CLAUDE.md, no MCP, no prompt.
+	if o.refreshSkill {
+		if err := refreshInstalledSkill(dir, skill, o.dryRun, stdout); err != nil {
+			fmt.Fprintln(stderr, "shuck:", err)
+			return 2
+		}
+		return 0
 	}
 
 	if err := installSkill(dir, skill, o.dryRun, stdout); err != nil {
@@ -106,6 +118,7 @@ func parse(args []string, stderr io.Writer) (options, error) {
 	fs.BoolVar(&o.mcp, "mcp", false, "register the shuck MCP server at user scope without prompting")
 	fs.BoolVar(&o.noMCP, "no-mcp", false, "skip the MCP server step without prompting")
 	fs.BoolVar(&o.dryRun, "dry-run", false, "report what would change without writing anything")
+	fs.BoolVar(&o.refreshSkill, "refresh-skill", false, "refresh only the already-installed skill (used by `shuck upgrade`); makes no other changes")
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
 	}
@@ -157,6 +170,34 @@ func installSkill(dir, skill string, dryRun bool, stdout io.Writer) error {
 		return fmt.Errorf("write skill: %w", err)
 	}
 	fmt.Fprintf(stdout, "%s skill: %s\n", verb, path)
+	return nil
+}
+
+// refreshInstalledSkill rewrites the installed skill to match skill, but only
+// when it already exists. It backs `shuck setup --refresh-skill`, which
+// `shuck upgrade` runs on the new binary so the on-disk skill tracks the binary.
+// A user who never ran `shuck setup` has no skill to refresh, so this is a quiet
+// no-op for them rather than creating config files behind their back.
+func refreshInstalledSkill(dir, skill string, dryRun bool, stdout io.Writer) error {
+	path := filepath.Join(dir, "skills", "shuck", "SKILL.md")
+	existing, err := os.ReadFile(path)
+	switch {
+	case os.IsNotExist(err):
+		return nil
+	case err != nil:
+		return fmt.Errorf("read installed skill: %w", err)
+	case string(existing) == skill:
+		fmt.Fprintf(stdout, "installed skill already up to date: %s\n", path)
+		return nil
+	}
+	if dryRun {
+		fmt.Fprintf(stdout, "[dry-run] would refresh installed skill: %s\n", path)
+		return nil
+	}
+	if err := os.WriteFile(path, []byte(skill), 0o644); err != nil {
+		return fmt.Errorf("write skill: %w", err)
+	}
+	fmt.Fprintf(stdout, "refreshed installed skill: %s\n", path)
 	return nil
 }
 

@@ -255,6 +255,64 @@ func TestRunRejectsPositionalArg(t *testing.T) {
 	}
 }
 
+func TestRefreshSkillNoopWhenNotInstalled(t *testing.T) {
+	dir := useConfigDir(t)
+	var out, errOut strings.Builder
+	if code := Run([]string{"--refresh-skill"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", code, errOut.String())
+	}
+	// A user who never ran setup has no skill: refresh must not create one,
+	// nor touch CLAUDE.md.
+	if _, err := os.Stat(filepath.Join(dir, "skills", "shuck", "SKILL.md")); !os.IsNotExist(err) {
+		t.Errorf("refresh-skill created the skill file (err=%v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "CLAUDE.md")); !os.IsNotExist(err) {
+		t.Errorf("refresh-skill created CLAUDE.md (err=%v)", err)
+	}
+	if out.String() != "" {
+		t.Errorf("expected no output for a no-op refresh, got %q", out.String())
+	}
+}
+
+func TestRefreshSkillUpdatesStaleAndLeavesRest(t *testing.T) {
+	dir := useConfigDir(t)
+	skillPath := filepath.Join(dir, "skills", "shuck", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skillPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skillPath, []byte("OLD SKILL\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errOut strings.Builder
+	if code := Run([]string{"--refresh-skill"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", code, errOut.String())
+	}
+	got, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != fakeSkill {
+		t.Errorf("skill not refreshed: got %q, want %q", got, fakeSkill)
+	}
+	if !strings.Contains(out.String(), "refreshed installed skill") {
+		t.Errorf("expected refresh note, got %q", out.String())
+	}
+	// MCP must not be touched by the skill-only path.
+	if _, err := os.Stat(filepath.Join(dir, "CLAUDE.md")); !os.IsNotExist(err) {
+		t.Errorf("refresh-skill wrote CLAUDE.md (err=%v)", err)
+	}
+
+	// Re-running is a no-op that reports up to date.
+	out.Reset()
+	if code := Run([]string{"--refresh-skill"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "already up to date") {
+		t.Errorf("expected up-to-date note on second run, got %q", out.String())
+	}
+}
+
 // stubClaude points lookPath at a fake claude and makes runCommand return out/err.
 func stubClaude(t *testing.T, out []byte, err error) {
 	t.Helper()

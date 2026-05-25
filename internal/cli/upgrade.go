@@ -6,10 +6,19 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os/exec"
 	"runtime"
+	"strings"
 
 	"github.com/justanotherspy/shuck/internal/release"
 )
+
+// refreshSkillCmd runs the just-installed binary to refresh the user's installed
+// skill from its own (new) embedded copy. It is indirected so tests can stub the
+// exec without spawning a process.
+var refreshSkillCmd = func(exe string) ([]byte, error) {
+	return exec.Command(exe, "setup", "--refresh-skill").CombinedOutput()
+}
 
 // runUpgrade implements `shuck upgrade`: it always queries GitHub for the latest
 // release (never the cache) and replaces the running binary in place, keeping it
@@ -71,5 +80,26 @@ func runUpgrade(args []string, stdout, stderr io.Writer) int {
 	}
 	saveVersionCheck(latest)
 	fmt.Fprintf(stdout, "upgraded shuck %s -> %s (%s)\n", cur, latest, exe)
+	refreshInstalledSkill(exe, stdout, stderr)
 	return 0
+}
+
+// refreshInstalledSkill asks the just-upgraded binary to bring the skill
+// installed by `shuck setup` up to date with the new version. The new skill text
+// lives inside the new binary, not this running process, so we exec it. It is
+// best-effort and a no-op when the skill was never installed: a failure is
+// reported but never fails the upgrade, whose real work (the binary) is done.
+func refreshInstalledSkill(exe string, stdout, stderr io.Writer) {
+	out, err := refreshSkillCmd(exe)
+	trimmed := strings.TrimRight(string(out), "\n")
+	if err != nil {
+		fmt.Fprintf(stderr, "shuck: warning: could not refresh the installed skill: %v\n", err)
+		if trimmed != "" {
+			fmt.Fprintln(stderr, trimmed)
+		}
+		return
+	}
+	if trimmed != "" {
+		fmt.Fprintln(stdout, trimmed)
+	}
 }
