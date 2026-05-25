@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -66,6 +67,45 @@ func TestUpgradeAlreadyUpToDate(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "already up to date") {
 		t.Errorf("expected already-up-to-date, got %q", stdout.String())
+	}
+}
+
+func TestRefreshInstalledSkillSuccess(t *testing.T) {
+	var gotExe string
+	orig := refreshSkillCmd
+	refreshSkillCmd = func(exe string) ([]byte, error) {
+		gotExe = exe
+		return []byte("refreshed installed skill: /home/u/.claude/skills/shuck/SKILL.md\n"), nil
+	}
+	t.Cleanup(func() { refreshSkillCmd = orig })
+
+	var stdout, stderr strings.Builder
+	refreshInstalledSkill("/usr/local/bin/shuck", &stdout, &stderr)
+
+	if gotExe != "/usr/local/bin/shuck" {
+		t.Errorf("exec'd %q, want the upgraded binary path", gotExe)
+	}
+	if !strings.Contains(stdout.String(), "refreshed installed skill") {
+		t.Errorf("expected the refresh note on stdout, got %q", stdout.String())
+	}
+	if stderr.String() != "" {
+		t.Errorf("unexpected stderr: %q", stderr.String())
+	}
+}
+
+func TestRefreshInstalledSkillFailureIsNonFatal(t *testing.T) {
+	orig := refreshSkillCmd
+	refreshSkillCmd = func(string) ([]byte, error) {
+		return []byte("boom"), errors.New("exit status 1")
+	}
+	t.Cleanup(func() { refreshSkillCmd = orig })
+
+	var stdout, stderr strings.Builder
+	// Must not panic or otherwise propagate; the upgrade already succeeded.
+	refreshInstalledSkill("/usr/local/bin/shuck", &stdout, &stderr)
+
+	if !strings.Contains(stderr.String(), "could not refresh the installed skill") {
+		t.Errorf("expected a warning on stderr, got %q", stderr.String())
 	}
 }
 
