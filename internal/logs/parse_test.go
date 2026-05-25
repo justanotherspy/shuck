@@ -88,7 +88,9 @@ func TestFullCommand(t *testing.T) {
 		`2024-05-01T10:00:02.0000000Z ##[group]Run actions/checkout@v4`,
 		`2024-05-01T10:00:02.0000001Z with:`,
 		`2024-05-01T10:00:02.0000002Z   repository: owner/repo`,
-		`2024-05-01T10:00:02.0000003Z ##[endgroup]`,
+		`2024-05-01T10:00:02.0000003Z env:`,
+		`2024-05-01T10:00:02.0000004Z   TOKEN: ***`,
+		`2024-05-01T10:00:02.0000005Z ##[endgroup]`,
 		`2024-05-01T10:00:03.0000000Z ##[group]Run actions/upload-artifact@v4`,
 		`2024-05-01T10:00:03.0000001Z ##[endgroup]`,
 		"",
@@ -107,11 +109,12 @@ func TestFullCommand(t *testing.T) {
 		t.Errorf("FullCommand() = %q, want %q", got, wantFull)
 	}
 
-	// An action's Pre holds with:/inputs, not a script, so FullCommand falls
-	// back to the single-line ref from the header.
-	if got := secs[1].FullCommand(); got != "actions/checkout@v4" {
-		t.Errorf("action-with-inputs FullCommand() = %q", got)
+	// An action shows its ref plus the echoed with:/env: it was called with.
+	wantAction := "actions/checkout@v4\nwith:\n  repository: owner/repo\nenv:\n  TOKEN: ***"
+	if got := secs[1].FullCommand(); got != wantAction {
+		t.Errorf("action FullCommand() = %q, want %q", got, wantAction)
 	}
+	// An action with no echoed inputs falls back to the bare ref.
 	if got := secs[2].FullCommand(); got != "actions/upload-artifact@v4" {
 		t.Errorf("action-no-inputs FullCommand() = %q", got)
 	}

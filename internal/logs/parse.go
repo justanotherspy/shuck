@@ -19,8 +19,8 @@ var tsPrefix = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)
 var actionRef = regexp.MustCompile(`^[\w.-]+/[\w./-]+@\S+$`)
 
 // stepMetaKey matches the step-config keys GitHub echoes right after a run
-// step's command (and as an action's inputs): "shell:", "env:", "with:". They
-// mark the end of the echoed script, so FullCommand stops at the first one.
+// step's command: "shell:", "env:", "with:". They mark the end of the echoed
+// shell script, so FullCommand stops at the first one for a run step.
 var stepMetaKey = regexp.MustCompile(`^(?:shell|env|with):`)
 
 // Section is one step's region of a job log: from one ##[group] marker up to the
@@ -42,10 +42,17 @@ func (s Section) Command() string {
 
 // FullCommand returns the step's complete command. For a shell run GitHub echoes
 // the whole (possibly multi-line) script in Pre, ahead of the shell:/env:
-// metadata; FullCommand rejoins those echoed lines. For an action — whose Pre
-// holds with:/env: inputs rather than a script — or when nothing was echoed, it
-// falls back to the single-line Command from the group header.
+// metadata; FullCommand rejoins those echoed lines. For an action it returns the
+// owner/action@ref header line followed by the inputs GitHub echoed into Pre —
+// the with: block and any env: — so the call's arguments are visible too.
+// (Secrets are already masked as *** in the logs.)
 func (s Section) FullCommand() string {
+	if s.Kind() == model.KindAction {
+		if len(s.Pre) == 0 {
+			return s.Command()
+		}
+		return s.Command() + "\n" + strings.Join(s.Pre, "\n")
+	}
 	var script []string
 	for _, l := range s.Pre {
 		if stepMetaKey.MatchString(l) {

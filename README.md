@@ -214,6 +214,12 @@ For each failed step:
 - **Long logs with no match** are tailed to the last `--tail` lines (the
   "error only at the very end" case).
 
+Each failed step also shows the command it ran: the full (multi-line) shell
+script for a `run:` step, or the `owner/action@ref` plus the echoed `with:`
+inputs and `env:` for an action step. Commands longer than `--max-command-lines`
+(default 30) are truncated with a `… (N more lines) …` marker; pass
+`--max-command-lines 0` for no limit.
+
 ### Example output
 
 ```

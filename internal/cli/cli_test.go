@@ -97,6 +97,31 @@ func TestBuildFailedStepsFullCommand(t *testing.T) {
 	}
 }
 
+// actionLog is a job whose failing step invoked an action, so GitHub echoed the
+// step's with:/env: inputs into the group before the error.
+const actionLog = `2024-05-01T10:00:00.0000000Z ##[group]Run actions/github-script@v7
+2024-05-01T10:00:00.0000001Z with:
+2024-05-01T10:00:00.0000002Z   script: throw new Error("boom")
+2024-05-01T10:00:00.0000003Z   github-token: ***
+2024-05-01T10:00:00.0000004Z env:
+2024-05-01T10:00:00.0000005Z   NODE_ENV: test
+2024-05-01T10:00:00.0000006Z ##[endgroup]
+2024-05-01T10:00:01.0000000Z ##[error]Error: boom
+`
+
+func TestBuildFailedStepsActionInputs(t *testing.T) {
+	a := &app{opts: logs.DefaultOptions(), maxCommandLines: 0}
+	job := model.JobResult{Steps: []model.StepOverview{{Number: 1, Name: "Run script action", Conclusion: "failure"}}}
+	fs := a.buildFailedSteps(job, actionLog)
+	if len(fs) != 1 || fs[0].Kind != model.KindAction {
+		t.Fatalf("kind = %q, want action", fs[0].Kind)
+	}
+	want := "actions/github-script@v7\nwith:\n  script: throw new Error(\"boom\")\n  github-token: ***\nenv:\n  NODE_ENV: test"
+	if fs[0].Command != want {
+		t.Errorf("action command = %q, want %q", fs[0].Command, want)
+	}
+}
+
 func TestResolveToken(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
