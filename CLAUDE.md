@@ -31,9 +31,10 @@ render → update cache.
 
 | Package | Responsibility |
 | --- | --- |
-| `main.go` | Thin entry; calls `cli.Run` and sets the exit code. |
+| `main.go` | Thin entry; dispatches the `mcp` and `setup` subcommands, else calls `cli.Run`. Holds the `go:embed` of the plugin's `SKILL.md` that `setup` installs. |
 | `internal/cli` | Flag parsing + pipeline orchestration; the `app.drill` / `app.buildFailedSteps` logic that pairs failed API steps with error log sections. Also the `version` / `upgrade` subcommands. |
 | `internal/release` | Self-update: resolve the latest GitHub release, download + checksum-verify the matching archive, and replace the running binary in place. Backs `shuck version --check` / `shuck upgrade`. |
+| `internal/setup` | `shuck setup`: install the embedded skill into `~/.claude/skills/shuck`, add a managed note to the user's `CLAUDE.md`, and optionally register the MCP at user scope (`claude mcp add`). The skill is `go:embed`-ed from the plugin in `main.go`, so the standalone install and the marketplace stay in sync. |
 | `internal/target` | Resolve owner/repo/PR from args or the local repo (via go-git). |
 | `internal/gh` | go-github wrappers: PR head, Actions runs/jobs, job-log download, non-Actions checks. |
 | `internal/cache` | `~/.shuck/cache/<owner>/<repo>/<pr>/cache.json` load/save + inspected-job indexing. |

@@ -54,6 +54,7 @@ Usage:
   shuck                       inspect the open PR for the current branch
   shuck --watch [target]      poll until every check finishes, then print the report
   shuck mcp                   run as a local MCP (stdio) server exposing shuck tools
+  shuck setup                 install the shuck skill + CLAUDE.md note for Claude Code (and, optionally, the MCP)
   shuck version [--check]     print the installed version; --check looks for a newer release
   shuck upgrade               download and install the latest release in place
 

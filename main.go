@@ -4,21 +4,35 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"os"
 
 	"github.com/justanotherspy/shuck/internal/cli"
 	"github.com/justanotherspy/shuck/internal/mcp"
+	"github.com/justanotherspy/shuck/internal/setup"
 )
+
+// shuckSkill is the canonical SKILL.md, embedded so `shuck setup` can install it
+// into the user's Claude config without the plugin marketplace. It is the same
+// file the plugin ships, so the two stay in sync.
+//
+//go:embed plugins/shuck/skills/shuck/SKILL.md
+var shuckSkill string
 
 func main() {
 	args := os.Args[1:]
-	if len(args) > 0 && args[0] == "mcp" {
-		if err := mcp.Serve(context.Background(), args[1:]); err != nil {
-			fmt.Fprintln(os.Stderr, "shuck:", err)
-			os.Exit(2)
+	if len(args) > 0 {
+		switch args[0] {
+		case "mcp":
+			if err := mcp.Serve(context.Background(), args[1:]); err != nil {
+				fmt.Fprintln(os.Stderr, "shuck:", err)
+				os.Exit(2)
+			}
+			return
+		case "setup":
+			os.Exit(setup.Run(args[1:], shuckSkill, os.Stdin, os.Stdout, os.Stderr))
 		}
-		return
 	}
 	os.Exit(cli.Run(args, os.Stdout, os.Stderr))
 }

@@ -6,6 +6,7 @@ require (
 	github.com/go-git/go-git/v5 v5.19.1
 	github.com/google/go-github/v68 v68.0.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1
+	golang.org/x/term v0.42.0
 )
 
 require (
