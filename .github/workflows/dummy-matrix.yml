@@ -1,0 +1,28 @@
+# Scenario: a MATRIX where some legs pass and others fail in different ways.
+# fail-fast: false so every leg runs. alpha passes; beta and gamma fail with
+# distinct exit codes and error tokens. This produces several failed jobs that
+# share a workflow/name but differ by matrix value.
+name: Dummy Matrix Fail
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  matrix-fail:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [alpha, beta, gamma]
+    steps:
+      - name: Run scenario ${{ matrix.scenario }}
+        run: |
+          echo "running scenario ${{ matrix.scenario }}"
+          case "${{ matrix.scenario }}" in
+            alpha) echo "alpha passes cleanly" ;;
+            beta)  echo "ERROR: beta scenario failed" >&2; exit 4 ;;
+            gamma) echo "exception: gamma scenario failed" >&2; exit 5 ;;
+          esac
