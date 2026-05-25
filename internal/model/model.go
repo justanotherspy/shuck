@@ -7,12 +7,56 @@ import "time"
 
 // PR identifies a pull request and its head commit.
 type PR struct {
-	Owner      string `json:"owner"`
-	Repo       string `json:"repo"`
-	Number     int    `json:"number"`
-	Title      string `json:"title"`
-	HeadSHA    string `json:"head_sha"`
-	HeadBranch string `json:"head_branch"`
+	Owner      string    `json:"owner"`
+	Repo       string    `json:"repo"`
+	Number     int       `json:"number"`
+	Title      string    `json:"title"`
+	HeadSHA    string    `json:"head_sha"`
+	HeadBranch string    `json:"head_branch"`
+	UpdatedAt  time.Time `json:"updated_at"` // PR's last-updated time; feeds the cheap reviews-changed check
+}
+
+// AuthorType classifies who wrote a review or comment, so the output can flag
+// non-human reviewers.
+type AuthorType string
+
+// Author classifications.
+const (
+	AuthorHuman AuthorType = "human"
+	AuthorBot   AuthorType = "bot"
+	AuthorAI    AuthorType = "ai"
+)
+
+// Review is a submitted PR review: its author, verdict, top-level body, and the
+// inline comment threads that originated in it.
+type Review struct {
+	Author      string         `json:"author"`
+	AuthorType  AuthorType     `json:"author_type"`
+	State       string         `json:"state"` // approved|changes_requested|commented|dismissed
+	Body        string         `json:"body,omitempty"`
+	SubmittedAt time.Time      `json:"submitted_at"`
+	Threads     []ReviewThread `json:"threads,omitempty"`
+}
+
+// ReviewThread is a conversation anchored to a code location. Resolved or
+// outdated threads are collapsed: we report only why, not their contents.
+type ReviewThread struct {
+	Path           string          `json:"path"`
+	Line           int             `json:"line"`
+	Resolved       bool            `json:"resolved"`
+	Outdated       bool            `json:"outdated"`
+	Collapsed      bool            `json:"collapsed"` // resolved || outdated
+	CollapseReason string          `json:"collapse_reason,omitempty"`
+	TotalComments  int             `json:"total_comments"`
+	HiddenComments int             `json:"hidden_comments,omitempty"` // comments hidden by the per-thread limit
+	Comments       []ReviewComment `json:"comments,omitempty"`        // empty when collapsed
+}
+
+// ReviewComment is a single comment within a thread.
+type ReviewComment struct {
+	Author     string     `json:"author"`
+	AuthorType AuthorType `json:"author_type"`
+	Body       string     `json:"body"`
 }
 
 // StepOverview is one entry in a job's authoritative ordered step list.
@@ -108,7 +152,14 @@ type Report struct {
 	CancelledJobs []CancelledJob `json:"cancelled_jobs"`
 	RunningJobs   []RunningJob   `json:"running_jobs"`
 	OtherChecks   []OtherCheck   `json:"other_checks"`
-	CheckedAt     time.Time      `json:"checked_at"`
+	Reviews       []Review       `json:"reviews,omitempty"`
+	// ReviewsFingerprint is a cheap signature of the PR's review state, persisted
+	// so a later run can skip the full review pull when nothing changed.
+	ReviewsFingerprint string `json:"reviews_fingerprint,omitempty"`
+	// ReviewsOnly is a presentation hint (not persisted): CI was not inspected,
+	// so render shows only the reviews and omits the CI verdict.
+	ReviewsOnly bool      `json:"-"`
+	CheckedAt   time.Time `json:"checked_at"`
 }
 
 // HasFailures reports whether any failing checks were found.

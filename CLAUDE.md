@@ -36,7 +36,7 @@ render → update cache.
 | `internal/release` | Self-update: resolve the latest GitHub release, download + checksum-verify the matching archive, and replace the running binary in place. Backs `shuck version --check` / `shuck upgrade`. |
 | `internal/setup` | `shuck setup`: install the embedded skill into `~/.claude/skills/shuck`, add a managed note to the user's `CLAUDE.md`, and optionally register the MCP at user scope (`claude mcp add`). The skill is `go:embed`-ed from the plugin in `main.go`, so the standalone install and the marketplace stay in sync. |
 | `internal/target` | Resolve owner/repo/PR from args or the local repo (via go-git). |
-| `internal/gh` | go-github wrappers: PR head, Actions runs/jobs, job-log download, non-Actions checks. |
+| `internal/gh` | go-github wrappers: PR head, Actions runs/jobs, job-log download, non-Actions checks. Also a small hand-rolled GraphQL client (`reviews.go`) for PR reviews + comment threads, since `isResolved`/`resolvedBy` are GraphQL-only. |
 | `internal/cache` | `~/.shuck/cache/<owner>/<repo>/<pr>/cache.json` load/save + inspected-job indexing. |
 | `internal/logs` | Parse a job log into `##[group]`-delimited sections; extract the high-signal error excerpt. |
 | `internal/render` | Format a `model.Report` to text. |
@@ -54,6 +54,11 @@ render → update cache.
   re-validated; only log downloads are skipped, keyed by `(job id, run attempt)`
   so replays and newly-finished jobs are re-inspected.
 - **Non-Actions checks** are listed only (no logs exist for them via the API).
+- **Reviews** (`gh.PRReviews`, rendered grouped by verdict) collapse resolved/
+  outdated threads to a one-line reason and cap active-thread comments at
+  `--review-comment-limit`. A cheap `gh.ReviewsFingerprint` short-circuits the
+  full review pull when nothing changed; `--ci-only`/`--reviews-only` focus the
+  output (and skip the cache write to avoid clobbering the other dimension).
 
 ## Conventions
 
