@@ -34,13 +34,16 @@ const inspectPRDesc = `Show the exact failing CI step logs for a GitHub pull req
 shuck resolves the PR, reads its checks via the GitHub API, drills the failed
 GitHub Actions jobs down to the failing steps, and returns each failed step's
 command plus the extracted error excerpt from its log. Non-Actions checks are
-listed by name (no logs exist for them). This is the first move when CI goes
-red on a PR.
+listed by name (no logs exist for them). It also summarizes the PR's reviews
+(approve / changes requested / commented) and their inline comment threads,
+collapsing resolved or outdated threads to just the reason. This is the first
+move when CI goes red on a PR.
 
 Target selection (most specific wins): pass url for a PR URL; or repo + pr for
 an explicit PR; or pr alone to use the repo of the local working directory; or
-nothing to inspect the open PR for the current branch. Requires a GitHub token
-in GITHUB_TOKEN or GH_TOKEN in the server's environment.`
+nothing to inspect the open PR for the current branch. Use ci_only or
+reviews_only to focus on one dimension. Requires a GitHub token in GITHUB_TOKEN
+or GH_TOKEN in the server's environment.`
 
 const inspectRunDesc = `Inspect a single GitHub Actions workflow run, or one job within it.
 
@@ -141,10 +144,11 @@ func (e extractInput) apply(o cli.InspectOptions) cli.InspectOptions {
 func defaultOptions() cli.InspectOptions {
 	d := logs.DefaultOptions()
 	return cli.InspectOptions{
-		Context:         d.Context,
-		ShortThreshold:  d.ShortThreshold,
-		Tail:            d.Tail,
-		MaxCommandLines: logs.DefaultMaxCommandLines,
+		Context:            d.Context,
+		ShortThreshold:     d.ShortThreshold,
+		Tail:               d.Tail,
+		MaxCommandLines:    logs.DefaultMaxCommandLines,
+		ReviewCommentLimit: 5,
 	}
 }
 
@@ -154,6 +158,10 @@ type inspectPRInput struct {
 	URL  string `json:"url,omitempty" jsonschema:"A GitHub pull request URL such as https://github.com/owner/repo/pull/42. Takes precedence over repo and pr."`
 
 	extractInput
+
+	ReviewCommentLimit *int `json:"review_comment_limit,omitempty" jsonschema:"Max comments shown per active review thread (default 5)."`
+	CIOnly             bool `json:"ci_only,omitempty" jsonschema:"Show only CI checks; skip PR reviews."`
+	ReviewsOnly        bool `json:"reviews_only,omitempty" jsonschema:"Show only PR reviews; skip CI checks."`
 
 	Refresh bool `json:"refresh,omitempty" jsonschema:"Ignore and rebuild the cache (use when CI was re-run and cached results look stale)."`
 	NoCache bool `json:"no_cache,omitempty" jsonschema:"Do not read or write the cache."`
@@ -171,6 +179,11 @@ func inspectPR(ctx context.Context, _ *mcp.CallToolRequest, in inspectPRInput) (
 	}
 
 	opts := in.apply(defaultOptions())
+	if in.ReviewCommentLimit != nil {
+		opts.ReviewCommentLimit = *in.ReviewCommentLimit
+	}
+	opts.CIOnly = in.CIOnly
+	opts.ReviewsOnly = in.ReviewsOnly
 	opts.Refresh = in.Refresh
 	opts.NoCache = in.NoCache
 	opts.Offline = in.Offline

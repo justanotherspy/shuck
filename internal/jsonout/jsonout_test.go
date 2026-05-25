@@ -40,7 +40,8 @@ func TestEncodeGolden(t *testing.T) {
     "failed": 1,
     "cancelled": 1,
     "running": 1,
-    "other_failed": 1
+    "other_failed": 1,
+    "reviews": 0
   },
   "failed_jobs": [
     {
@@ -81,7 +82,8 @@ func TestEncodeGolden(t *testing.T) {
       "status": "in_progress",
       "workflow_name": "CD"
     }
-  ]
+  ],
+  "reviews": []
 }`
 
 	var buf strings.Builder
@@ -132,6 +134,50 @@ func TestEncodeOmitsRunForPRTarget(t *testing.T) {
 	}
 }
 
+func TestEncodeReviews(t *testing.T) {
+	r := &model.Report{
+		PR: model.PR{Owner: "o", Repo: "r", Number: 1},
+		Reviews: []model.Review{{
+			Author: "claude[bot]", AuthorType: model.AuthorAI, State: "changes_requested", Body: "fix",
+			Threads: []model.ReviewThread{
+				{Path: "a.go", Line: 4, TotalComments: 2, HiddenComments: 0, Comments: []model.ReviewComment{
+					{Author: "claude[bot]", AuthorType: model.AuthorAI, Body: "nit"},
+				}},
+				{Path: "b.go", Line: 9, Resolved: true, Collapsed: true, CollapseReason: "resolved by bob"},
+			},
+		}},
+	}
+	var buf strings.Builder
+	if err := Encode(&buf, r); err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	out := buf.String()
+
+	var doc Document
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("output not valid JSON: %v\n%s", err, out)
+	}
+	if doc.Summary.Reviews != 1 {
+		t.Errorf("summary.reviews = %d, want 1", doc.Summary.Reviews)
+	}
+	if len(doc.Reviews) != 1 {
+		t.Fatalf("want 1 review, got %d", len(doc.Reviews))
+	}
+	rv := doc.Reviews[0]
+	if rv.AuthorType != "ai" || rv.State != "changes_requested" {
+		t.Errorf("review projection wrong: %+v", rv)
+	}
+	if len(rv.Threads) != 2 {
+		t.Fatalf("want 2 threads, got %d", len(rv.Threads))
+	}
+	if !rv.Threads[1].Collapsed || rv.Threads[1].CollapseReason != "resolved by bob" {
+		t.Errorf("collapsed thread projection wrong: %+v", rv.Threads[1])
+	}
+	if rv.Threads[1].Comments == nil {
+		t.Errorf("comments should serialize as [] not null for collapsed thread")
+	}
+}
+
 func TestEncodeEmptyListsAreNotNull(t *testing.T) {
 	var buf strings.Builder
 	if err := Encode(&buf, &model.Report{PR: model.PR{Owner: "o", Repo: "r", Number: 1}}); err != nil {
@@ -145,7 +191,7 @@ func TestEncodeEmptyListsAreNotNull(t *testing.T) {
 		t.Fatalf("output not valid JSON: %v\n%s", err, out)
 	}
 
-	for _, key := range []string{`"failed_jobs": []`, `"cancelled_jobs": []`, `"other_checks": []`, `"running_jobs": []`} {
+	for _, key := range []string{`"failed_jobs": []`, `"cancelled_jobs": []`, `"other_checks": []`, `"running_jobs": []`, `"reviews": []`} {
 		if !strings.Contains(out, key) {
 			t.Errorf("empty list should serialize as [] not null; missing %q in:\n%s", key, out)
 		}

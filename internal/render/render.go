@@ -14,6 +14,15 @@ import (
 func Report(w io.Writer, r *model.Report) {
 	writeHeader(w, r)
 
+	if r.ReviewsOnly {
+		if len(r.Reviews) == 0 {
+			fmt.Fprintln(w, "\n(no reviews)")
+			return
+		}
+		writeReviews(w, r.Reviews)
+		return
+	}
+
 	writeSummary(w, r)
 
 	if !r.HasFailures() && len(r.CancelledJobs) == 0 {
@@ -23,6 +32,7 @@ func Report(w io.Writer, r *model.Report) {
 			fmt.Fprintf(w, "\n⏳ no failures yet — some checks are still running\n")
 		}
 		writeRunning(w, r.RunningJobs)
+		writeReviews(w, r.Reviews)
 		return
 	}
 
@@ -32,6 +42,7 @@ func Report(w io.Writer, r *model.Report) {
 	writeOther(w, r.OtherChecks)
 	writeCancelled(w, r.CancelledJobs)
 	writeRunning(w, r.RunningJobs)
+	writeReviews(w, r.Reviews)
 }
 
 // writeSummary prints an upfront count of what was found and, when failures
@@ -117,6 +128,107 @@ func writeRunning(w io.Writer, jobs []model.RunningJob) {
 	fmt.Fprintln(w, "\nStill running:")
 	for _, j := range jobs {
 		fmt.Fprintf(w, "  ⏳ Job %q (%s)\n", j.Name, j.Status)
+	}
+}
+
+func writeReviews(w io.Writer, reviews []model.Review) {
+	if len(reviews) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "\nReviews:")
+	for _, rv := range reviews {
+		fmt.Fprintf(w, "  %s %s — %s\n", reviewSymbol(rv.State), reviewStateLabel(rv.State), authorLabel(rv.Author, rv.AuthorType))
+		for _, line := range bodyLines(rv.Body) {
+			fmt.Fprintf(w, "      %s\n", line)
+		}
+		for _, t := range rv.Threads {
+			writeThread(w, t)
+		}
+	}
+}
+
+func writeThread(w io.Writer, t model.ReviewThread) {
+	loc := t.Path
+	if t.Line > 0 {
+		loc = fmt.Sprintf("%s:%d", t.Path, t.Line)
+	}
+	if t.Collapsed {
+		fmt.Fprintf(w, "      ▸ %s  (%s)\n", loc, t.CollapseReason)
+		return
+	}
+	fmt.Fprintf(w, "      ▸ %s  (%s)\n", loc, commentCount(t.TotalComments))
+	for _, c := range t.Comments {
+		lines := bodyLines(c.Body)
+		head := ""
+		if len(lines) > 0 {
+			head = lines[0]
+		}
+		fmt.Fprintf(w, "          %s: %s\n", authorLabel(c.Author, c.AuthorType), head)
+		for _, line := range lines[1:] {
+			fmt.Fprintf(w, "            %s\n", line)
+		}
+	}
+	if t.HiddenComments > 0 {
+		fmt.Fprintf(w, "          … %d more comment%s\n", t.HiddenComments, plural(t.HiddenComments))
+	}
+}
+
+func commentCount(n int) string {
+	return fmt.Sprintf("%d comment%s", n, plural(n))
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+// bodyLines splits a comment/review body into trimmed, non-empty display lines.
+func bodyLines(body string) []string {
+	var out []string
+	for _, line := range strings.Split(body, "\n") {
+		if s := strings.TrimRight(line, "\r "); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func authorLabel(author string, kind model.AuthorType) string {
+	switch kind {
+	case model.AuthorBot:
+		return author + " [bot]"
+	case model.AuthorAI:
+		return author + " [AI]"
+	default:
+		return author
+	}
+}
+
+func reviewSymbol(state string) string {
+	switch state {
+	case "approved":
+		return "✔"
+	case "changes_requested":
+		return "✗"
+	case "dismissed":
+		return "⊘"
+	default:
+		return "💬"
+	}
+}
+
+func reviewStateLabel(state string) string {
+	switch state {
+	case "approved":
+		return "approved"
+	case "changes_requested":
+		return "changes requested"
+	case "dismissed":
+		return "dismissed"
+	default:
+		return "commented"
 	}
 }
 

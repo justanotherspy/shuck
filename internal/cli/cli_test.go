@@ -192,6 +192,38 @@ func TestBuildExtractOptionsRejectsNegative(t *testing.T) {
 	}
 }
 
+func TestParseArgsReviewFlags(t *testing.T) {
+	o, _, err := parseArgs([]string{"o/r", "42"}, io.Discard)
+	if err != nil {
+		t.Fatalf("parseArgs: %v", err)
+	}
+	if o.reviewCommentLimit != 5 {
+		t.Errorf("default review-comment-limit = %d, want 5", o.reviewCommentLimit)
+	}
+	if o.ciOnly || o.reviewsOnly {
+		t.Errorf("focus flags should default false, got ciOnly=%v reviewsOnly=%v", o.ciOnly, o.reviewsOnly)
+	}
+
+	o, _, err = parseArgs([]string{"--review-comment-limit", "3", "--reviews-only", "o/r", "42"}, io.Discard)
+	if err != nil {
+		t.Fatalf("parseArgs: %v", err)
+	}
+	if o.reviewCommentLimit != 3 || !o.reviewsOnly || o.ciOnly {
+		t.Errorf("parsed flags wrong: %+v", o)
+	}
+}
+
+func TestInspectWithRejectsBadReviewOptions(t *testing.T) {
+	tgt := target.Target{Owner: "o", Repo: "r", Number: 1}
+
+	if _, err := inspectWith(context.Background(), tgt, options{reviewCommentLimit: 0}); err == nil {
+		t.Errorf("review-comment-limit < 1 should be rejected")
+	}
+	if _, err := inspectWith(context.Background(), tgt, options{reviewCommentLimit: 5, ciOnly: true, reviewsOnly: true}); err == nil {
+		t.Errorf("--ci-only with --reviews-only should be rejected")
+	}
+}
+
 func TestPermuteArgs(t *testing.T) {
 	cases := []struct {
 		name     string

@@ -89,6 +89,52 @@ func TestReportAllGreen(t *testing.T) {
 	}
 }
 
+func TestReportReviews(t *testing.T) {
+	r := &model.Report{
+		PR: model.PR{Owner: "o", Repo: "r", Number: 1, HeadSHA: "abc1234"},
+		Reviews: []model.Review{
+			{
+				Author: "coderabbitai[bot]", AuthorType: model.AuthorAI, State: "changes_requested",
+				Body: "Please address the comments below.",
+				Threads: []model.ReviewThread{
+					{
+						Path: "internal/cli/cli.go", Line: 42, TotalComments: 3, HiddenComments: 1,
+						Comments: []model.ReviewComment{
+							{Author: "coderabbitai[bot]", AuthorType: model.AuthorAI, Body: "needs a nil check"},
+							{Author: "alice", AuthorType: model.AuthorHuman, Body: "agreed"},
+						},
+					},
+					{Path: "internal/gh/gh.go", Line: 88, Collapsed: true, CollapseReason: "resolved by bob"},
+					{Path: "README.md", Line: 10, Collapsed: true, CollapseReason: "outdated"},
+				},
+			},
+			{Author: "ghbot", AuthorType: model.AuthorBot, State: "commented"},
+			{Author: "dave", AuthorType: model.AuthorHuman, State: "approved", Body: "LGTM"},
+		},
+	}
+	var buf bytes.Buffer
+	Report(&buf, r)
+	out := buf.String()
+
+	for _, want := range []string{
+		"Reviews:",
+		"✗ changes requested — coderabbitai[bot] [AI]",
+		"Please address the comments below.",
+		"▸ internal/cli/cli.go:42  (3 comments)",
+		"coderabbitai[bot] [AI]: needs a nil check",
+		"alice: agreed",
+		"… 1 more comment",
+		"▸ internal/gh/gh.go:88  (resolved by bob)",
+		"▸ README.md:10  (outdated)",
+		"💬 commented — ghbot [bot]",
+		"✔ approved — dave",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("reviews output missing %q\n---\n%s", want, out)
+		}
+	}
+}
+
 func TestReportRunTargetHeader(t *testing.T) {
 	r := &model.Report{
 		Run: &model.RunInfo{

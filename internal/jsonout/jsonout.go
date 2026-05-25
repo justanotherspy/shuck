@@ -7,6 +7,7 @@ package jsonout
 import (
 	"encoding/json"
 	"io"
+	"time"
 
 	"github.com/justanotherspy/shuck/internal/model"
 )
@@ -27,6 +28,7 @@ type Document struct {
 	CancelledJobs []CancelledJob `json:"cancelled_jobs"`
 	OtherChecks   []OtherCheck   `json:"other_checks"`
 	RunningJobs   []RunningJob   `json:"running_jobs"`
+	Reviews       []Review       `json:"reviews"`
 }
 
 // Run identifies a workflow-run (or single-job) target and its head context. It
@@ -59,6 +61,7 @@ type Summary struct {
 	Cancelled   int `json:"cancelled"`
 	Running     int `json:"running"`
 	OtherFailed int `json:"other_failed"`
+	Reviews     int `json:"reviews"`
 }
 
 // Job is a failed GitHub Actions job and its failing steps.
@@ -102,6 +105,36 @@ type RunningJob struct {
 	WorkflowName string `json:"workflow_name"`
 }
 
+// Review is a submitted PR review with its inline threads.
+type Review struct {
+	Author      string         `json:"author"`
+	AuthorType  string         `json:"author_type"`
+	State       string         `json:"state"`
+	Body        string         `json:"body"`
+	SubmittedAt string         `json:"submitted_at"`
+	Threads     []ReviewThread `json:"threads"`
+}
+
+// ReviewThread is a code-anchored conversation; collapsed when resolved/outdated.
+type ReviewThread struct {
+	Path           string          `json:"path"`
+	Line           int             `json:"line"`
+	Resolved       bool            `json:"resolved"`
+	Outdated       bool            `json:"outdated"`
+	Collapsed      bool            `json:"collapsed"`
+	CollapseReason string          `json:"collapse_reason"`
+	TotalComments  int             `json:"total_comments"`
+	HiddenComments int             `json:"hidden_comments"`
+	Comments       []ReviewComment `json:"comments"`
+}
+
+// ReviewComment is one comment within a thread.
+type ReviewComment struct {
+	Author     string `json:"author"`
+	AuthorType string `json:"author_type"`
+	Body       string `json:"body"`
+}
+
 // Encode writes r to w as an indented JSON Document with a trailing newline.
 func Encode(w io.Writer, r *model.Report) error {
 	enc := json.NewEncoder(w)
@@ -128,12 +161,14 @@ func NewDocument(r *model.Report) Document {
 			Cancelled:   len(r.CancelledJobs),
 			Running:     len(r.RunningJobs),
 			OtherFailed: len(r.OtherChecks),
+			Reviews:     len(r.Reviews),
 		},
 		// Initialize as empty (not nil) so each list serializes as [] not null.
 		FailedJobs:    make([]Job, 0, len(r.FailedJobs)),
 		CancelledJobs: make([]CancelledJob, 0, len(r.CancelledJobs)),
 		OtherChecks:   make([]OtherCheck, 0, len(r.OtherChecks)),
 		RunningJobs:   make([]RunningJob, 0, len(r.RunningJobs)),
+		Reviews:       make([]Review, 0, len(r.Reviews)),
 	}
 
 	if r.Run != nil {
@@ -193,6 +228,39 @@ func NewDocument(r *model.Report) Document {
 			Status:       j.Status,
 			WorkflowName: j.WorkflowName,
 		})
+	}
+
+	for _, rv := range r.Reviews {
+		review := Review{
+			Author:      rv.Author,
+			AuthorType:  string(rv.AuthorType),
+			State:       rv.State,
+			Body:        rv.Body,
+			SubmittedAt: rv.SubmittedAt.Format(time.RFC3339),
+			Threads:     make([]ReviewThread, 0, len(rv.Threads)),
+		}
+		for _, t := range rv.Threads {
+			thread := ReviewThread{
+				Path:           t.Path,
+				Line:           t.Line,
+				Resolved:       t.Resolved,
+				Outdated:       t.Outdated,
+				Collapsed:      t.Collapsed,
+				CollapseReason: t.CollapseReason,
+				TotalComments:  t.TotalComments,
+				HiddenComments: t.HiddenComments,
+				Comments:       make([]ReviewComment, 0, len(t.Comments)),
+			}
+			for _, c := range t.Comments {
+				thread.Comments = append(thread.Comments, ReviewComment{
+					Author:     c.Author,
+					AuthorType: string(c.AuthorType),
+					Body:       c.Body,
+				})
+			}
+			review.Threads = append(review.Threads, thread)
+		}
+		doc.Reviews = append(doc.Reviews, review)
 	}
 
 	return doc

@@ -43,7 +43,7 @@ func versionString() string {
 	return "dev"
 }
 
-const usage = `shuck — show the exact failing CI step logs for a PR.
+const usage = `shuck — show the exact failing CI step logs (and review comments) for a PR.
 
 Usage:
   shuck <owner>/<repo> <pr>   inspect an explicit PR
@@ -65,21 +65,24 @@ Flags:
 `
 
 type options struct {
-	context         int
-	shortThreshold  int
-	tail            int
-	pattern         string
-	full            bool
-	maxCommandLines int
-	token           string
-	refresh         bool
-	noCache         bool
-	offline         bool
-	json            bool
-	version         bool
-	watch           bool
-	interval        time.Duration
-	watchTimeout    time.Duration
+	context            int
+	shortThreshold     int
+	tail               int
+	pattern            string
+	full               bool
+	maxCommandLines    int
+	reviewCommentLimit int
+	ciOnly             bool
+	reviewsOnly        bool
+	token              string
+	refresh            bool
+	noCache            bool
+	offline            bool
+	json               bool
+	version            bool
+	watch              bool
+	interval           time.Duration
+	watchTimeout       time.Duration
 }
 
 // Run executes shuck and returns the process exit code:
@@ -139,6 +142,9 @@ func parseArgs(args []string, stderr io.Writer) (options, []string, error) {
 	fs.StringVar(&o.pattern, "pattern", "", "override the error-matching regexp")
 	fs.BoolVar(&o.full, "full", false, "show full, untrimmed logs for failed steps")
 	fs.IntVar(&o.maxCommandLines, "max-command-lines", logs.DefaultMaxCommandLines, "max lines of a failed step's command to show (0 = no limit)")
+	fs.IntVar(&o.reviewCommentLimit, "review-comment-limit", 5, "max comments shown per active review thread")
+	fs.BoolVar(&o.ciOnly, "ci-only", false, "show only CI checks; skip PR reviews")
+	fs.BoolVar(&o.reviewsOnly, "reviews-only", false, "show only PR reviews; skip CI checks")
 	fs.StringVar(&o.token, "token", "", "GitHub token (overrides GITHUB_TOKEN/GH_TOKEN)")
 	fs.BoolVar(&o.refresh, "refresh", false, "ignore and rebuild the cache")
 	fs.BoolVar(&o.noCache, "no-cache", false, "do not read or write the cache")
@@ -253,16 +259,19 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 // mirrors the CLI flags plus the cache behavior. It is the front-end-agnostic
 // input to [Inspect], used by alternative entry points such as the MCP server.
 type InspectOptions struct {
-	Context         int
-	ShortThreshold  int
-	Tail            int
-	Pattern         string
-	Full            bool
-	MaxCommandLines int
-	Token           string
-	Refresh         bool
-	NoCache         bool
-	Offline         bool
+	Context            int
+	ShortThreshold     int
+	Tail               int
+	Pattern            string
+	Full               bool
+	MaxCommandLines    int
+	ReviewCommentLimit int
+	CIOnly             bool
+	ReviewsOnly        bool
+	Token              string
+	Refresh            bool
+	NoCache            bool
+	Offline            bool
 }
 
 // Inspect runs shuck's pipeline for an already-resolved target and returns the
@@ -271,16 +280,19 @@ type InspectOptions struct {
 // structured tool response).
 func Inspect(ctx context.Context, tgt target.Target, opts InspectOptions) (*model.Report, error) {
 	return inspectWith(ctx, tgt, options{
-		context:         opts.Context,
-		shortThreshold:  opts.ShortThreshold,
-		tail:            opts.Tail,
-		pattern:         opts.Pattern,
-		full:            opts.Full,
-		maxCommandLines: opts.MaxCommandLines,
-		token:           opts.Token,
-		refresh:         opts.Refresh,
-		noCache:         opts.NoCache,
-		offline:         opts.Offline,
+		context:            opts.Context,
+		shortThreshold:     opts.ShortThreshold,
+		tail:               opts.Tail,
+		pattern:            opts.Pattern,
+		full:               opts.Full,
+		maxCommandLines:    opts.MaxCommandLines,
+		reviewCommentLimit: opts.ReviewCommentLimit,
+		ciOnly:             opts.CIOnly,
+		reviewsOnly:        opts.ReviewsOnly,
+		token:              opts.Token,
+		refresh:            opts.Refresh,
+		noCache:            opts.NoCache,
+		offline:            opts.Offline,
 	})
 }
 
@@ -298,6 +310,12 @@ func inspectWith(ctx context.Context, tgt target.Target, o options) (*model.Repo
 	if o.maxCommandLines < 0 {
 		return nil, fmt.Errorf("--max-command-lines must be non-negative, got %d", o.maxCommandLines)
 	}
+	if o.reviewCommentLimit < 1 {
+		return nil, fmt.Errorf("--review-comment-limit must be at least 1, got %d", o.reviewCommentLimit)
+	}
+	if o.ciOnly && o.reviewsOnly {
+		return nil, fmt.Errorf("--ci-only and --reviews-only are mutually exclusive")
+	}
 
 	if o.offline {
 		if tgt.RunID != 0 {
@@ -310,7 +328,14 @@ func inspectWith(ctx context.Context, tgt target.Target, o options) (*model.Repo
 	if err != nil {
 		return nil, err
 	}
-	a := &app{client: gh.New(token), opts: extractOpts, maxCommandLines: o.maxCommandLines}
+	a := &app{
+		client:             gh.New(token),
+		opts:               extractOpts,
+		maxCommandLines:    o.maxCommandLines,
+		reviewCommentLimit: o.reviewCommentLimit,
+		ciOnly:             o.ciOnly,
+		reviewsOnly:        o.reviewsOnly,
+	}
 
 	if tgt.RunID != 0 {
 		return a.runReport(ctx, tgt)
@@ -342,46 +367,76 @@ func (a *app) prReport(ctx context.Context, tgt target.Target, refresh, noCache 
 		}
 	}
 
-	failed, cancelled, running, err := a.client.ListJobs(ctx, tgt.Owner, tgt.Repo, pr.HeadSHA)
-	if err != nil {
-		return nil, err
-	}
-	other, err := a.client.OtherChecks(ctx, tgt.Owner, tgt.Repo, pr.HeadSHA)
-	if err != nil {
-		return nil, err
-	}
+	report := &model.Report{PR: pr, ReviewsOnly: a.reviewsOnly, CheckedAt: time.Now()}
 
-	var reuseFrom *model.Report
-	if cached != nil && cached.PR.HeadSHA == pr.HeadSHA {
-		reuseFrom = cached
-	}
-	inspected := cache.InspectedJobs(reuseFrom)
-
-	for i := range failed {
-		key := cache.JobKey{ID: failed[i].ID, RunAttempt: failed[i].RunAttempt}
-		if prev, ok := inspected[key]; ok {
-			failed[i].FailedSteps = prev.FailedSteps
-			failed[i].Inspected = true
-			continue
+	if !a.reviewsOnly {
+		failed, cancelled, running, err := a.client.ListJobs(ctx, tgt.Owner, tgt.Repo, pr.HeadSHA)
+		if err != nil {
+			return nil, err
 		}
-		a.drill(ctx, tgt.Owner, tgt.Repo, &failed[i])
+		other, err := a.client.OtherChecks(ctx, tgt.Owner, tgt.Repo, pr.HeadSHA)
+		if err != nil {
+			return nil, err
+		}
+
+		var reuseFrom *model.Report
+		if cached != nil && cached.PR.HeadSHA == pr.HeadSHA {
+			reuseFrom = cached
+		}
+		inspected := cache.InspectedJobs(reuseFrom)
+
+		for i := range failed {
+			key := cache.JobKey{ID: failed[i].ID, RunAttempt: failed[i].RunAttempt}
+			if prev, ok := inspected[key]; ok {
+				failed[i].FailedSteps = prev.FailedSteps
+				failed[i].Inspected = true
+				continue
+			}
+			a.drill(ctx, tgt.Owner, tgt.Repo, &failed[i])
+		}
+
+		report.FailedJobs = failed
+		report.CancelledJobs = cancelled
+		report.RunningJobs = running
+		report.OtherChecks = other
 	}
 
-	report := &model.Report{
-		PR:            pr,
-		FailedJobs:    failed,
-		CancelledJobs: cancelled,
-		RunningJobs:   running,
-		OtherChecks:   other,
-		CheckedAt:     time.Now(),
+	if !a.ciOnly {
+		a.attachReviews(ctx, tgt.Owner, tgt.Repo, number, refresh, cached, report)
 	}
 
-	if !noCache {
+	// Focus modes (--ci-only / --reviews-only) render one dimension only, so
+	// skip the cache write to avoid clobbering the other dimension's cached data.
+	if !noCache && !a.ciOnly && !a.reviewsOnly {
 		if err := cache.Save(report); err != nil {
 			fmt.Fprintln(os.Stderr, "shuck: warning: could not write cache:", err)
 		}
 	}
 	return report, nil
+}
+
+// attachReviews fills report.Reviews, reusing the cached reviews when a cheap
+// fingerprint shows the PR's review state is unchanged. Review fetching is
+// best-effort: any error is reported as a warning and leaves reviews empty
+// rather than failing the whole inspection.
+func (a *app) attachReviews(ctx context.Context, owner, repo string, number int, refresh bool, cached, report *model.Report) {
+	fingerprint, err := a.client.ReviewsFingerprint(ctx, owner, repo, number)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "shuck: warning: could not check reviews:", err)
+		return
+	}
+	if !refresh && cached != nil && cached.ReviewsFingerprint == fingerprint && len(cached.Reviews) > 0 {
+		report.Reviews = cached.Reviews
+		report.ReviewsFingerprint = fingerprint
+		return
+	}
+	reviews, err := a.client.PRReviews(ctx, owner, repo, number, a.reviewCommentLimit)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "shuck: warning: could not fetch reviews:", err)
+		return
+	}
+	report.Reviews = reviews
+	report.ReviewsFingerprint = fingerprint
 }
 
 // loadOffline renders a PR target only from its cache, without network access.
@@ -529,9 +584,12 @@ func flagTakesValue(fs *flag.FlagSet, arg string) bool {
 
 // app holds the dependencies needed to drill into a failed job's logs.
 type app struct {
-	client          *gh.Client
-	opts            logs.Options
-	maxCommandLines int
+	client             *gh.Client
+	opts               logs.Options
+	maxCommandLines    int
+	reviewCommentLimit int
+	ciOnly             bool
+	reviewsOnly        bool
 }
 
 func (a *app) drill(ctx context.Context, owner, repo string, job *model.JobResult) {

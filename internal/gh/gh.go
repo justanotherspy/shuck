@@ -14,21 +14,23 @@ import (
 	"github.com/justanotherspy/shuck/internal/model"
 )
 
-// Client talks to the GitHub REST API.
+// Client talks to the GitHub REST and GraphQL APIs.
 type Client struct {
-	gh   *github.Client
-	http *http.Client
+	gh    *github.Client
+	http  *http.Client
+	token string // retained for the hand-rolled GraphQL calls (reviews)
 }
 
 // New builds an authenticated client from a personal access token.
 func New(token string) *Client {
 	return &Client{
-		gh:   github.NewClient(nil).WithAuthToken(token),
-		http: &http.Client{Timeout: 60 * time.Second},
+		gh:    github.NewClient(nil).WithAuthToken(token),
+		http:  &http.Client{Timeout: 60 * time.Second},
+		token: token,
 	}
 }
 
-// GetPR resolves a PR's head SHA, branch, and title.
+// GetPR resolves a PR's head SHA, branch, title, and last-updated time.
 func (c *Client) GetPR(ctx context.Context, owner, repo string, number int) (model.PR, error) {
 	pr, _, err := c.gh.PullRequests.Get(ctx, owner, repo, number)
 	if err != nil {
@@ -41,6 +43,7 @@ func (c *Client) GetPR(ctx context.Context, owner, repo string, number int) (mod
 		Title:      pr.GetTitle(),
 		HeadSHA:    pr.GetHead().GetSHA(),
 		HeadBranch: pr.GetHead().GetRef(),
+		UpdatedAt:  pr.GetUpdatedAt().Time,
 	}, nil
 }
 
