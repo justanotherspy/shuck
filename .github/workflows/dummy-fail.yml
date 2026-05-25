@@ -1,0 +1,24 @@
+name: Dummy Fail
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  always-fails:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Noisy preamble
+        run: |
+          echo "Starting dummy job for shuck testing"
+          for i in $(seq 1 120); do
+            echo "log line $i: doing some pretend work"
+          done
+          echo "preamble complete"
+      - name: Boom
+        run: |
+          echo "about to fail on purpose"
+          echo "ERROR: dummy failure injected for shuck testing" >&2
+          exit 17

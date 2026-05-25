@@ -1,0 +1,19 @@
+# Scenario: a LOCAL (repo-relative) action that fails.
+# The step uses `./.github/actions/boom`, a composite action defined in this repo.
+# Composite actions emit a log group per internal step, so the failure surfaces
+# from a nested step — a different shape than a single shell/marketplace step.
+name: Dummy Local Action Fail
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  local-action-fail:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run local composite action
+        uses: ./.github/actions/boom

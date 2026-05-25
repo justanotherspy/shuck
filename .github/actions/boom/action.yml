@@ -1,0 +1,24 @@
+# A repo-local composite action that runs a few steps and then fails on purpose.
+# Used by .github/workflows/dummy-local-action.yml to give shuck a failure that
+# originates inside a LOCAL action (uses: ./.github/actions/boom) rather than a
+# marketplace one.
+name: Boom (local composite action)
+description: Runs a couple of steps then exits non-zero so shuck can drill it.
+runs:
+  using: composite
+  steps:
+    - name: Composite prep
+      shell: bash
+      run: |
+        echo "local composite action: prep step ok"
+    - name: Composite work
+      shell: bash
+      run: |
+        echo "local composite action: doing pretend work"
+        for i in $(seq 1 30); do echo "composite work line $i"; done
+    - name: Composite boom
+      shell: bash
+      run: |
+        echo "about to fail inside the local composite action"
+        echo "ERROR: local composite action failing on purpose" >&2
+        exit 23

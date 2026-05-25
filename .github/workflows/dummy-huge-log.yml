@@ -1,0 +1,41 @@
+# Scenario: VERY large step logs, to test how shuck trims/extracts.
+# - huge-log-single-error floods thousands of lines then errors once at the end:
+#   exercises the long-log grep + the ±context window around a single match.
+# - huge-log-scattered-errors sprinkles error markers throughout: exercises
+#   merging of multiple context windows and the "… N lines omitted …" ellipses.
+# Use `--full` to see the untrimmed logs for comparison.
+name: Dummy Huge Log
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  huge-log-single-error:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Flood logs then fail
+        run: |
+          echo "begin large log output"
+          for i in $(seq 1 5000); do
+            echo "verbose log line $i: lorem ipsum dolor sit amet, processing widget $i"
+          done
+          echo "ERROR: failure at the very end after a flood of logs" >&2
+          exit 9
+
+  huge-log-scattered-errors:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Flood logs with scattered errors
+        run: |
+          for i in $(seq 1 4000); do
+            if [ $((i % 500)) -eq 0 ]; then
+              echo "ERROR: scattered failure marker at line $i" >&2
+            else
+              echo "info line $i: everything looks fine here"
+            fi
+          done
+          echo "FATAL: final failure after scattered errors" >&2
+          exit 11
