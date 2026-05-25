@@ -113,6 +113,7 @@ shuck justanotherspy/shuck 42
 | `--tail N` | 100 | Lines tailed when a long log has no error match. |
 | `--pattern RE` | — | Override the error-matching regexp. |
 | `--full` | false | Show full, untrimmed logs for failed steps. |
+| `--max-command-lines N` | 30 | Max lines of a failed step's command to show; longer commands are truncated (`0` = no limit). |
 | `--token T` | — | GitHub token (overrides `GITHUB_TOKEN`/`GH_TOKEN`). |
 | `--refresh` | false | Ignore and rebuild the cache. |
 | `--no-cache` | false | Do not read or write the cache. |

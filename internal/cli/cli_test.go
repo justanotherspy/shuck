@@ -64,6 +64,39 @@ func TestBuildFailedStepsFallbackNoErrorMarker(t *testing.T) {
 	}
 }
 
+// multiStepLog is a job whose failing step ran a multi-line shell script, so the
+// echoed command spans several Pre lines before the shell: metadata.
+const multiStepLog = `2024-05-01T10:00:00.0000000Z ##[group]Run echo line1
+2024-05-01T10:00:00.0000001Z echo line1
+2024-05-01T10:00:00.0000002Z echo line2
+2024-05-01T10:00:00.0000003Z echo line3
+2024-05-01T10:00:00.0000004Z exit 1
+2024-05-01T10:00:00.0000005Z shell: /usr/bin/bash -e {0}
+2024-05-01T10:00:00.0000006Z ##[endgroup]
+2024-05-01T10:00:01.0000000Z some output
+2024-05-01T10:00:02.0000000Z ##[error]Process completed with exit code 1.
+`
+
+func TestBuildFailedStepsFullCommand(t *testing.T) {
+	job := model.JobResult{Steps: []model.StepOverview{{Number: 1, Name: "Run script", Conclusion: "failure"}}}
+
+	// maxCommandLines = 0 (no limit): the full multi-line script is recovered.
+	a := &app{opts: logs.DefaultOptions(), maxCommandLines: 0}
+	fs := a.buildFailedSteps(job, multiStepLog)
+	wantFull := "echo line1\necho line2\necho line3\nexit 1"
+	if len(fs) != 1 || fs[0].Command != wantFull {
+		t.Fatalf("full command = %q, want %q", fs[0].Command, wantFull)
+	}
+
+	// A small cap truncates and reports how many lines were dropped.
+	a = &app{opts: logs.DefaultOptions(), maxCommandLines: 2}
+	fs = a.buildFailedSteps(job, multiStepLog)
+	wantClamped := "echo line1\necho line2\n… (2 more lines) …"
+	if fs[0].Command != wantClamped {
+		t.Errorf("clamped command = %q, want %q", fs[0].Command, wantClamped)
+	}
+}
+
 func TestResolveToken(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")

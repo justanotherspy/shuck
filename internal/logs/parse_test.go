@@ -74,6 +74,74 @@ func TestParseLeadingSection(t *testing.T) {
 	}
 }
 
+func TestFullCommand(t *testing.T) {
+	raw := strings.Join([]string{
+		`2024-05-01T10:00:00.0000000Z ##[group]Run echo "first"`,
+		`2024-05-01T10:00:00.0000001Z echo "first"`,
+		`2024-05-01T10:00:00.0000002Z echo "second" >&2`,
+		`2024-05-01T10:00:00.0000003Z exit 1`,
+		`2024-05-01T10:00:00.0000004Z shell: /usr/bin/bash -e {0}`,
+		`2024-05-01T10:00:00.0000005Z env:`,
+		`2024-05-01T10:00:00.0000006Z   FOO: bar`,
+		`2024-05-01T10:00:00.0000007Z ##[endgroup]`,
+		`2024-05-01T10:00:01.0000000Z boom`,
+		`2024-05-01T10:00:02.0000000Z ##[group]Run actions/checkout@v4`,
+		`2024-05-01T10:00:02.0000001Z with:`,
+		`2024-05-01T10:00:02.0000002Z   repository: owner/repo`,
+		`2024-05-01T10:00:02.0000003Z ##[endgroup]`,
+		`2024-05-01T10:00:03.0000000Z ##[group]Run actions/upload-artifact@v4`,
+		`2024-05-01T10:00:03.0000001Z ##[endgroup]`,
+		"",
+	}, "\n")
+	secs := Parse(raw)
+	if len(secs) != 3 {
+		t.Fatalf("got %d sections, want 3", len(secs))
+	}
+
+	run := secs[0]
+	if got, want := run.Command(), `echo "first"`; got != want {
+		t.Errorf("Command() = %q, want %q (header only)", got, want)
+	}
+	wantFull := "echo \"first\"\necho \"second\" >&2\nexit 1"
+	if got := run.FullCommand(); got != wantFull {
+		t.Errorf("FullCommand() = %q, want %q", got, wantFull)
+	}
+
+	// An action's Pre holds with:/inputs, not a script, so FullCommand falls
+	// back to the single-line ref from the header.
+	if got := secs[1].FullCommand(); got != "actions/checkout@v4" {
+		t.Errorf("action-with-inputs FullCommand() = %q", got)
+	}
+	if got := secs[2].FullCommand(); got != "actions/upload-artifact@v4" {
+		t.Errorf("action-no-inputs FullCommand() = %q", got)
+	}
+}
+
+func TestClampCommand(t *testing.T) {
+	five := "a\nb\nc\nd\ne"
+	cases := []struct {
+		name     string
+		cmd      string
+		maxLines int
+		want     string
+	}{
+		{"unlimited zero", five, 0, five},
+		{"unlimited negative", five, -1, five},
+		{"under limit", five, 8, five},
+		{"exactly limit", five, 5, five},
+		{"over limit", five, 3, "a\nb\nc\n… (2 more lines) …"},
+		{"empty", "", 3, ""},
+		{"single line under", "only", 3, "only"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ClampCommand(tc.cmd, tc.maxLines); got != tc.want {
+				t.Errorf("ClampCommand(%q, %d) = %q, want %q", tc.cmd, tc.maxLines, got, tc.want)
+			}
+		})
+	}
+}
+
 func readFixture(t *testing.T, name string) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("testdata", name))

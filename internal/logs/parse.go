@@ -3,6 +3,7 @@
 package logs
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -17,6 +18,11 @@ var tsPrefix = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)
 // "owner/repo/sub@sha", used to classify a step's command.
 var actionRef = regexp.MustCompile(`^[\w.-]+/[\w./-]+@\S+$`)
 
+// stepMetaKey matches the step-config keys GitHub echoes right after a run
+// step's command (and as an action's inputs): "shell:", "env:", "with:". They
+// mark the end of the echoed script, so FullCommand stops at the first one.
+var stepMetaKey = regexp.MustCompile(`^(?:shell|env|with):`)
+
 // Section is one step's region of a job log: from one ##[group] marker up to the
 // next. Pre holds the echoed command/env (between group and endgroup); Body holds
 // the actual output that follows ##[endgroup].
@@ -28,8 +34,49 @@ type Section struct {
 }
 
 // Command returns the step's command without the leading "Run " that GitHub adds.
+// It is the single ##[group] header line, so for a multi-line shell run it holds
+// only the first line; FullCommand recovers the rest.
 func (s Section) Command() string {
 	return strings.TrimPrefix(s.Header, "Run ")
+}
+
+// FullCommand returns the step's complete command. For a shell run GitHub echoes
+// the whole (possibly multi-line) script in Pre, ahead of the shell:/env:
+// metadata; FullCommand rejoins those echoed lines. For an action — whose Pre
+// holds with:/env: inputs rather than a script — or when nothing was echoed, it
+// falls back to the single-line Command from the group header.
+func (s Section) FullCommand() string {
+	var script []string
+	for _, l := range s.Pre {
+		if stepMetaKey.MatchString(l) {
+			break
+		}
+		script = append(script, l)
+	}
+	if len(script) == 0 {
+		return s.Command()
+	}
+	return strings.Join(script, "\n")
+}
+
+// DefaultMaxCommandLines is the default cap on how many lines of a failed step's
+// command shuck shows; longer commands are truncated. Shared by the CLI flag and
+// the MCP server so the two never drift. 0 would mean no limit.
+const DefaultMaxCommandLines = 30
+
+// ClampCommand limits cmd to at most maxLines lines. A non-positive maxLines
+// means no limit. When cmd is longer, the first maxLines lines are kept and a
+// trailing "… (N more lines) …" marker reports how many were dropped.
+func ClampCommand(cmd string, maxLines int) string {
+	if maxLines <= 0 || cmd == "" {
+		return cmd
+	}
+	lines := strings.Split(cmd, "\n")
+	if len(lines) <= maxLines {
+		return cmd
+	}
+	return strings.Join(lines[:maxLines], "\n") +
+		fmt.Sprintf("\n… (%d more lines) …", len(lines)-maxLines)
 }
 
 // Kind classifies the section's command as an action invocation or a shell run.

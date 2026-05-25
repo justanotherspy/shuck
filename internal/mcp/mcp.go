@@ -108,11 +108,12 @@ func newServer() *mcp.Server {
 // both tools. The three sizing knobs are pointers so an omitted value falls
 // back to shuck's documented default rather than zero.
 type extractInput struct {
-	Context        *int   `json:"context,omitempty" jsonschema:"Lines of context kept around each error match (default 10)."`
-	ShortThreshold *int   `json:"short_threshold,omitempty" jsonschema:"Logs with at most this many lines are shown whole (default 100)."`
-	Tail           *int   `json:"tail,omitempty" jsonschema:"Lines tailed when a long log has no error match (default 100)."`
-	Pattern        string `json:"pattern,omitempty" jsonschema:"Override the error-matching regular expression."`
-	Full           bool   `json:"full,omitempty" jsonschema:"Show full, untrimmed logs for failed steps instead of trimmed excerpts."`
+	Context         *int   `json:"context,omitempty" jsonschema:"Lines of context kept around each error match (default 10)."`
+	ShortThreshold  *int   `json:"short_threshold,omitempty" jsonschema:"Logs with at most this many lines are shown whole (default 100)."`
+	Tail            *int   `json:"tail,omitempty" jsonschema:"Lines tailed when a long log has no error match (default 100)."`
+	Pattern         string `json:"pattern,omitempty" jsonschema:"Override the error-matching regular expression."`
+	Full            bool   `json:"full,omitempty" jsonschema:"Show full, untrimmed logs for failed steps instead of trimmed excerpts."`
+	MaxCommandLines *int   `json:"max_command_lines,omitempty" jsonschema:"Max lines of a failed step's command to show; longer commands are truncated (default 30, 0 = no limit)."`
 }
 
 // apply layers the request's extraction knobs onto a base options value,
@@ -127,6 +128,9 @@ func (e extractInput) apply(o cli.InspectOptions) cli.InspectOptions {
 	if e.Tail != nil {
 		o.Tail = *e.Tail
 	}
+	if e.MaxCommandLines != nil {
+		o.MaxCommandLines = *e.MaxCommandLines
+	}
 	o.Pattern = e.Pattern
 	o.Full = e.Full
 	return o
@@ -137,9 +141,10 @@ func (e extractInput) apply(o cli.InspectOptions) cli.InspectOptions {
 func defaultOptions() cli.InspectOptions {
 	d := logs.DefaultOptions()
 	return cli.InspectOptions{
-		Context:        d.Context,
-		ShortThreshold: d.ShortThreshold,
-		Tail:           d.Tail,
+		Context:         d.Context,
+		ShortThreshold:  d.ShortThreshold,
+		Tail:            d.Tail,
+		MaxCommandLines: logs.DefaultMaxCommandLines,
 	}
 }
 
