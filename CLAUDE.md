@@ -60,6 +60,23 @@ render → update cache.
   full review pull when nothing changed; `--ci-only`/`--reviews-only` focus the
   output (and skip the cache write to avoid clobbering the other dimension).
 
+## Releasing & distribution
+
+- **Release flow**: `release-drafter` drafts a release (notes + next `vX.Y.Z`
+  tag) on every push to `main`. A human reviews the draft and publishes it as a
+  **pre-release** — which creates the tag and triggers `.github/workflows/
+  release.yml`. GoReleaser then builds the binaries, attaches them to that
+  existing release (`release.mode: keep-existing` preserves the drafted notes),
+  and a final `gh release edit … --prerelease=false --latest=true` step promotes
+  it to the full "Latest" release.
+- **Homebrew tap lives in this repo**: GoReleaser's `homebrew_casks` block
+  regenerates [`Casks/shuck.rb`](Casks/shuck.rb) on `main` each release, so the
+  repo doubles as a tap (`brew tap justanotherspy/shuck <url>` →
+  `brew install --cask shuck`). The cask is macOS-only and strips the
+  quarantine xattr in a postflight hook (binaries aren't notarized). Don't
+  hand-edit the cask except to seed a version before the next release —
+  GoReleaser overwrites it.
+
 ## Conventions
 
 - Standard library `flag` for CLI parsing; no cobra.

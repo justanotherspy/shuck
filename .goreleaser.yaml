@@ -54,4 +54,35 @@ changelog:
       - "^chore:"
 
 release:
+  # Publish straight away (not a draft). When a release for the tag already
+  # exists — e.g. the release-drafter draft was published manually as a
+  # pre-release — keep its curated notes and just attach the built artifacts.
   draft: false
+  mode: keep-existing
+  prerelease: false
+  make_latest: "true"
+
+# Generate a Homebrew cask and commit it to this repo's Casks/ directory, so the
+# repo doubles as a tap: `brew tap justanotherspy/shuck <repo-url>` then
+# `brew install --cask shuck`. The cask is macOS-only (Homebrew casks always are)
+# and carries the per-arch checksums computed at release time.
+homebrew_casks:
+  - name: shuck
+    repository:
+      owner: justanotherspy
+      name: shuck
+      branch: main
+    directory: Casks
+    homepage: "https://github.com/justanotherspy/shuck"
+    description: "Print the exact failing CI step logs for a GitHub PR"
+    license: MIT
+    url:
+      verified: "github.com/justanotherspy/shuck/"
+    # The binaries are not Apple-notarized, so strip the quarantine xattr on
+    # install or Gatekeeper blocks the first run.
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/shuck"]
+          end
