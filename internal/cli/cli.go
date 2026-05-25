@@ -65,20 +65,21 @@ Flags:
 `
 
 type options struct {
-	context        int
-	shortThreshold int
-	tail           int
-	pattern        string
-	full           bool
-	token          string
-	refresh        bool
-	noCache        bool
-	offline        bool
-	json           bool
-	version        bool
-	watch          bool
-	interval       time.Duration
-	watchTimeout   time.Duration
+	context         int
+	shortThreshold  int
+	tail            int
+	pattern         string
+	full            bool
+	maxCommandLines int
+	token           string
+	refresh         bool
+	noCache         bool
+	offline         bool
+	json            bool
+	version         bool
+	watch           bool
+	interval        time.Duration
+	watchTimeout    time.Duration
 }
 
 // Run executes shuck and returns the process exit code:
@@ -137,6 +138,7 @@ func parseArgs(args []string, stderr io.Writer) (options, []string, error) {
 	fs.IntVar(&o.tail, "tail", 100, "lines tailed when a long log has no error match")
 	fs.StringVar(&o.pattern, "pattern", "", "override the error-matching regexp")
 	fs.BoolVar(&o.full, "full", false, "show full, untrimmed logs for failed steps")
+	fs.IntVar(&o.maxCommandLines, "max-command-lines", logs.DefaultMaxCommandLines, "max lines of a failed step's command to show (0 = no limit)")
 	fs.StringVar(&o.token, "token", "", "GitHub token (overrides GITHUB_TOKEN/GH_TOKEN)")
 	fs.BoolVar(&o.refresh, "refresh", false, "ignore and rebuild the cache")
 	fs.BoolVar(&o.noCache, "no-cache", false, "do not read or write the cache")
@@ -251,15 +253,16 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 // mirrors the CLI flags plus the cache behavior. It is the front-end-agnostic
 // input to [Inspect], used by alternative entry points such as the MCP server.
 type InspectOptions struct {
-	Context        int
-	ShortThreshold int
-	Tail           int
-	Pattern        string
-	Full           bool
-	Token          string
-	Refresh        bool
-	NoCache        bool
-	Offline        bool
+	Context         int
+	ShortThreshold  int
+	Tail            int
+	Pattern         string
+	Full            bool
+	MaxCommandLines int
+	Token           string
+	Refresh         bool
+	NoCache         bool
+	Offline         bool
 }
 
 // Inspect runs shuck's pipeline for an already-resolved target and returns the
@@ -268,15 +271,16 @@ type InspectOptions struct {
 // structured tool response).
 func Inspect(ctx context.Context, tgt target.Target, opts InspectOptions) (*model.Report, error) {
 	return inspectWith(ctx, tgt, options{
-		context:        opts.Context,
-		shortThreshold: opts.ShortThreshold,
-		tail:           opts.Tail,
-		pattern:        opts.Pattern,
-		full:           opts.Full,
-		token:          opts.Token,
-		refresh:        opts.Refresh,
-		noCache:        opts.NoCache,
-		offline:        opts.Offline,
+		context:         opts.Context,
+		shortThreshold:  opts.ShortThreshold,
+		tail:            opts.Tail,
+		pattern:         opts.Pattern,
+		full:            opts.Full,
+		maxCommandLines: opts.MaxCommandLines,
+		token:           opts.Token,
+		refresh:         opts.Refresh,
+		noCache:         opts.NoCache,
+		offline:         opts.Offline,
 	})
 }
 
@@ -291,6 +295,9 @@ func inspectWith(ctx context.Context, tgt target.Target, o options) (*model.Repo
 	if err != nil {
 		return nil, err
 	}
+	if o.maxCommandLines < 0 {
+		return nil, fmt.Errorf("--max-command-lines must be non-negative, got %d", o.maxCommandLines)
+	}
 
 	if o.offline {
 		if tgt.RunID != 0 {
@@ -303,7 +310,7 @@ func inspectWith(ctx context.Context, tgt target.Target, o options) (*model.Repo
 	if err != nil {
 		return nil, err
 	}
-	a := &app{client: gh.New(token), opts: extractOpts}
+	a := &app{client: gh.New(token), opts: extractOpts, maxCommandLines: o.maxCommandLines}
 
 	if tgt.RunID != 0 {
 		return a.runReport(ctx, tgt)
@@ -522,8 +529,9 @@ func flagTakesValue(fs *flag.FlagSet, arg string) bool {
 
 // app holds the dependencies needed to drill into a failed job's logs.
 type app struct {
-	client *gh.Client
-	opts   logs.Options
+	client          *gh.Client
+	opts            logs.Options
+	maxCommandLines int
 }
 
 func (a *app) drill(ctx context.Context, owner, repo string, job *model.JobResult) {
@@ -578,7 +586,7 @@ func (a *app) buildFailedSteps(job model.JobResult, raw string) []model.FailedSt
 		}
 		if i < len(errSecs) {
 			sec := errSecs[i]
-			fs.Command = sec.Command()
+			fs.Command = logs.ClampCommand(sec.FullCommand(), a.maxCommandLines)
 			fs.Kind = sec.Kind()
 			fs.Excerpt = logs.Extract(sec.Body, a.opts)
 		} else {

@@ -113,6 +113,7 @@ shuck justanotherspy/shuck 42
 | `--tail N` | 100 | Lines tailed when a long log has no error match. |
 | `--pattern RE` | — | Override the error-matching regexp. |
 | `--full` | false | Show full, untrimmed logs for failed steps. |
+| `--max-command-lines N` | 30 | Max lines of a failed step's command to show; longer commands are truncated (`0` = no limit). |
 | `--token T` | — | GitHub token (overrides `GITHUB_TOKEN`/`GH_TOKEN`). |
 | `--refresh` | false | Ignore and rebuild the cache. |
 | `--no-cache` | false | Do not read or write the cache. |
@@ -212,6 +213,12 @@ For each failed step:
   each match are kept, with omitted spans marked.
 - **Long logs with no match** are tailed to the last `--tail` lines (the
   "error only at the very end" case).
+
+Each failed step also shows the command it ran: the full (multi-line) shell
+script for a `run:` step, or the `owner/action@ref` plus the echoed `with:`
+inputs and `env:` for an action step. Commands longer than `--max-command-lines`
+(default 30) are truncated with a `… (N more lines) …` marker; pass
+`--max-command-lines 0` for no limit.
 
 ### Example output
 
