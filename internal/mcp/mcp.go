@@ -24,6 +24,7 @@ import (
 	"github.com/justanotherspy/shuck/internal/logs"
 	"github.com/justanotherspy/shuck/internal/model"
 	"github.com/justanotherspy/shuck/internal/render"
+	"github.com/justanotherspy/shuck/internal/security"
 	"github.com/justanotherspy/shuck/internal/target"
 )
 
@@ -55,6 +56,22 @@ downloaded.
 Pass url for an Actions run or job URL, or repo + run_id (optionally with
 job_id to restrict to one job). Requires a GitHub token in GITHUB_TOKEN or
 GH_TOKEN in the server's environment.`
+
+const inspectSecurityDesc = `Summarize a repository's GitHub security alerts in one shot.
+
+shuck pulls a repo's code scanning, secret scanning, and Dependabot alerts and
+returns one summary: severity, file:line, the vulnerable package and its fix
+version, and CVE/GHSA IDs (npm malware advisories surface as Dependabot alerts).
+Raw secret values are never returned. A source that is not enabled, or not
+visible to the token, is reported and skipped rather than failing — so a repo
+with only some features enabled still produces output. Reach for this to triage
+a repo's security posture or decide what to fix first.
+
+Target selection: pass url for a github.com/<owner>/<repo>[/...] URL, or repo as
+owner/repo, or nothing to use the repo of the local working directory. state
+filters which alerts to show (open by default; open|all|dismissed|fixed|resolved).
+Requires a GitHub token in GITHUB_TOKEN or GH_TOKEN in the server's environment;
+private-repo security data needs the security_events (or repo) scope.`
 
 // Serve runs the shuck MCP server over stdio until the client disconnects or
 // ctx is cancelled. It takes no positional arguments.
@@ -103,6 +120,13 @@ func newServer() *mcp.Server {
 		Description: inspectRunDesc,
 		Annotations: annotations,
 	}, inspectRun)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "inspect_security",
+		Title:       "Inspect a repo's security alerts",
+		Description: inspectSecurityDesc,
+		Annotations: annotations,
+	}, inspectSecurity)
 
 	return s
 }
@@ -265,4 +289,45 @@ func toResult(report *model.Report) (*mcp.CallToolResult, jsonout.Document, erro
 		Content: []mcp.Content{&mcp.TextContent{Text: b.String()}},
 	}
 	return res, jsonout.NewDocument(report), nil
+}
+
+type inspectSecurityInput struct {
+	Repo    string `json:"repo,omitempty" jsonschema:"GitHub repository as owner/repo. If omitted, it is inferred from the local working directory's origin remote."`
+	URL     string `json:"url,omitempty" jsonschema:"A github.com/<owner>/<repo>[/...] URL (a plain repo, PR, or Actions URL). Takes precedence over repo."`
+	State   string `json:"state,omitempty" jsonschema:"Alert state to show: open (default), all, dismissed, fixed, or resolved."`
+	Refresh bool   `json:"refresh,omitempty" jsonschema:"Ignore and rebuild the cache (alerts are cached for an hour)."`
+}
+
+func inspectSecurity(ctx context.Context, _ *mcp.CallToolRequest, in inspectSecurityInput) (*mcp.CallToolResult, security.Document, error) {
+	owner, repo, err := target.ResolveRepo(in.targetArgs())
+	if err != nil {
+		return nil, security.Document{}, err
+	}
+	report, err := cli.Security(ctx, owner, repo, cli.SecurityOptions{State: in.State, Refresh: in.Refresh})
+	if err != nil {
+		return nil, security.Document{}, err
+	}
+	return toSecurityResult(report)
+}
+
+// targetArgs maps the tool inputs onto the positional args target.ResolveRepo
+// understands, so the MCP and CLI share one resolution path.
+func (in inspectSecurityInput) targetArgs() []string {
+	switch {
+	case in.URL != "":
+		return []string{in.URL}
+	case in.Repo != "":
+		return []string{in.Repo}
+	default:
+		return nil // local repo
+	}
+}
+
+func toSecurityResult(report *model.SecurityReport) (*mcp.CallToolResult, security.Document, error) {
+	var b strings.Builder
+	security.Render(&b, report)
+	res := &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: b.String()}},
+	}
+	return res, security.NewDocument(report), nil
 }

@@ -6,7 +6,10 @@ description: >-
   for structured output) or the shuck MCP tools — use either or both. Use when
   the user wants to know why CI is failing, debug a failed GitHub Actions check,
   pull the error logs for a PR without clicking through GitHub, or wait for CI to
-  complete.
+  complete. It also summarizes a repository's security alerts (code scanning,
+  secret scanning, and Dependabot) via `shuck security` / the `inspect_security`
+  tool — use that when the user wants to triage a repo's security findings or
+  decide what to fix.
 ---
 
 # shuck — failing CI logs for a PR
@@ -66,6 +69,7 @@ shuck --watch [flags] [target]  # poll until every check finishes, then report
 | --- | --- |
 | `shuck [target]` | inspect a PR / run / job once and print failing steps |
 | `shuck --watch [target]` | poll until CI is terminal, then print the final report |
+| `shuck security [owner/repo \| url]` | summarize a repo's security alerts (code scanning, secrets, Dependabot) |
 | `shuck version [--check]` | print the installed version; `--check` looks for a newer release |
 | `shuck upgrade` | download + install the latest release in place (and refresh the installed skill) |
 | `shuck setup` | install this skill + a CLAUDE.md note (and, optionally, the MCP) |
@@ -151,11 +155,56 @@ you get typed data without parsing CLI text.
 | --- | --- | --- |
 | `inspect_pr` | a PR's failing CI (the usual first move) | target fields per the table above |
 | `inspect_run` | one Actions run or job a CI event points at | `url`, **or** `repo`+`run_id`(+`job_id`) |
+| `inspect_security` | a repo's security alerts (code scanning, secrets, Dependabot) | `repo` (`owner/repo`) **or** `url`, or none → the local repo; optional `state`, `refresh` |
 
 Both accept the same extraction knobs as the CLI flags: `full`, `context`,
 `pattern`, `short_threshold`, `tail`. `inspect_pr` additionally takes the cache
 knobs `refresh`, `no_cache`, and `offline` (cache only; requires `repo`+`pr`).
 The MCP tools are one-shot snapshots — to **wait** for CI, use the CLI watch loop.
+
+## Security alerts
+
+`shuck security` (CLI) and `inspect_security` (MCP) summarize a repository's
+GitHub security alerts in one shot, so you can triage what to fix without paging
+through the Security tab. Three sources:
+
+- **Code scanning** (e.g. CodeQL) — rule, severity, `file:line`.
+- **Secret scanning** — secret type and file locations. The **raw secret value
+  is never fetched or shown** — only its type, location, and state.
+- **Dependabot** — vulnerable package, ecosystem, fix version, CVE/GHSA IDs. npm
+  **malware** advisories surface here (no separate malware endpoint).
+
+```sh
+shuck security                       # the local working directory's repo
+shuck security owner/repo            # an explicit repo (or a github.com URL)
+shuck security --state all owner/repo  # include dismissed/fixed/resolved
+shuck security --json owner/repo     # the stable JSON document
+shuck security --exit-code owner/repo  # exit 1 when open alerts are found
+```
+
+Each source degrades independently: one that is **not enabled** or **not visible
+to the token** is reported and skipped, not failed — so a repo with only some
+features on still produces output. By default only **open** alerts show; widen
+with `--state open|all|dismissed|fixed|resolved`.
+
+The MCP `inspect_security` tool takes `repo` (`owner/repo`) **or** `url` (any
+`github.com/<owner>/<repo>[/...]` URL), or neither to use the local repo, plus
+optional `state` and `refresh`. It returns the rendered text **and** a stable
+JSON document as structured output:
+
+- `schema_version` (int), `repo` `{owner, repo}`, `state`.
+- `summary` `{total, by_severity{critical…unknown}, by_source{code_scanning, secret_scanning, dependabot}}`.
+- `sources` — each of `code_scanning` / `secret_scanning` / `dependabot` with a
+  `{status, message?}` where status is `ok` | `disabled` | `forbidden` | `error`.
+- `code_scanning_alerts[]`, `secret_scanning_alerts[]`, `dependabot_alerts[]` —
+  per-alert detail (severity, location, package → `first_patched_version`, IDs,
+  `html_url`). No raw secret value is ever present.
+
+Exit code (CLI): `0` on any successful run, `2` only on an operational error;
+`--exit-code` makes open findings exit `1` for CI gating. Results are cached
+under `~/.shuck/security/<owner>/<repo>` for an hour; `--refresh` re-fetches.
+Security data — especially private repos — needs a token with the
+`security_events` (or `repo`) scope.
 
 ## Watching CI to completion (CLI)
 

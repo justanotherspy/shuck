@@ -101,6 +101,7 @@ shuck <pr>                  # owner/repo inferred from the local repo's origin
 shuck                       # inspect the open PR for the current branch
 shuck --watch [target]      # poll until every check finishes, then print the report
 shuck action <owner>/<action>[@<version>]  # resolve an Action to its latest tag + SHA for pinning
+shuck security [owner/repo | url]  # summarize a repo's security alerts (code scanning, secrets, Dependabot)
 shuck setup                 # install the shuck skill + CLAUDE.md note for Claude Code
 shuck version [--check]     # print the installed version; --check looks for an update
 shuck upgrade               # download and install the latest release in place
@@ -268,6 +269,62 @@ avoid re-listing; `--refresh` re-fetches immediately. Authentication is optional
 for public repos — set `GITHUB_TOKEN`/`GH_TOKEN` (or `--token`) to lift the
 unauthenticated rate limit.
 
+### Security alerts
+
+`shuck security [owner/repo | url]` pulls a repository's GitHub security alerts
+from every available source and summarizes them in one pass — so a human or an
+agent can see what to fix without clicking through the Security tab:
+
+```sh
+shuck security                         # the repo of the local working directory
+shuck security justanotherspy/shuck    # an explicit repository
+shuck security https://github.com/owner/repo   # any github.com/<owner>/<repo>[/...] URL
+shuck security --state all owner/repo  # include dismissed/fixed/resolved, not just open
+shuck security --json owner/repo       # the stable JSON document
+shuck security --exit-code owner/repo  # exit 1 when open alerts are found (CI gating)
+```
+
+It covers three sources:
+
+- **Code scanning** (e.g. CodeQL) — rule, severity, and `file:line`.
+- **Secret scanning** — secret type and the file locations it was found in. The
+  **raw secret value is never fetched or shown**, by design.
+- **Dependabot** — the vulnerable package, its ecosystem, the fix version, and
+  the CVE/GHSA IDs. npm **malware** advisories surface here too (there is no
+  separate malware endpoint).
+
+Each source degrades independently: one that is not enabled (or not visible to
+your token) is reported and skipped rather than failing the command, so a repo
+with only some features enabled still produces output. By default only **open**
+alerts are shown; widen with `--state open|all|dismissed|fixed|resolved`.
+
+```
+justanotherspy/shuck — security alerts (open)
+
+Summary: 2 alerts — 1 critical, 1 high
+
+Dependabot (2):
+  ● critical  npm  lodash → 4.17.21   GHSA-jf85-cpcp-j695  CVE-2019-10744
+      Prototype pollution in lodash
+      vulnerable: < 4.17.21
+      manifest: package-lock.json
+      https://github.com/justanotherspy/shuck/security/dependabot/12
+  ● high  pip  django → 3.2.4   GHSA-xxxx  CVE-2021-33203
+      Potential directory traversal via admindocs
+      manifest: requirements.txt
+      https://github.com/justanotherspy/shuck/security/dependabot/9
+
+Code scanning: not enabled or no access — skipped.
+Secret scanning: not enabled or no access — skipped.
+```
+
+Results are cached under `~/.shuck/security/<owner>/<repo>` for an hour;
+`--refresh` re-fetches immediately. Security data — especially on private repos —
+needs a token (`GITHUB_TOKEN`/`GH_TOKEN`, or `--token`) with the
+`security_events` (or `repo`) scope. The exit code is `0` on any successful run
+and `2` only on an operational error; pass `--exit-code` to make open findings
+exit `1` for CI gating.
+
 ### How log extraction works
 
 For each failed step:
@@ -324,20 +381,20 @@ instead of scraping CLI text. Start it over stdio with:
 shuck mcp
 ```
 
-It exposes two read-only tools:
+It exposes three read-only tools:
 
 | Tool | Purpose | Key inputs |
 | --- | --- | --- |
 | `inspect_pr` | Failing CI step logs for a PR. | `repo` (`owner/repo`), `pr`, `url`; or none → the open PR for the current branch |
 | `inspect_run` | Failing steps for a single Actions run or job. | `url`; or `repo` + `run_id` (+ optional `job_id`) |
+| `inspect_security` | A repo's security alerts (code scanning, secrets, Dependabot). | `repo` (`owner/repo`) or `url`; or none → the local repo. Optional `state`, `refresh` |
 
-Both accept the same log-extraction knobs as the CLI (`context`,
-`short_threshold`, `tail`, `pattern`, `full`); `inspect_pr` also takes the cache
-flags (`refresh`, `no_cache`, `offline`). Each call returns the rendered,
-human-readable report as text **and** the same stable [`--json`](#json-output)
-document as typed structured output, so programmatic consumers get the schema
-for free. Authentication uses `GITHUB_TOKEN`/`GH_TOKEN` from the server's
-environment.
+`inspect_pr` and `inspect_run` accept the same log-extraction knobs as the CLI
+(`context`, `short_threshold`, `tail`, `pattern`, `full`); `inspect_pr` also
+takes the cache flags (`refresh`, `no_cache`, `offline`). Each call returns the
+rendered, human-readable report as text **and** the same stable JSON document as
+typed structured output, so programmatic consumers get the schema for free.
+Authentication uses `GITHUB_TOKEN`/`GH_TOKEN` from the server's environment.
 
 Register it with any MCP client. For Claude Code, add it to `.mcp.json`:
 

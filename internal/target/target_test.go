@@ -35,6 +35,40 @@ func TestParseRemote(t *testing.T) {
 	}
 }
 
+func TestResolveRepo(t *testing.T) {
+	cases := []struct {
+		in          []string
+		owner, repo string
+		wantErr     bool
+	}{
+		{[]string{"justanotherspy/shuck"}, "justanotherspy", "shuck", false},
+		{[]string{"https://github.com/justanotherspy/shuck"}, "justanotherspy", "shuck", false},
+		{[]string{"https://github.com/justanotherspy/shuck.git"}, "justanotherspy", "shuck", false},
+		{[]string{"github.com/justanotherspy/shuck"}, "justanotherspy", "shuck", false},
+		{[]string{"https://github.com/justanotherspy/shuck/pull/42"}, "justanotherspy", "shuck", false},
+		{[]string{"https://github.com/justanotherspy/shuck/actions/runs/123"}, "justanotherspy", "shuck", false},
+		{[]string{"https://github.com/justanotherspy/shuck/tree/main"}, "justanotherspy", "shuck", false},
+		{[]string{"not-a-repo"}, "", "", true},
+		{[]string{"a", "b"}, "", "", true},
+	}
+	for _, c := range cases {
+		owner, repo, err := ResolveRepo(c.in)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("ResolveRepo(%v): expected error", c.in)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("ResolveRepo(%v): %v", c.in, err)
+			continue
+		}
+		if owner != c.owner || repo != c.repo {
+			t.Errorf("ResolveRepo(%v) = %q/%q, want %q/%q", c.in, owner, repo, c.owner, c.repo)
+		}
+	}
+}
+
 func TestResolveArgs(t *testing.T) {
 	tgt, err := Resolve([]string{"justanotherspy/shuck", "42"})
 	if err != nil {

@@ -32,13 +32,14 @@ render → update cache.
 | Package | Responsibility |
 | --- | --- |
 | `main.go` | Thin entry; dispatches the `mcp` and `setup` subcommands, else calls `cli.Run`. Holds the `go:embed` of the plugin's `SKILL.md` that `setup` installs. |
-| `internal/cli` | Flag parsing + pipeline orchestration; the `app.drill` / `app.buildFailedSteps` logic that pairs failed API steps with error log sections. Also the `version` / `upgrade` / `action` subcommands. |
+| `internal/cli` | Flag parsing + pipeline orchestration; the `app.drill` / `app.buildFailedSteps` logic that pairs failed API steps with error log sections. Also the `version` / `upgrade` / `action` / `security` subcommands. |
 | `internal/action` | `shuck action`: parse an `owner/action[@version]` ref and pick the latest matching semver tag from a repo's tag list (pure selection in `Select`; stable preferred, prerelease only as a fallback), then render the SHA-pin line / JSON. |
+| `internal/security` | `shuck security`: sort + render a `model.SecurityReport` (code scanning, secret scanning, Dependabot alerts) to text / versioned JSON. Pure presentation; the gh layer fetches, the `cli.Security` core assembles. |
 | `internal/release` | Self-update: resolve the latest GitHub release, download + checksum-verify the matching archive, and replace the running binary in place. Backs `shuck version --check` / `shuck upgrade`. |
 | `internal/setup` | `shuck setup`: install the embedded skill into `~/.claude/skills/shuck`, add a managed note to the user's `CLAUDE.md`, and optionally register the MCP at user scope (`claude mcp add`). The skill is `go:embed`-ed from the plugin in `main.go`, so the standalone install and the marketplace stay in sync. |
 | `internal/target` | Resolve owner/repo/PR from args or the local repo (via go-git). |
-| `internal/gh` | go-github wrappers: PR head, Actions runs/jobs, job-log download, non-Actions checks. Also a small hand-rolled GraphQL client (`reviews.go`) for PR reviews + comment threads, since `isResolved`/`resolvedBy` are GraphQL-only. |
-| `internal/cache` | `~/.shuck/cache/<owner>/<repo>/<pr>/cache.json` load/save + inspected-job indexing. Also `~/.shuck/actions/<owner>/<repo>/tags.json` for `shuck action`'s tag list (TTL-checked by the CLI). |
+| `internal/gh` | go-github wrappers: PR head, Actions runs/jobs, job-log download, non-Actions checks, and the security-alert lists (`security.go`: code scanning / secret scanning / Dependabot). Also a small hand-rolled GraphQL client (`reviews.go`) for PR reviews + comment threads, since `isResolved`/`resolvedBy` are GraphQL-only. |
+| `internal/cache` | `~/.shuck/cache/<owner>/<repo>/<pr>/cache.json` load/save + inspected-job indexing. Also `~/.shuck/actions/<owner>/<repo>/tags.json` for `shuck action`'s tag list and `~/.shuck/security/<owner>/<repo>/alerts.json` for `shuck security` (both TTL-checked by the CLI). |
 | `internal/logs` | Parse a job log into `##[group]`-delimited sections; extract the high-signal error excerpt. |
 | `internal/render` | Format a `model.Report` to text. |
 | `internal/model` | Shared domain types (imports nothing internal). |
@@ -67,6 +68,17 @@ render → update cache.
   `--review-comment-limit`. A cheap `gh.ReviewsFingerprint` short-circuits the
   full review pull when nothing changed; `--ci-only`/`--reviews-only` focus the
   output (and skip the cache write to avoid clobbering the other dimension).
+- **Security** (`shuck security`): `cli.Security` resolves a repo (no PR — see
+  `target.ResolveRepo`) and fetches three sources sequentially via the
+  `newSecurityLister` package var (stubbed in tests). Each source **degrades
+  independently** — a 404 ⇒ `disabled`, 403 ⇒ `forbidden` (see
+  `classifySecurityErr`) — so a missing feature never fails the command; only an
+  all-sources error is fatal. The `--state` value maps per source (vocabularies
+  differ; a source without an equivalent is reported `disabled`). **The raw
+  secret value is never read** from the API, so it cannot leak — `model` has no
+  field for it. Reports cache for `securityCacheTTL` (1h), keyed by state; a
+  result with any errored source is not cached. Exit is `0` on success, `2` on an
+  operational error; `--exit-code` makes open findings exit `1`.
 
 ## Conventions
 
