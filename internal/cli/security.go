@@ -28,6 +28,7 @@ type securityLister interface {
 	ListCodeScanningAlerts(ctx context.Context, owner, repo, state string) ([]model.CodeScanningAlert, model.SecuritySource)
 	ListSecretScanningAlerts(ctx context.Context, owner, repo, state string) ([]model.SecretScanningAlert, model.SecuritySource)
 	ListDependabotAlerts(ctx context.Context, owner, repo, state string) ([]model.DependabotAlert, model.SecuritySource)
+	DefaultBranchSHA(ctx context.Context, owner, repo string) (string, error)
 }
 
 // newSecurityLister builds the client used by `shuck security`. It is a package
@@ -143,10 +144,8 @@ func Security(ctx context.Context, owner, repo string, opts SecurityOptions) (*m
 		return nil, fmt.Errorf("invalid state %q (want: open|all|dismissed|fixed|resolved)", state)
 	}
 
-	if !opts.Refresh {
-		if rep, fetchedAt, ok, err := cache.LoadSecurityReport(owner, repo, state); err == nil && ok && time.Since(fetchedAt) < securityCacheTTL {
-			return rep, nil
-		}
+	if dir, err := cache.SecurityDir(owner, repo); err == nil {
+		_ = cache.Purge(securityCacheTTL, dir)
 	}
 
 	token := opts.Token
@@ -154,6 +153,21 @@ func Security(ctx context.Context, owner, repo string, opts SecurityOptions) (*m
 		token = tokenFromEnv()
 	}
 	lister := newSecurityLister(token)
+
+	var currentSHA string
+	if !opts.Refresh {
+		if rep, cachedSHA, fetchedAt, ok, err := cache.LoadSecurityReport(owner, repo, state); err == nil && ok && time.Since(fetchedAt) < securityCacheTTL {
+			// Within the TTL, reuse the cache unless the default branch moved. If
+			// the cheap SHA check itself fails (e.g. offline), the fresh cache
+			// still stands rather than forcing a full re-fetch that would also fail.
+			sha, shaErr := lister.DefaultBranchSHA(ctx, owner, repo)
+			if shaErr != nil || sha == cachedSHA {
+				return rep, nil
+			}
+			currentSHA = sha
+		}
+	}
+
 	report := &model.SecurityReport{Owner: owner, Repo: repo, State: state, CheckedAt: time.Now()}
 	report.CodeScanningAlerts, report.CodeScanning = lister.ListCodeScanningAlerts(ctx, owner, repo, state)
 	report.SecretScanningAlerts, report.SecretScanning = lister.ListSecretScanningAlerts(ctx, owner, repo, state)
@@ -167,7 +181,12 @@ func Security(ctx context.Context, owner, repo string, opts SecurityOptions) (*m
 	// Don't cache a result that includes a transient error; --refresh aside, a
 	// later run within the TTL should retry the failed source.
 	if !anySourceError(report) {
-		if err := cache.SaveSecurityReport(report); err != nil {
+		if currentSHA == "" {
+			// Best-effort: a failed SHA lookup stores "", forcing the next run
+			// onto the TTL path rather than the cheap SHA short-circuit.
+			currentSHA, _ = lister.DefaultBranchSHA(ctx, owner, repo)
+		}
+		if err := cache.SaveSecurityReport(report, currentSHA); err != nil {
 			fmt.Fprintln(os.Stderr, "shuck: warning: could not write security cache:", err)
 		}
 	}

@@ -17,19 +17,23 @@ import (
 )
 
 // actionCacheTTL bounds how long a repo's cached tag list is reused before
-// shuck re-fetches it. Releases published after the window are picked up on the
-// next run, or immediately with --refresh.
-const actionCacheTTL = 24 * time.Hour
+// shuck re-validates it. Within the window the cache is reused only when the
+// repo's default-branch SHA is unchanged; past it shuck always re-fetches (a new
+// release tag can appear without a new default-branch commit). --refresh forces
+// a re-fetch immediately.
+const actionCacheTTL = time.Hour
 
-// tagLister is the slice of gh.Client the action command needs. It is an
-// interface so tests can stub the network.
-type tagLister interface {
+// TagLister is the slice of gh.Client the action command needs: the repo's tag
+// list plus the cheap default-branch SHA used for cache invalidation. It is an
+// interface, and NewTagLister a package var, so embedders and tests can inject a
+// client without hitting GitHub.
+type TagLister interface {
 	ListActionTags(ctx context.Context, owner, repo string) ([]model.ActionTag, error)
+	DefaultBranchSHA(ctx context.Context, owner, repo string) (string, error)
 }
 
-// newTagLister builds the client used by `shuck action`. It is a package var so
-// tests can supply a stub without hitting GitHub.
-var newTagLister = func(token string) tagLister { return gh.New(token) }
+// NewTagLister builds the client used by `shuck action`.
+var NewTagLister = func(token string) TagLister { return gh.New(token) }
 
 const actionUsage = `shuck action — resolve a GitHub Action to its latest tag and commit SHA, for SHA-pinning.
 
@@ -43,7 +47,8 @@ It prints the resolved tag, the commit SHA, and a pin line ready to drop after
   owner/action@<sha> # <tag>
 
 Auth is optional for public repos: set GITHUB_TOKEN/GH_TOKEN or pass --token to
-lift the unauthenticated rate limit. Tags are cached under ~/.shuck for a day.
+lift the unauthenticated rate limit. Tags are cached under ~/.shuck for an hour,
+re-validated against the repo's default-branch commit.
 
 Flags:
 `
@@ -133,6 +138,9 @@ func parseActionArgs(args []string) (action.Ref, error) {
 // resolveAction loads the action repo's tag list (cached when fresh, else from
 // GitHub) and selects the latest tag matching the ref's constraint.
 func resolveAction(ctx context.Context, ref action.Ref, token string, refresh bool) (action.Resolved, error) {
+	if dir, err := cache.ActionDir(ref.Owner, ref.Repo); err == nil {
+		_ = cache.Purge(actionCacheTTL, dir)
+	}
 	tags, err := loadOrFetchTags(ctx, ref.Owner, ref.Repo, token, refresh)
 	if err != nil {
 		return action.Resolved{}, err
@@ -150,16 +158,30 @@ func resolveAction(ctx context.Context, ref action.Ref, token string, refresh bo
 // loadOrFetchTags returns the repo's tags from the cache when a fresh entry
 // exists, otherwise fetches them from GitHub and refreshes the cache.
 func loadOrFetchTags(ctx context.Context, owner, repo, token string, refresh bool) ([]model.ActionTag, error) {
+	lister := NewTagLister(token)
+	var currentSHA string
 	if !refresh {
-		if tags, fetchedAt, ok, err := cache.LoadActionTags(owner, repo); err == nil && ok && time.Since(fetchedAt) < actionCacheTTL {
-			return tags, nil
+		if tags, cachedSHA, fetchedAt, ok, err := cache.LoadActionTags(owner, repo); err == nil && ok && time.Since(fetchedAt) < actionCacheTTL {
+			// Within the TTL, reuse the cache unless the default branch moved. If
+			// the cheap SHA check itself fails (e.g. offline), the fresh cache
+			// still stands rather than forcing a full re-fetch that would also fail.
+			sha, shaErr := lister.DefaultBranchSHA(ctx, owner, repo)
+			if shaErr != nil || sha == cachedSHA {
+				return tags, nil
+			}
+			currentSHA = sha
 		}
 	}
-	tags, err := newTagLister(token).ListActionTags(ctx, owner, repo)
+	tags, err := lister.ListActionTags(ctx, owner, repo)
 	if err != nil {
 		return nil, err
 	}
-	if err := cache.SaveActionTags(owner, repo, tags); err != nil {
+	if currentSHA == "" {
+		// Best-effort: a failed SHA lookup stores "", forcing the next run onto
+		// the TTL path rather than the cheap SHA short-circuit.
+		currentSHA, _ = lister.DefaultBranchSHA(ctx, owner, repo)
+	}
+	if err := cache.SaveActionTags(owner, repo, currentSHA, tags); err != nil {
 		fmt.Fprintln(os.Stderr, "shuck: warning: could not write action cache:", err)
 	}
 	return tags, nil

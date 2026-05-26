@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -10,6 +11,7 @@ import (
 
 	"github.com/justanotherspy/shuck/internal/action"
 	"github.com/justanotherspy/shuck/internal/cache"
+	"github.com/justanotherspy/shuck/internal/cli"
 	"github.com/justanotherspy/shuck/internal/jsonout"
 	"github.com/justanotherspy/shuck/internal/model"
 )
@@ -171,14 +173,32 @@ func TestRoundtripInspectLogsOffline(t *testing.T) {
 
 // TestRoundtripInspectActionCached calls inspect_action against a seeded tag
 // cache so the resolution runs without network.
+// fakeTagLister serves a seeded default-branch SHA so the cached-resolution path
+// runs without network. ListActionTags errors so the test fails loudly if the
+// cache is unexpectedly bypassed.
+type fakeTagLister struct{ sha string }
+
+func (f fakeTagLister) ListActionTags(context.Context, string, string) ([]model.ActionTag, error) {
+	return nil, fmt.Errorf("ListActionTags should not be called when the cache is warm")
+}
+func (f fakeTagLister) DefaultBranchSHA(context.Context, string, string) (string, error) {
+	return f.sha, nil
+}
+
 func TestRoundtripInspectActionCached(t *testing.T) {
 	t.Setenv("SHUCK_HOME", t.TempDir())
-	if err := cache.SaveActionTags("actions", "checkout", []model.ActionTag{
+	const defaultSHA = "9999999999999999999999999999999999999999"
+	if err := cache.SaveActionTags("actions", "checkout", defaultSHA, []model.ActionTag{
 		{Name: "v4.2.0", SHA: "1111111111111111111111111111111111111111"},
 		{Name: "v4.1.0", SHA: "2222222222222222222222222222222222222222"},
 	}); err != nil {
 		t.Fatalf("seed action cache: %v", err)
 	}
+	// Stub the GitHub client: the SHA check matches the seeded cache, so the
+	// resolution reuses the cache and never touches the (erroring) tag list.
+	prev := cli.NewTagLister
+	cli.NewTagLister = func(string) cli.TagLister { return fakeTagLister{sha: defaultSHA} }
+	t.Cleanup(func() { cli.NewTagLister = prev })
 
 	ctx := context.Background()
 	cs := connectClient(ctx, t)

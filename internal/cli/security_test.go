@@ -19,6 +19,9 @@ type stubSecurity struct {
 	dep       []model.DependabotAlert
 	depSrc    model.SecuritySource
 	calls     int
+	sha       string // default-branch SHA returned by DefaultBranchSHA
+	shaCalls  int
+	shaErr    error
 }
 
 func (s *stubSecurity) ListCodeScanningAlerts(_ context.Context, _, _, _ string) ([]model.CodeScanningAlert, model.SecuritySource) {
@@ -32,6 +35,11 @@ func (s *stubSecurity) ListSecretScanningAlerts(_ context.Context, _, _, _ strin
 
 func (s *stubSecurity) ListDependabotAlerts(_ context.Context, _, _, _ string) ([]model.DependabotAlert, model.SecuritySource) {
 	return s.dep, s.depSrc
+}
+
+func (s *stubSecurity) DefaultBranchSHA(_ context.Context, _, _ string) (string, error) {
+	s.shaCalls++
+	return s.sha, s.shaErr
 }
 
 func withStubSecurity(t *testing.T, s *stubSecurity) {
@@ -164,5 +172,18 @@ func TestRunSecurityCachesAcrossRuns(t *testing.T) {
 	runSecurity([]string{"o/r", "--refresh"}, &out, &errb)
 	if s.calls != 2 {
 		t.Errorf("--refresh should re-fetch: calls = %d, want 2", s.calls)
+	}
+}
+
+func TestRunSecurityRefetchesWhenDefaultSHAChanges(t *testing.T) {
+	s := okStub()
+	s.sha = "sha-main"
+	withStubSecurity(t, s)
+	var out, errb bytes.Buffer
+	runSecurity([]string{"o/r"}, &out, &errb)
+	s.sha = "sha-moved" // a new default-branch commit appeared
+	runSecurity([]string{"o/r"}, &out, &errb)
+	if s.calls != 2 {
+		t.Errorf("a moved default branch should re-fetch alerts: calls = %d, want 2", s.calls)
 	}
 }

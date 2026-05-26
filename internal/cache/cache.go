@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/justanotherspy/shuck/internal/model"
 )
@@ -87,23 +88,80 @@ func Save(r *model.Report) error {
 	return nil
 }
 
-// JobKey identifies a job attempt for cache reuse.
-type JobKey struct {
-	ID         int64
-	RunAttempt int
+// logFile returns the path of a job attempt's raw log within a PR's cache:
+// ~/.shuck/cache/<owner>/<repo>/<pr>/logs/<jobID>-<attempt>.log.
+func logFile(owner, repo string, pr int, jobID int64, attempt int) (string, error) {
+	dir, err := Dir(owner, repo, pr)
+	if err != nil {
+		return "", err
+	}
+	name := strconv.FormatInt(jobID, 10) + "-" + strconv.Itoa(attempt) + ".log"
+	return filepath.Join(dir, "logs", name), nil
 }
 
-// InspectedJobs indexes the inspected failed jobs of a cached report by
-// (job id, run attempt) so a caller can reuse their drilled detail.
-func InspectedJobs(cached *model.Report) map[JobKey]model.JobResult {
-	out := map[JobKey]model.JobResult{}
-	if cached == nil {
-		return out
+// SaveJobLog persists a job attempt's whole raw log so a later run can re-parse
+// it locally (e.g. under different context flags) without re-downloading.
+func SaveJobLog(owner, repo string, pr int, jobID int64, attempt int, raw string) error {
+	path, err := logFile(owner, repo, pr, jobID, attempt)
+	if err != nil {
+		return err
 	}
-	for _, j := range cached.FailedJobs {
-		if j.Inspected {
-			out[JobKey{ID: j.ID, RunAttempt: j.RunAttempt}] = j
-		}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create log cache dir: %w", err)
 	}
-	return out
+	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+		return fmt.Errorf("write log cache %s: %w", path, err)
+	}
+	return nil
+}
+
+// LoadJobLog reads a job attempt's cached raw log. A missing log returns
+// ok=false.
+func LoadJobLog(owner, repo string, pr int, jobID int64, attempt int) (raw string, ok bool, err error) {
+	path, err := logFile(owner, repo, pr, jobID, attempt)
+	if err != nil {
+		return "", false, err
+	}
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("read log cache %s: %w", path, err)
+	}
+	return string(data), true, nil
+}
+
+// Purge best-effort removes cache entries whose record file has not been
+// refreshed within ttl, skipping keep (the absolute directory of the current
+// target so an in-flight run is never evicted). It keys off record-file mtime so
+// it works uniformly across the PR, action, and security cache shapes, and
+// removes the whole entry directory (PR logs included). Errors are returned for
+// visibility but callers treat purging as advisory.
+func Purge(ttl time.Duration, keep string) error {
+	base, err := Base()
+	if err != nil {
+		return err
+	}
+	cutoff := time.Now().Add(-ttl)
+	records := map[string]bool{fileName: true, actionsFileName: true, securityFileName: true}
+	for _, root := range []string{"cache", "actions", "security"} {
+		rootDir := filepath.Join(base, root)
+		_ = filepath.WalkDir(rootDir, func(path string, d os.DirEntry, walkErr error) error {
+			if walkErr != nil || d.IsDir() || !records[d.Name()] {
+				return nil
+			}
+			info, err := d.Info()
+			if err != nil || info.ModTime().After(cutoff) {
+				return nil
+			}
+			entryDir := filepath.Dir(path)
+			if entryDir == keep {
+				return nil
+			}
+			_ = os.RemoveAll(entryDir)
+			return nil
+		})
+	}
+	return nil
 }

@@ -15,11 +15,11 @@ func TestActionTagsRoundTrip(t *testing.T) {
 		{Name: "v4", SHA: "abc"},
 	}
 	before := time.Now()
-	if err := SaveActionTags("actions", "checkout", want); err != nil {
+	if err := SaveActionTags("actions", "checkout", "deadbeef", want); err != nil {
 		t.Fatalf("SaveActionTags: %v", err)
 	}
 
-	got, fetchedAt, ok, err := LoadActionTags("actions", "checkout")
+	got, sha, fetchedAt, ok, err := LoadActionTags("actions", "checkout")
 	if err != nil {
 		t.Fatalf("LoadActionTags: %v", err)
 	}
@@ -29,6 +29,9 @@ func TestActionTagsRoundTrip(t *testing.T) {
 	if len(got) != 2 || got[0].Name != "v4.2.2" || got[0].SHA != "abc" {
 		t.Fatalf("round trip mismatch: %+v", got)
 	}
+	if sha != "deadbeef" {
+		t.Errorf("default SHA = %q, want deadbeef", sha)
+	}
 	if fetchedAt.Before(before.Add(-time.Minute)) {
 		t.Errorf("fetchedAt %v not stamped near now", fetchedAt)
 	}
@@ -36,7 +39,7 @@ func TestActionTagsRoundTrip(t *testing.T) {
 
 func TestLoadActionTagsMissing(t *testing.T) {
 	t.Setenv("SHUCK_HOME", t.TempDir())
-	_, _, ok, err := LoadActionTags("nope", "missing")
+	_, _, _, ok, err := LoadActionTags("nope", "missing")
 	if err != nil {
 		t.Fatalf("LoadActionTags: %v", err)
 	}

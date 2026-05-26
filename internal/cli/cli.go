@@ -402,6 +402,10 @@ func (a *app) prReport(ctx context.Context, tgt target.Target, refresh, noCache 
 		}
 	}
 
+	if dir, err := cache.Dir(tgt.Owner, tgt.Repo, number); err == nil {
+		_ = cache.Purge(time.Hour, dir)
+	}
+
 	pr, err := a.client.GetPR(ctx, tgt.Owner, tgt.Repo, number)
 	if err != nil {
 		return nil, err
@@ -426,20 +430,25 @@ func (a *app) prReport(ctx context.Context, tgt target.Target, refresh, noCache 
 			return nil, err
 		}
 
-		var reuseFrom *model.Report
-		if cached != nil && cached.PR.HeadSHA == pr.HeadSHA {
-			reuseFrom = cached
-		}
-		inspected := cache.InspectedJobs(reuseFrom)
-
+		// Completed-job logs are immutable, so on the same head commit we reuse a
+		// cached raw log and re-parse it under the *current* flags (--full,
+		// --context, --pattern, …) rather than copying stale excerpts. Newly
+		// finished attempts are drilled and their raw log cached for next time.
+		sameCommit := !refresh && !noCache && cached != nil && cached.PR.HeadSHA == pr.HeadSHA
 		for i := range failed {
-			key := cache.JobKey{ID: failed[i].ID, RunAttempt: failed[i].RunAttempt}
-			if prev, ok := inspected[key]; ok {
-				failed[i].FailedSteps = prev.FailedSteps
-				failed[i].Inspected = true
-				continue
+			if sameCommit {
+				if raw, ok, _ := cache.LoadJobLog(tgt.Owner, tgt.Repo, number, failed[i].ID, failed[i].RunAttempt); ok {
+					failed[i].FailedSteps = a.buildFailedSteps(failed[i], raw)
+					failed[i].Inspected = true
+					continue
+				}
 			}
-			a.drill(ctx, tgt.Owner, tgt.Repo, &failed[i])
+			raw := a.drill(ctx, tgt.Owner, tgt.Repo, &failed[i])
+			if raw != "" && !noCache {
+				if err := cache.SaveJobLog(tgt.Owner, tgt.Repo, number, failed[i].ID, failed[i].RunAttempt, raw); err != nil {
+					fmt.Fprintln(os.Stderr, "shuck: warning: could not cache job log:", err)
+				}
+			}
 		}
 
 		report.FailedJobs = failed
@@ -452,10 +461,19 @@ func (a *app) prReport(ctx context.Context, tgt target.Target, refresh, noCache 
 		a.attachReviews(ctx, tgt.Owner, tgt.Repo, number, refresh, cached, report)
 	}
 
-	// Focus modes (the `logs` / `reviews` subcommands) render one dimension only,
-	// so skip the cache write to avoid clobbering the other dimension's cached data.
-	if !noCache && !a.ciOnly && !a.reviewsOnly {
-		if err := cache.Save(report); err != nil {
+	if !noCache {
+		// Focus modes (`logs` / `reviews`) render one dimension but persist the
+		// other from the existing cache so neither subcommand clobbers the other's
+		// data. The rendered report is left untouched.
+		toSave := *report
+		if a.reviewsOnly && cached != nil {
+			toSave.FailedJobs, toSave.CancelledJobs, toSave.RunningJobs = cached.FailedJobs, cached.CancelledJobs, cached.RunningJobs
+			toSave.OtherChecks, toSave.Run = cached.OtherChecks, cached.Run
+		}
+		if a.ciOnly && cached != nil {
+			toSave.Reviews, toSave.ReviewsFingerprint = cached.Reviews, cached.ReviewsFingerprint
+		}
+		if err := cache.Save(&toSave); err != nil {
 			fmt.Fprintln(os.Stderr, "shuck: warning: could not write cache:", err)
 		}
 	}
@@ -639,7 +657,10 @@ type app struct {
 	reviewsOnly        bool
 }
 
-func (a *app) drill(ctx context.Context, owner, repo string, job *model.JobResult) {
+// drill downloads a failed job's log, extracts its failed steps, and returns the
+// whole raw log so the caller can cache it for local re-parsing. It returns ""
+// when the log could not be downloaded (nothing worth caching).
+func (a *app) drill(ctx context.Context, owner, repo string, job *model.JobResult) string {
 	job.Inspected = true
 	raw, err := a.client.JobLog(ctx, owner, repo, job.ID)
 	if err != nil {
@@ -647,9 +668,10 @@ func (a *app) drill(ctx context.Context, owner, repo string, job *model.JobResul
 			Name:    "(logs unavailable)",
 			Excerpt: fmt.Sprintf("could not download logs: %v", err),
 		}}
-		return
+		return ""
 	}
 	job.FailedSteps = a.buildFailedSteps(*job, raw)
+	return raw
 }
 
 // buildFailedSteps pairs the API's failed steps with the log's error-bearing
