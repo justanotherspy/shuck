@@ -27,3 +27,21 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # PAT with contents:write on justanotherspy/homebrew-tap so goreleaser
+          # can push the generated cask there. The default GITHUB_TOKEN only
+          # reaches this repo, so a separate token is required for the tap.
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+
+      # The release is published/created as a prerelease so its "Latest" badge
+      # (and the Homebrew cask) never point at a release before its binaries and
+      # cask are attached. goreleaser has finished uploading by this step, so
+      # promote the release: clear the prerelease flag and mark it latest.
+      - name: Promote release to latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --draft=false \
+            --prerelease=false \
+            --latest
