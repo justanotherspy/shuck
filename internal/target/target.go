@@ -73,6 +73,55 @@ func Resolve(args []string) (Target, error) {
 	}
 }
 
+// ResolveRepo resolves just an owner/repo (no PR) for repo-scoped commands like
+// `shuck security`. It accepts an "owner/repo" slug, any github.com/<owner>/<repo>
+// URL (PR, run, or plain repo), or — with no args — the local repo's origin.
+func ResolveRepo(args []string) (owner, repo string, err error) {
+	switch len(args) {
+	case 0:
+		owner, repo, _, err = localRepo()
+		return owner, repo, err
+	case 1:
+		// URL forms first: splitSlug would mis-parse a URL as owner/repo.
+		if o, r, _, ok := parsePRURL(args[0]); ok {
+			return o, r, nil
+		}
+		if o, r, _, _, ok := parseActionsURL(args[0]); ok {
+			return o, r, nil
+		}
+		if o, r, ok := parseRepoURL(args[0]); ok {
+			return o, r, nil
+		}
+		if !strings.Contains(args[0], "://") {
+			if o, r, err := splitSlug(args[0]); err == nil {
+				return o, r, nil
+			}
+		}
+		return "", "", fmt.Errorf("invalid repository %q (expected owner/repo or a github.com URL)", args[0])
+	default:
+		return "", "", fmt.Errorf("too many arguments (expected: shuck security [owner/repo | url])")
+	}
+}
+
+// parseRepoURL extracts owner/repo from a plain repository URL such as
+// https://github.com/owner/repo (with or without a scheme, trailing path, or a
+// query/fragment). Unlike ParseRemote it takes the first two path segments after
+// the host, so a trailing /pull/<n> or /tree/<branch> does not shift the result.
+func parseRepoURL(s string) (owner, repo string, ok bool) {
+	s = strings.TrimSpace(s)
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if i := strings.IndexAny(s, "?#"); i >= 0 {
+		s = s[:i]
+	}
+	parts := strings.Split(strings.Trim(s, "/"), "/")
+	if len(parts) < 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return "", "", false // need host/owner/repo
+	}
+	return parts[1], strings.TrimSuffix(parts[2], ".git"), true
+}
+
 func splitSlug(slug string) (string, string, error) {
 	parts := strings.SplitN(slug, "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
