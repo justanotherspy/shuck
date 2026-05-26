@@ -10,8 +10,10 @@ import (
 // emits. It is bumped only on a breaking change; additive fields keep it.
 const SchemaVersion = 1
 
-// jsonDoc is the stable, machine-readable shape of a resolved pin.
-type jsonDoc struct {
+// Document is the stable, machine-readable shape of a resolved pin. Non-CLI
+// consumers (such as the MCP server) use NewDocument to return this same shape
+// as typed structured output without going through the byte encoder.
+type Document struct {
 	SchemaVersion int    `json:"schema_version"`
 	Action        string `json:"action"`
 	Owner         string `json:"owner"`
@@ -32,12 +34,9 @@ func Render(w io.Writer, r Resolved) {
 	fmt.Fprintf(w, "  pin: %s\n", r.PinLine())
 }
 
-// EncodeJSON writes the resolved pin as an indented JSON document with a
-// trailing newline.
-func EncodeJSON(w io.Writer, r Resolved) error {
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	return enc.Encode(jsonDoc{
+// NewDocument projects a resolved pin onto the stable, versioned JSON view.
+func NewDocument(r Resolved) Document {
+	return Document{
 		SchemaVersion: SchemaVersion,
 		Action:        r.Ref.Slug(),
 		Owner:         r.Ref.Owner,
@@ -48,5 +47,13 @@ func EncodeJSON(w io.Writer, r Resolved) error {
 		SHA:           r.SHA,
 		Ref:           r.UsesRef(),
 		Pin:           r.PinLine(),
-	})
+	}
+}
+
+// EncodeJSON writes the resolved pin as an indented JSON document with a
+// trailing newline.
+func EncodeJSON(w io.Writer, r Resolved) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(NewDocument(r))
 }

@@ -158,6 +158,30 @@ func TestResolvedFormatting(t *testing.T) {
 	}
 }
 
+func TestNewDocument(t *testing.T) {
+	r := Resolved{
+		Ref: Ref{Owner: "github", Repo: "codeql-action", Subpath: "init", Constraint: "v3"},
+		Tag: "v3.1.0",
+		SHA: "cafe",
+	}
+	doc := NewDocument(r)
+	want := Document{
+		SchemaVersion: SchemaVersion,
+		Action:        "github/codeql-action/init",
+		Owner:         "github",
+		Repo:          "codeql-action",
+		Subpath:       "init",
+		Requested:     "v3",
+		Tag:           "v3.1.0",
+		SHA:           "cafe",
+		Ref:           "github/codeql-action/init@cafe",
+		Pin:           "github/codeql-action/init@cafe # v3.1.0",
+	}
+	if doc != want {
+		t.Errorf("NewDocument() = %+v, want %+v", doc, want)
+	}
+}
+
 func TestEncodeJSON(t *testing.T) {
 	r := Resolved{
 		Ref: Ref{Owner: "github", Repo: "codeql-action", Subpath: "init", Constraint: "v3"},

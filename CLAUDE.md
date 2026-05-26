@@ -32,8 +32,8 @@ render → update cache.
 | Package | Responsibility |
 | --- | --- |
 | `main.go` | Thin entry; dispatches the `mcp` and `setup` subcommands, else calls `cli.Run`. Holds the `go:embed` of the plugin's `SKILL.md` that `setup` installs. |
-| `internal/cli` | Flag parsing + pipeline orchestration; the `app.drill` / `app.buildFailedSteps` logic that pairs failed API steps with error log sections. Also the `version` / `upgrade` / `action` / `security` subcommands. |
-| `internal/action` | `shuck action`: parse an `owner/action[@version]` ref and pick the latest matching semver tag from a repo's tag list (pure selection in `Select`; stable preferred, prerelease only as a fallback), then render the SHA-pin line / JSON. |
+| `internal/cli` | Flag parsing + pipeline orchestration; the `app.drill` / `app.buildFailedSteps` logic that pairs failed API steps with error log sections. Subcommands `logs` (CI only, `--run` for a single run), `reviews` (reviews only), `all` (CI + reviews + security — also the bare-`shuck` default, see `inspectAll`/`emitAll` in `all.go`), plus `action` / `security` / `version` / `upgrade`. Single-letter aliases (`l`/`r`/`a`/`s`) resolve via `subcommandAliases`. The exported `cli.Inspect` / `cli.Security` / `cli.Action` cores back both the CLI and the MCP server. |
+| `internal/action` | `shuck action`: parse an `owner/action[@version]` ref and pick the latest matching semver tag from a repo's tag list (pure selection in `Select`; stable preferred, prerelease only as a fallback), then render the SHA-pin line / JSON. The stable JSON shape is exported as `action.Document` (`NewDocument` projects it; `EncodeJSON` reuses it) so the MCP `inspect_action` tool returns typed output. |
 | `internal/security` | `shuck security`: sort + render a `model.SecurityReport` (code scanning, secret scanning, Dependabot alerts) to text / versioned JSON. Pure presentation; the gh layer fetches, the `cli.Security` core assembles. |
 | `internal/release` | Self-update: resolve the latest GitHub release, download + checksum-verify the matching archive, and replace the running binary in place. Backs `shuck version --check` / `shuck upgrade`. |
 | `internal/setup` | `shuck setup`: install the embedded skill into `~/.claude/skills/shuck`, add a managed note to the user's `CLAUDE.md`, and optionally register the MCP at user scope (`claude mcp add`). The skill is `go:embed`-ed from the plugin in `main.go`, so the standalone install and the marketplace stay in sync. |
@@ -66,8 +66,11 @@ render → update cache.
 - **Reviews** (`gh.PRReviews`, rendered grouped by verdict) collapse resolved/
   outdated threads to a one-line reason and cap active-thread comments at
   `--review-comment-limit`. A cheap `gh.ReviewsFingerprint` short-circuits the
-  full review pull when nothing changed; `--ci-only`/`--reviews-only` focus the
-  output (and skip the cache write to avoid clobbering the other dimension).
+  full review pull when nothing changed. The `logs` / `reviews` subcommands focus
+  on one dimension (they set the internal `ciOnly` / `reviewsOnly` gates, which
+  also skip the cache write to avoid clobbering the other dimension); the bare
+  `shuck` / `shuck all` path runs both plus security. The old `--ci-only` /
+  `--reviews-only` flags were removed in favor of the subcommands.
 - **Security** (`shuck security`): `cli.Security` resolves a repo (no PR — see
   `target.ResolveRepo`) and fetches three sources sequentially via the
   `newSecurityLister` package var (stubbed in tests). Each source **degrades

@@ -43,18 +43,23 @@ func versionString() string {
 	return "dev"
 }
 
-const usage = `shuck — show the exact failing CI step logs (and review comments) for a PR.
+const usage = `shuck — show the exact failing CI step logs, reviews, and security alerts for a PR.
+
+By default (and via "shuck all") shuck reports a PR's failing CI, its reviews,
+and the repo's security alerts together. Use a subcommand to focus on one.
 
 Usage:
-  shuck <owner>/<repo> <pr>   inspect an explicit PR
-  shuck <pr-url>              inspect a PR from its GitHub URL
-  shuck <run-url>             inspect a single GitHub Actions run
-  shuck <job-url>             inspect a single GitHub Actions job
-  shuck <pr>                  inspect a PR (owner/repo from the local repo)
-  shuck                       inspect the open PR for the current branch
+  shuck [target]              CI + reviews + security for a PR (same as "shuck all")
+  shuck <owner>/<repo> <pr>   an explicit PR ("shuck <pr-url>", "shuck <pr>", or "shuck" for the current branch)
+  shuck <run-url> | <job-url> a single GitHub Actions run / job (CI only)
   shuck --watch [target]      poll until every check finishes, then print the report
-  shuck action <owner>/<action>[@<version>]  resolve an Action to its latest tag + SHA for pinning
-  shuck security [owner/repo | url]  list a repo's open security alerts (code scanning, secrets, Dependabot)
+
+Subcommands (single-letter shorthands in parentheses):
+  shuck logs (l) [target] [--run <id|url>]   failing CI step logs for a PR or a single run
+  shuck reviews (r) [target]                 a PR's reviews and review-comment threads
+  shuck all [target]                         CI + reviews + security (the default)
+  shuck action (a) <owner>/<action>[@<version>]  resolve an Action to its latest tag + SHA for pinning
+  shuck security (s) [owner/repo | url]      a repo's security alerts (code scanning, secrets, Dependabot)
   shuck mcp                   run as a local MCP (stdio) server exposing shuck tools
   shuck setup                 install the shuck skill + CLAUDE.md note for Claude Code (and, optionally, the MCP)
   shuck version [--check]     print the installed version; --check looks for a newer release
@@ -76,6 +81,7 @@ type options struct {
 	reviewCommentLimit int
 	ciOnly             bool
 	reviewsOnly        bool
+	state              string
 	token              string
 	refresh            bool
 	noCache            bool
@@ -87,11 +93,24 @@ type options struct {
 	watchTimeout       time.Duration
 }
 
+// subcommandAliases maps single-letter shorthands to their canonical
+// subcommand name dispatched in Run. `all` has no shorthand: `a` is `action`.
+var subcommandAliases = map[string]string{
+	"l": "logs",
+	"r": "reviews",
+	"a": "action",
+	"s": "security",
+}
+
 // Run executes shuck and returns the process exit code:
 // 0 = no failing checks, 1 = failing checks reported, 2 = operational error.
 func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 {
-		switch args[0] {
+		cmd := args[0]
+		if canon, ok := subcommandAliases[cmd]; ok {
+			cmd = canon
+		}
+		switch cmd {
 		case "version":
 			return runVersion(args[1:], stdout, stderr)
 		case "upgrade":
@@ -100,9 +119,21 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			return runAction(args[1:], stdout, stderr)
 		case "security":
 			return runSecurity(args[1:], stdout, stderr)
+		case "logs":
+			return runLogs(args[1:], stdout, stderr)
+		case "reviews":
+			return runReviews(args[1:], stdout, stderr)
+		case "all":
+			return runDefault(args[1:], stdout, stderr)
 		}
 	}
+	return runDefault(args, stdout, stderr)
+}
 
+// runDefault is the bare `shuck [target]` path (also reached via `shuck all`):
+// it parses the full flag set and runs the combined CI + reviews + security
+// report for a PR target (CI-only for run/job targets).
+func runDefault(args []string, stdout, stderr io.Writer) int {
 	o, positional, err := parseArgs(args, stderr)
 	if err != nil {
 		return 2
@@ -142,20 +173,8 @@ func parseArgs(args []string, stderr io.Writer) (options, []string, error) {
 	}
 
 	var o options
-	fs.IntVar(&o.context, "context", 10, "lines of context kept around each error match")
-	fs.IntVar(&o.shortThreshold, "short-threshold", 100, "logs with at most this many lines are shown whole")
-	fs.IntVar(&o.tail, "tail", 100, "lines tailed when a long log has no error match")
-	fs.StringVar(&o.pattern, "pattern", "", "override the error-matching regexp")
-	fs.BoolVar(&o.full, "full", false, "show full, untrimmed logs for failed steps")
-	fs.IntVar(&o.maxCommandLines, "max-command-lines", logs.DefaultMaxCommandLines, "max lines of a failed step's command to show (0 = no limit)")
-	fs.IntVar(&o.reviewCommentLimit, "review-comment-limit", 5, "max comments shown per active review thread")
-	fs.BoolVar(&o.ciOnly, "ci-only", false, "show only CI checks; skip PR reviews")
-	fs.BoolVar(&o.reviewsOnly, "reviews-only", false, "show only PR reviews; skip CI checks")
-	fs.StringVar(&o.token, "token", "", "GitHub token (overrides GITHUB_TOKEN/GH_TOKEN)")
-	fs.BoolVar(&o.refresh, "refresh", false, "ignore and rebuild the cache")
-	fs.BoolVar(&o.noCache, "no-cache", false, "do not read or write the cache")
-	fs.BoolVar(&o.offline, "offline", false, "render only from cache, without network access")
-	fs.BoolVar(&o.json, "json", false, "emit machine-readable JSON (stable schema) instead of text")
+	registerInspectFlags(fs, &o)
+	fs.StringVar(&o.state, "state", "open", "security alert state to include: open|all|dismissed|fixed|resolved")
 	fs.BoolVar(&o.version, "version", false, "print the shuck version and exit")
 	fs.BoolVar(&o.watch, "watch", false, "poll until every check reaches a terminal state, then print the report")
 	fs.DurationVar(&o.interval, "interval", 15*time.Second, "poll interval for --watch")
@@ -167,6 +186,25 @@ func parseArgs(args []string, stderr io.Writer) (options, []string, error) {
 	return o, fs.Args(), nil
 }
 
+// registerInspectFlags registers the extraction, cache, output, and auth flags
+// shared by the default path and the `logs` / `reviews` subcommands, so their
+// definitions never drift. Focus (ci-only / reviews-only) is set internally by
+// each subcommand, not via a flag.
+func registerInspectFlags(fs *flag.FlagSet, o *options) {
+	fs.IntVar(&o.context, "context", 10, "lines of context kept around each error match")
+	fs.IntVar(&o.shortThreshold, "short-threshold", 100, "logs with at most this many lines are shown whole")
+	fs.IntVar(&o.tail, "tail", 100, "lines tailed when a long log has no error match")
+	fs.StringVar(&o.pattern, "pattern", "", "override the error-matching regexp")
+	fs.BoolVar(&o.full, "full", false, "show full, untrimmed logs for failed steps")
+	fs.IntVar(&o.maxCommandLines, "max-command-lines", logs.DefaultMaxCommandLines, "max lines of a failed step's command to show (0 = no limit)")
+	fs.IntVar(&o.reviewCommentLimit, "review-comment-limit", 5, "max comments shown per active review thread")
+	fs.StringVar(&o.token, "token", "", "GitHub token (overrides GITHUB_TOKEN/GH_TOKEN)")
+	fs.BoolVar(&o.refresh, "refresh", false, "ignore and rebuild the cache")
+	fs.BoolVar(&o.noCache, "no-cache", false, "do not read or write the cache")
+	fs.BoolVar(&o.offline, "offline", false, "render only from cache, without network access")
+	fs.BoolVar(&o.json, "json", false, "emit machine-readable JSON (stable schema) instead of text")
+}
+
 func run(ctx context.Context, args []string, o options, stdout, stderr io.Writer) (int, error) {
 	tgt, err := target.Resolve(args)
 	if err != nil {
@@ -175,15 +213,16 @@ func run(ctx context.Context, args []string, o options, stdout, stderr io.Writer
 	if o.watch {
 		return runWatch(ctx, tgt, o, stdout, stderr)
 	}
-	report, err := inspectWith(ctx, tgt, o)
+	res, err := inspectAll(ctx, tgt, o)
 	if err != nil {
 		return 0, err
 	}
-	return emit(stdout, report, o.json)
+	return emitAll(stdout, res, o.json)
 }
 
 // runWatch validates the watch knobs and drives the poll loop for tgt, wiring
-// in the real inspection and a context-aware sleep.
+// in the real inspection, a context-aware sleep, and the combined emit (the
+// security half is fetched once, at the terminal poll).
 func runWatch(ctx context.Context, tgt target.Target, o options, stdout, stderr io.Writer) (int, error) {
 	if o.offline {
 		return 0, fmt.Errorf("--watch cannot be combined with --offline: the cache does not change while you wait")
@@ -197,19 +236,24 @@ func runWatch(ctx context.Context, tgt target.Target, o options, stdout, stderr 
 	inspect := func(ctx context.Context) (*model.Report, error) {
 		return inspectWith(ctx, tgt, o)
 	}
-	return watch(ctx, o, inspect, sleepCtx, stdout, stderr)
+	emitFn := func(report *model.Report) (int, error) {
+		return emitAll(stdout, withSecurity(ctx, tgt, o, report), o.json)
+	}
+	return watch(ctx, o, inspect, sleepCtx, emitFn, stdout, stderr)
 }
 
 // watch polls inspect until the report is terminal (no jobs still running),
-// the watch-timeout elapses, or ctx is cancelled, then emits the latest report.
-// inspect and sleep are injected so the loop's termination logic is testable
-// without network or real waiting. sleep reports false when ctx was cancelled.
+// the watch-timeout elapses, or ctx is cancelled, then emits the latest report
+// via emit. inspect, sleep, and emit are injected so the loop's termination
+// logic is testable without network or real waiting. sleep reports false when
+// ctx was cancelled.
 func watch(
 	ctx context.Context,
 	o options,
 	inspect func(context.Context) (*model.Report, error),
 	sleep func(context.Context, time.Duration) bool,
-	stdout, stderr io.Writer,
+	emit func(*model.Report) (int, error),
+	_, stderr io.Writer,
 ) (int, error) {
 	var deadline time.Time
 	if o.watchTimeout > 0 {
@@ -222,7 +266,7 @@ func watch(
 			return 0, err
 		}
 		if report.IsTerminal() {
-			return emit(stdout, report, o.json)
+			return emit(report)
 		}
 
 		wait := o.interval
@@ -231,7 +275,7 @@ func watch(
 			if remaining <= 0 {
 				fmt.Fprintf(stderr, "shuck: gave up watching after %s with %d job(s) still running\n",
 					o.watchTimeout, len(report.RunningJobs))
-				return emit(stdout, report, o.json)
+				return emit(report)
 			}
 			if remaining < wait {
 				wait = remaining
@@ -243,7 +287,7 @@ func watch(
 
 		if !sleep(ctx, wait) {
 			fmt.Fprintln(stderr, "shuck: stopped watching — printing the latest result")
-			return emit(stdout, report, o.json)
+			return emit(report)
 		}
 	}
 }
@@ -318,9 +362,6 @@ func inspectWith(ctx context.Context, tgt target.Target, o options) (*model.Repo
 	}
 	if o.reviewCommentLimit < 1 {
 		return nil, fmt.Errorf("--review-comment-limit must be at least 1, got %d", o.reviewCommentLimit)
-	}
-	if o.ciOnly && o.reviewsOnly {
-		return nil, fmt.Errorf("--ci-only and --reviews-only are mutually exclusive")
 	}
 
 	if o.offline {
@@ -411,8 +452,8 @@ func (a *app) prReport(ctx context.Context, tgt target.Target, refresh, noCache 
 		a.attachReviews(ctx, tgt.Owner, tgt.Repo, number, refresh, cached, report)
 	}
 
-	// Focus modes (--ci-only / --reviews-only) render one dimension only, so
-	// skip the cache write to avoid clobbering the other dimension's cached data.
+	// Focus modes (the `logs` / `reviews` subcommands) render one dimension only,
+	// so skip the cache write to avoid clobbering the other dimension's cached data.
 	if !noCache && !a.ciOnly && !a.reviewsOnly {
 		if err := cache.Save(report); err != nil {
 			fmt.Fprintln(os.Stderr, "shuck: warning: could not write cache:", err)

@@ -93,19 +93,26 @@ surfaces an "update available" hint from the last `--check`.
 ## Usage
 
 ```sh
-shuck <owner>/<repo> <pr>   # inspect an explicit PR
-shuck <pr-url>              # inspect a PR from its GitHub URL
-shuck <run-url>             # inspect a single GitHub Actions run
-shuck <job-url>             # inspect a single GitHub Actions job
+shuck <owner>/<repo> <pr>   # CI + reviews + security for an explicit PR (same as `shuck all`)
+shuck <pr-url>              # a PR from its GitHub URL
+shuck <run-url>             # a single GitHub Actions run (CI only)
+shuck <job-url>             # a single GitHub Actions job (CI only)
 shuck <pr>                  # owner/repo inferred from the local repo's origin
-shuck                       # inspect the open PR for the current branch
+shuck                       # the open PR for the current branch
 shuck --watch [target]      # poll until every check finishes, then print the report
-shuck action <owner>/<action>[@<version>]  # resolve an Action to its latest tag + SHA for pinning
-shuck security [owner/repo | url]  # summarize a repo's security alerts (code scanning, secrets, Dependabot)
+shuck logs [target] [--run <id|url>]  # (l) failing CI step logs for a PR or a single run
+shuck reviews [target]      # (r) a PR's reviews and review-comment threads
+shuck all [target]          # CI + reviews + security (the default)
+shuck action <owner>/<action>[@<version>]  # (a) resolve an Action to its latest tag + SHA for pinning
+shuck security [owner/repo | url]  # (s) summarize a repo's security alerts (code scanning, secrets, Dependabot)
 shuck setup                 # install the shuck skill + CLAUDE.md note for Claude Code
 shuck version [--check]     # print the installed version; --check looks for an update
 shuck upgrade               # download and install the latest release in place
 ```
+
+Running `shuck` with no subcommand reports a PR's failing CI, its reviews, and
+the repo's security alerts together; use `logs` / `reviews` (or their `l` / `r`
+shorthands) to focus on one dimension.
 
 Pass a GitHub Actions URL to skip the PR-wide scan and look at just one run or
 job — handy when a CI-failure notification already points at the failing job:
@@ -381,20 +388,22 @@ instead of scraping CLI text. Start it over stdio with:
 shuck mcp
 ```
 
-It exposes three read-only tools:
+It exposes four read-only tools:
 
 | Tool | Purpose | Key inputs |
 | --- | --- | --- |
-| `inspect_pr` | Failing CI step logs for a PR. | `repo` (`owner/repo`), `pr`, `url`; or none → the open PR for the current branch |
-| `inspect_run` | Failing steps for a single Actions run or job. | `url`; or `repo` + `run_id` (+ optional `job_id`) |
+| `inspect_logs` | Failing CI step logs for a PR, or one Actions run. | `repo` (`owner/repo`), `pr`, `url`; or none → the open PR for the current branch; or `run` (a run/job URL, or a bare run ID with `repo`) |
+| `inspect_reviews` | A PR's reviews and review-comment threads. | `repo` (`owner/repo`), `pr`, `url`; or none → the current branch. Optional `review_comment_limit` |
 | `inspect_security` | A repo's security alerts (code scanning, secrets, Dependabot). | `repo` (`owner/repo`) or `url`; or none → the local repo. Optional `state`, `refresh` |
+| `inspect_action` | Resolve a GitHub Action to its latest tag + commit SHA for pinning. | `action` (`owner/action[/subpath][@version]`). Optional `refresh` |
 
-`inspect_pr` and `inspect_run` accept the same log-extraction knobs as the CLI
-(`context`, `short_threshold`, `tail`, `pattern`, `full`); `inspect_pr` also
-takes the cache flags (`refresh`, `no_cache`, `offline`). Each call returns the
-rendered, human-readable report as text **and** the same stable JSON document as
-typed structured output, so programmatic consumers get the schema for free.
-Authentication uses `GITHUB_TOKEN`/`GH_TOKEN` from the server's environment.
+`inspect_logs` accepts the same log-extraction knobs as the CLI (`context`,
+`short_threshold`, `tail`, `pattern`, `full`) plus the cache flags (`refresh`,
+`no_cache`, `offline`). Each call returns the rendered, human-readable report as
+text **and** the matching stable JSON document as typed structured output, so
+programmatic consumers get the schema for free. Authentication uses
+`GITHUB_TOKEN`/`GH_TOKEN` from the server's environment (`inspect_action` works
+unauthenticated against public repos).
 
 Register it with any MCP client. For Claude Code, add it to `.mcp.json`:
 
@@ -413,7 +422,8 @@ runs the `shuck` on your `PATH`, so install shuck first (see [Install](#install)
 
 `shuck` also ships as a [Claude Code](https://claude.com/claude-code) plugin so
 agents can pull failing CI logs for you. It adds a `/shuck` skill, an MCP server
-(the `inspect_pr` / `inspect_run` tools above) that runs the `shuck` binary from
+(the `inspect_logs` / `inspect_reviews` / `inspect_security` / `inspect_action`
+tools above) that runs the `shuck` binary from
 your `PATH`, and a `SessionStart` hook that checks shuck is installed, recent
 enough to run the MCP server, and that a GitHub token is present.
 
