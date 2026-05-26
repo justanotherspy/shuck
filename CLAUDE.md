@@ -32,12 +32,13 @@ render → update cache.
 | Package | Responsibility |
 | --- | --- |
 | `main.go` | Thin entry; dispatches the `mcp` and `setup` subcommands, else calls `cli.Run`. Holds the `go:embed` of the plugin's `SKILL.md` that `setup` installs. |
-| `internal/cli` | Flag parsing + pipeline orchestration; the `app.drill` / `app.buildFailedSteps` logic that pairs failed API steps with error log sections. Also the `version` / `upgrade` subcommands. |
+| `internal/cli` | Flag parsing + pipeline orchestration; the `app.drill` / `app.buildFailedSteps` logic that pairs failed API steps with error log sections. Also the `version` / `upgrade` / `action` subcommands. |
+| `internal/action` | `shuck action`: parse an `owner/action[@version]` ref and pick the latest matching semver tag from a repo's tag list (pure selection in `Select`; stable preferred, prerelease only as a fallback), then render the SHA-pin line / JSON. |
 | `internal/release` | Self-update: resolve the latest GitHub release, download + checksum-verify the matching archive, and replace the running binary in place. Backs `shuck version --check` / `shuck upgrade`. |
 | `internal/setup` | `shuck setup`: install the embedded skill into `~/.claude/skills/shuck`, add a managed note to the user's `CLAUDE.md`, and optionally register the MCP at user scope (`claude mcp add`). The skill is `go:embed`-ed from the plugin in `main.go`, so the standalone install and the marketplace stay in sync. |
 | `internal/target` | Resolve owner/repo/PR from args or the local repo (via go-git). |
 | `internal/gh` | go-github wrappers: PR head, Actions runs/jobs, job-log download, non-Actions checks. Also a small hand-rolled GraphQL client (`reviews.go`) for PR reviews + comment threads, since `isResolved`/`resolvedBy` are GraphQL-only. |
-| `internal/cache` | `~/.shuck/cache/<owner>/<repo>/<pr>/cache.json` load/save + inspected-job indexing. |
+| `internal/cache` | `~/.shuck/cache/<owner>/<repo>/<pr>/cache.json` load/save + inspected-job indexing. Also `~/.shuck/actions/<owner>/<repo>/tags.json` for `shuck action`'s tag list (TTL-checked by the CLI). |
 | `internal/logs` | Parse a job log into `##[group]`-delimited sections; extract the high-signal error excerpt. |
 | `internal/render` | Format a `model.Report` to text. |
 | `internal/model` | Shared domain types (imports nothing internal). |
@@ -54,6 +55,13 @@ render → update cache.
   re-validated; only log downloads are skipped, keyed by `(job id, run attempt)`
   so replays and newly-finished jobs are re-inspected.
 - **Non-Actions checks** are listed only (no logs exist for them via the API).
+- **Action pinning** (`shuck action`): `gh.ListActionTags` pages the repo's tags
+  (each carries the peeled commit SHA), `action.Select` filters by the requested
+  major / major.minor and picks the highest semver — preferring a stable tag over
+  a prerelease of the same version, falling back to a prerelease only when nothing
+  stable matches. Tag lists are cached for `actionCacheTTL` (1 day); `--refresh`
+  forces a re-fetch. The fetch client is the `newTagLister` package var so tests
+  stub the network. Auth is optional here, so `gh.New("")` is unauthenticated.
 - **Reviews** (`gh.PRReviews`, rendered grouped by verdict) collapse resolved/
   outdated threads to a one-line reason and cap active-thread comments at
   `--review-comment-limit`. A cheap `gh.ReviewsFingerprint` short-circuits the

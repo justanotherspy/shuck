@@ -103,6 +103,15 @@ type JobResult struct {
 	Inspected    bool           `json:"inspected"` // logs were drilled for this (id, attempt)
 }
 
+// ActionTag is a tag in a GitHub Actions repository paired with the commit SHA
+// it resolves to. shuck uses it to pin a workflow `uses:` reference to an
+// immutable SHA. The SHA is the peeled commit a checkout would land on, even
+// for annotated tags.
+type ActionTag struct {
+	Name string `json:"name"`
+	SHA  string `json:"sha"`
+}
+
 // OtherCheck is a non-Actions check (external app check run or legacy commit
 // status). We list these by name/conclusion/url; no logs are available.
 type OtherCheck struct {

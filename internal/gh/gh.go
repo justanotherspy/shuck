@@ -21,10 +21,16 @@ type Client struct {
 	token string // retained for the hand-rolled GraphQL calls (reviews)
 }
 
-// New builds an authenticated client from a personal access token.
+// New builds a client from a personal access token. An empty token yields an
+// unauthenticated client (subject to GitHub's lower anonymous rate limit),
+// which suffices for read-only calls against public repositories.
 func New(token string) *Client {
+	gc := github.NewClient(nil)
+	if token != "" {
+		gc = gc.WithAuthToken(token)
+	}
 	return &Client{
-		gh:    github.NewClient(nil).WithAuthToken(token),
+		gh:    gc,
 		http:  &http.Client{Timeout: 60 * time.Second},
 		token: token,
 	}

@@ -53,6 +53,7 @@ Usage:
   shuck <pr>                  inspect a PR (owner/repo from the local repo)
   shuck                       inspect the open PR for the current branch
   shuck --watch [target]      poll until every check finishes, then print the report
+  shuck action <owner>/<action>[@<version>]  resolve an Action to its latest tag + SHA for pinning
   shuck mcp                   run as a local MCP (stdio) server exposing shuck tools
   shuck setup                 install the shuck skill + CLAUDE.md note for Claude Code (and, optionally, the MCP)
   shuck version [--check]     print the installed version; --check looks for a newer release
@@ -94,6 +95,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			return runVersion(args[1:], stdout, stderr)
 		case "upgrade":
 			return runUpgrade(args[1:], stdout, stderr)
+		case "action":
+			return runAction(args[1:], stdout, stderr)
 		}
 	}
 
