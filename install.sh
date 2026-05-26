@@ -58,17 +58,54 @@ sha256_of() { # file -> prints hash
   else return 1; fi
 }
 
-# Resolve the release tag (e.g. v0.2.0). Honor SHUCK_VERSION, else ask the API
-# for the latest non-draft, non-prerelease release.
+# Latest tag via the REST API (authenticated when a token is present). Prints
+# the tag on success, nothing on failure — never fatal, so callers can fall back.
+tag_from_api() {
+  local api="https://api.github.com/repos/${REPO}/releases/latest"
+  fetch_stdout "$api" 2>/dev/null \
+    | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
+}
+
+# Latest tag via the github.com /releases/latest redirect. This is a plain web
+# request (not api.github.com), so it is NOT subject to the unauthenticated
+# 60/hr REST API rate limit that returns 403 on shared/CI egress IPs. The
+# endpoint 302-redirects to .../releases/tag/<tag>; we read the Location header
+# without following it.
+tag_from_latest_redirect() {
+  local url="https://github.com/${REPO}/releases/latest" loc=""
+  if need_cmd curl; then
+    loc="$(curl -fsS -o /dev/null -w '%{redirect_url}' \
+      --connect-timeout 10 --max-time 30 --retry 2 "$url" 2>/dev/null)" || return 1
+  elif need_cmd wget; then
+    # --max-redirect=0 makes wget treat the 302 as an error, but -S still prints
+    # the response headers (incl. Location) to stderr, which we parse.
+    loc="$(wget -S --max-redirect=0 --timeout=30 -O /dev/null "$url" 2>&1 \
+      | sed -n 's/.*[Ll]ocation:[[:space:]]*//p' | head -1)" || true
+  else
+    return 1
+  fi
+  loc="${loc%$'\r'}"; loc="${loc%/}"
+  case "$loc" in
+    */releases/tag/*) printf '%s\n' "${loc##*/releases/tag/}" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Resolve the release tag (e.g. v0.2.0). Honor SHUCK_VERSION, else discover the
+# latest release: try the REST API first, then fall back to the github.com
+# redirect when the API is unavailable (e.g. a rate-limited 403 with no token).
 resolve_tag() {
   if [ -n "${SHUCK_VERSION:-}" ]; then
     case "$SHUCK_VERSION" in v*) echo "$SHUCK_VERSION" ;; *) echo "v$SHUCK_VERSION" ;; esac
     return 0
   fi
-  local api="https://api.github.com/repos/${REPO}/releases/latest"
   local tag
-  tag="$(fetch_stdout "$api" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
-  [ -n "$tag" ] || die "could not resolve latest release tag (set SHUCK_VERSION)"
+  tag="$(tag_from_api || true)"
+  if [ -z "$tag" ]; then
+    log "GitHub API did not return a release tag (rate-limited?); trying the releases redirect ..."
+    tag="$(tag_from_latest_redirect || true)"
+  fi
+  [ -n "$tag" ] || die "could not resolve latest release tag (set SHUCK_VERSION, or GITHUB_TOKEN to lift API rate limits)"
   echo "$tag"
 }
 

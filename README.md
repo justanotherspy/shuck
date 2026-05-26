@@ -65,6 +65,13 @@ curl -fsSL https://raw.githubusercontent.com/justanotherspy/shuck/main/install.s
   | SHUCK_VERSION=v0.2.0 SHUCK_INSTALL_DIR=/usr/local/bin bash
 ```
 
+No token is required. The script resolves the latest release via the GitHub
+REST API, and if that is unavailable — e.g. a shared/CI egress IP hits the
+unauthenticated 60/hr limit and gets a `403` — it falls back to the
+`github.com` releases redirect, which is not rate-limited. To skip discovery
+entirely, set `SHUCK_VERSION`; to lift the API limit, set `GITHUB_TOKEN`
+(or `GH_TOKEN`).
+
 Or build from source:
 
 ```sh
