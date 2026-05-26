@@ -39,7 +39,7 @@ render → update cache.
 | `internal/setup` | `shuck setup`: install the embedded skill into `~/.claude/skills/shuck`, add a managed note to the user's `CLAUDE.md`, and optionally register the MCP at user scope (`claude mcp add`). The skill is `go:embed`-ed from the plugin in `main.go`, so the standalone install and the marketplace stay in sync. |
 | `internal/target` | Resolve owner/repo/PR from args or the local repo (via go-git). |
 | `internal/gh` | go-github wrappers: PR head, Actions runs/jobs, job-log download, non-Actions checks, and the security-alert lists (`security.go`: code scanning / secret scanning / Dependabot). Also a small hand-rolled GraphQL client (`reviews.go`) for PR reviews + comment threads, since `isResolved`/`resolvedBy` are GraphQL-only. |
-| `internal/cache` | `~/.shuck/cache/<owner>/<repo>/<pr>/cache.json` load/save + inspected-job indexing. Also `~/.shuck/actions/<owner>/<repo>/tags.json` for `shuck action`'s tag list and `~/.shuck/security/<owner>/<repo>/alerts.json` for `shuck security` (both TTL-checked by the CLI). |
+| `internal/cache` | `~/.shuck/cache/<owner>/<repo>/<pr>/cache.json` load/save plus whole raw job logs under that PR's `logs/<jobID>-<attempt>.log` (re-parsed locally on re-run). Also `~/.shuck/actions/<owner>/<repo>/tags.json` for `shuck action`'s tag list and `~/.shuck/security/<owner>/<repo>/alerts.json` for `shuck security` (both keyed on the default-branch SHA + TTL by the CLI). `Purge(ttl, keep)` sweeps stale entries (by record mtime) off disk; every command calls it, exempting the active target. |
 | `internal/logs` | Parse a job log into `##[group]`-delimited sections; extract the high-signal error excerpt. |
 | `internal/render` | Format a `model.Report` to text. |
 | `internal/model` | Shared domain types (imports nothing internal). |
@@ -52,25 +52,36 @@ render → update cache.
   API steps are paired with `##[error]`-bearing log sections by order, with a
   whole-log fallback when no error marker is present. Cover changes here with
   fixtures in `internal/logs/testdata`.
-- **Caching is advisory**: cheap metadata (head SHA, run/job listing) is always
-  re-validated; only log downloads are skipped, keyed by `(job id, run attempt)`
-  so replays and newly-finished jobs are re-inspected.
+- **Caching is advisory**: cheap metadata (head SHA, run/job listing, reviews
+  fingerprint) is always re-validated. On the same head commit a job's **whole raw
+  log is cached** (`cache.SaveJobLog`/`LoadJobLog`, keyed by `(job id, run
+  attempt)`) and **re-parsed locally** under the current `--full`/`--context`/
+  `--pattern` flags via `buildFailedSteps` — so re-runs with extra context cost no
+  network. Only newly-finished attempts are downloaded. The focused `logs` /
+  `reviews` subcommands now cache too: each persists its own dimension and copies
+  the other from the existing cache (a merged `toSave` copy) so neither clobbers
+  the other. A 1h `Purge` sweeps stale entries off disk on every run.
 - **Non-Actions checks** are listed only (no logs exist for them via the API).
 - **Action pinning** (`shuck action`): `gh.ListActionTags` pages the repo's tags
   (each carries the peeled commit SHA), `action.Select` filters by the requested
   major / major.minor and picks the highest semver — preferring a stable tag over
   a prerelease of the same version, falling back to a prerelease only when nothing
-  stable matches. Tag lists are cached for `actionCacheTTL` (1 day); `--refresh`
-  forces a re-fetch. The fetch client is the `newTagLister` package var so tests
-  stub the network. Auth is optional here, so `gh.New("")` is unauthenticated.
+  stable matches. Tag lists are cached for `actionCacheTTL` (1h) and keyed on the
+  repo's default-branch SHA: within the TTL a cheap `gh.DefaultBranchSHA` (one
+  `GetCommitSHA1(…, "HEAD")` call) decides reuse vs. re-fetch — unchanged ⇒ reuse,
+  moved ⇒ re-page tags, and a failed SHA check leaves the fresh cache standing.
+  `--refresh` forces a re-fetch. The fetch client is the exported `NewTagLister`
+  package var (interface `TagLister`) so embedders and tests stub the network.
+  Auth is optional here, so `gh.New("")` is unauthenticated.
 - **Reviews** (`gh.PRReviews`, rendered grouped by verdict) collapse resolved/
   outdated threads to a one-line reason and cap active-thread comments at
   `--review-comment-limit`. A cheap `gh.ReviewsFingerprint` short-circuits the
   full review pull when nothing changed. The `logs` / `reviews` subcommands focus
-  on one dimension (they set the internal `ciOnly` / `reviewsOnly` gates, which
-  also skip the cache write to avoid clobbering the other dimension); the bare
-  `shuck` / `shuck all` path runs both plus security. The old `--ci-only` /
-  `--reviews-only` flags were removed in favor of the subcommands.
+  on one dimension (they set the internal `ciOnly` / `reviewsOnly` gates) but now
+  still write the cache, persisting the un-fetched dimension from the existing
+  cache so neither subcommand clobbers the other; the bare `shuck` / `shuck all`
+  path runs both plus security. The old `--ci-only` / `--reviews-only` flags were
+  removed in favor of the subcommands.
 - **Security** (`shuck security`): `cli.Security` resolves a repo (no PR — see
   `target.ResolveRepo`) and fetches three sources sequentially via the
   `newSecurityLister` package var (stubbed in tests). Each source **degrades
@@ -79,9 +90,10 @@ render → update cache.
   all-sources error is fatal. The `--state` value maps per source (vocabularies
   differ; a source without an equivalent is reported `disabled`). **The raw
   secret value is never read** from the API, so it cannot leak — `model` has no
-  field for it. Reports cache for `securityCacheTTL` (1h), keyed by state; a
-  result with any errored source is not cached. Exit is `0` on success, `2` on an
-  operational error; `--exit-code` makes open findings exit `1`.
+  field for it. Reports cache for `securityCacheTTL` (1h), keyed by state and the
+  repo's default-branch SHA (same cheap `gh.DefaultBranchSHA` reuse logic as
+  `shuck action`); a result with any errored source is not cached. Exit is `0` on
+  success, `2` on an operational error; `--exit-code` makes open findings exit `1`.
 
 ## Conventions
 

@@ -53,6 +53,17 @@ func (c *Client) GetPR(ctx context.Context, owner, repo string, number int) (mod
 	}, nil
 }
 
+// DefaultBranchSHA returns the latest commit SHA on the repo's default branch
+// (ref "HEAD") in a single call — the cheap invalidation signal for the action
+// and security caches.
+func (c *Client) DefaultBranchSHA(ctx context.Context, owner, repo string) (string, error) {
+	sha, _, err := c.gh.Repositories.GetCommitSHA1(ctx, owner, repo, "HEAD", "")
+	if err != nil {
+		return "", fmt.Errorf("get default branch SHA %s/%s: %w", owner, repo, err)
+	}
+	return sha, nil
+}
+
 // FindOpenPR returns the number of the open PR whose head is headOwner:branch.
 func (c *Client) FindOpenPR(ctx context.Context, owner, repo, headOwner, branch string) (int, error) {
 	opts := &github.PullRequestListOptions{

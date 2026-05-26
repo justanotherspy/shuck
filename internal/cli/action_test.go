@@ -34,14 +34,22 @@ func TestActionCore(t *testing.T) {
 // tag list, so the action command's caching and selection can be tested
 // without GitHub.
 type stubLister struct {
-	tags  []model.ActionTag
-	calls int
-	err   error
+	tags     []model.ActionTag
+	calls    int
+	err      error
+	sha      string // default-branch SHA returned by DefaultBranchSHA
+	shaCalls int
+	shaErr   error
 }
 
 func (s *stubLister) ListActionTags(_ context.Context, _, _ string) ([]model.ActionTag, error) {
 	s.calls++
 	return s.tags, s.err
+}
+
+func (s *stubLister) DefaultBranchSHA(_ context.Context, _, _ string) (string, error) {
+	s.shaCalls++
+	return s.sha, s.shaErr
 }
 
 // withStubLister swaps in a stub tag lister for the duration of a test and
@@ -51,9 +59,9 @@ func withStubLister(t *testing.T, s *stubLister) {
 	t.Setenv("SHUCK_HOME", t.TempDir())
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
-	prev := newTagLister
-	newTagLister = func(string) tagLister { return s }
-	t.Cleanup(func() { newTagLister = prev })
+	prev := NewTagLister
+	NewTagLister = func(string) TagLister { return s }
+	t.Cleanup(func() { NewTagLister = prev })
 }
 
 func TestRunActionTextAndDefaultSelection(t *testing.T) {
@@ -120,6 +128,34 @@ func TestRunActionCachesAcrossRuns(t *testing.T) {
 	runAction([]string{"actions/checkout", "--refresh"}, &out, &errb)
 	if s.calls != 2 {
 		t.Errorf("--refresh should re-fetch: calls = %d, want 2", s.calls)
+	}
+}
+
+func TestRunActionReusesWhenDefaultSHAUnchanged(t *testing.T) {
+	s := &stubLister{tags: []model.ActionTag{{Name: "v1.0.0", SHA: "a"}}, sha: "sha-main"}
+	withStubLister(t, s)
+
+	var out, errb bytes.Buffer
+	runAction([]string{"actions/checkout"}, &out, &errb)
+	runAction([]string{"actions/checkout"}, &out, &errb)
+	if s.calls != 1 {
+		t.Errorf("unchanged default SHA should skip tag paging: calls = %d, want 1", s.calls)
+	}
+	if s.shaCalls < 2 {
+		t.Errorf("each warm run should make the cheap SHA check: shaCalls = %d", s.shaCalls)
+	}
+}
+
+func TestRunActionRefetchesWhenDefaultSHAChanges(t *testing.T) {
+	s := &stubLister{tags: []model.ActionTag{{Name: "v1.0.0", SHA: "a"}}, sha: "sha-main"}
+	withStubLister(t, s)
+
+	var out, errb bytes.Buffer
+	runAction([]string{"actions/checkout"}, &out, &errb)
+	s.sha = "sha-moved" // a new default-branch commit appeared
+	runAction([]string{"actions/checkout"}, &out, &errb)
+	if s.calls != 2 {
+		t.Errorf("a moved default branch should re-fetch tags: calls = %d, want 2", s.calls)
 	}
 }
 
