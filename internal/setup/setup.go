@@ -33,7 +33,8 @@ const claudeNote = "## shuck — failing CI logs for a PR\n" +
 	"step logs instead of paging through the Actions UI. Two equivalent ways in:\n" +
 	"\n" +
 	"- **Skill (CLI):** use the `shuck` skill — it runs the `shuck` CLI for you.\n" +
-	"- **MCP:** call the `inspect_pr` / `inspect_run` tools from the shuck MCP server.\n" +
+	"- **MCP:** call the `inspect_logs` / `inspect_reviews` / `inspect_security` /\n" +
+	"  `inspect_action` tools from the shuck MCP server.\n" +
 	"\n" +
 	"Use whichever is wired up; the skill documents both. Manage this with `shuck setup`."
 

@@ -203,13 +203,21 @@ func TestParseArgsReviewFlags(t *testing.T) {
 	if o.ciOnly || o.reviewsOnly {
 		t.Errorf("focus flags should default false, got ciOnly=%v reviewsOnly=%v", o.ciOnly, o.reviewsOnly)
 	}
+	if o.state != "open" {
+		t.Errorf("default state = %q, want open", o.state)
+	}
 
-	o, _, err = parseArgs([]string{"--review-comment-limit", "3", "--reviews-only", "o/r", "42"}, io.Discard)
+	o, _, err = parseArgs([]string{"--review-comment-limit", "3", "--state", "all", "o/r", "42"}, io.Discard)
 	if err != nil {
 		t.Fatalf("parseArgs: %v", err)
 	}
-	if o.reviewCommentLimit != 3 || !o.reviewsOnly || o.ciOnly {
+	if o.reviewCommentLimit != 3 || o.state != "all" {
 		t.Errorf("parsed flags wrong: %+v", o)
+	}
+
+	// The focus flags were removed; the subcommands set the modes internally.
+	if _, _, err := parseArgs([]string{"--reviews-only", "o/r", "42"}, io.Discard); err == nil {
+		t.Errorf("--reviews-only should no longer be a defined flag")
 	}
 }
 
@@ -218,9 +226,6 @@ func TestInspectWithRejectsBadReviewOptions(t *testing.T) {
 
 	if _, err := inspectWith(context.Background(), tgt, options{reviewCommentLimit: 0}); err == nil {
 		t.Errorf("review-comment-limit < 1 should be rejected")
-	}
-	if _, err := inspectWith(context.Background(), tgt, options{reviewCommentLimit: 5, ciOnly: true, reviewsOnly: true}); err == nil {
-		t.Errorf("--ci-only with --reviews-only should be rejected")
 	}
 }
 
@@ -344,7 +349,8 @@ func TestWatchStopsWhenTerminal(t *testing.T) {
 	sleep := func(context.Context, time.Duration) bool { sleeps++; return true }
 
 	var stdout, stderr strings.Builder
-	code, err := watch(context.Background(), options{interval: time.Second}, reportSeq(&calls, terminal), sleep, &stdout, &stderr)
+	emitFn := func(r *model.Report) (int, error) { return emit(&stdout, r, false) }
+	code, err := watch(context.Background(), options{interval: time.Second}, reportSeq(&calls, terminal), sleep, emitFn, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("watch: %v", err)
 	}
@@ -367,8 +373,9 @@ func TestWatchPollsUntilTerminal(t *testing.T) {
 	sleep := func(context.Context, time.Duration) bool { sleeps++; return true }
 
 	var stdout, stderr strings.Builder
+	emitFn := func(r *model.Report) (int, error) { return emit(&stdout, r, false) }
 	code, err := watch(context.Background(), options{interval: time.Second},
-		reportSeq(&calls, running(2), running(1), terminal), sleep, &stdout, &stderr)
+		reportSeq(&calls, running(2), running(1), terminal), sleep, emitFn, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("watch: %v", err)
 	}
@@ -390,8 +397,9 @@ func TestWatchStopsOnCancel(t *testing.T) {
 	sleep := func(context.Context, time.Duration) bool { return false } // cancelled
 
 	var stdout, stderr strings.Builder
+	emitFn := func(r *model.Report) (int, error) { return emit(&stdout, r, false) }
 	code, err := watch(context.Background(), options{interval: time.Second},
-		reportSeq(&calls, running(1)), sleep, &stdout, &stderr)
+		reportSeq(&calls, running(1)), sleep, emitFn, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("watch: %v", err)
 	}
@@ -413,8 +421,9 @@ func TestWatchTimesOut(t *testing.T) {
 	sleep := func(context.Context, time.Duration) bool { sleeps++; return true }
 
 	var stdout, stderr strings.Builder
+	emitFn := func(r *model.Report) (int, error) { return emit(&stdout, r, false) }
 	code, err := watch(context.Background(), options{interval: time.Minute, watchTimeout: time.Nanosecond},
-		reportSeq(&calls, running(1)), sleep, &stdout, &stderr)
+		reportSeq(&calls, running(1)), sleep, emitFn, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("watch: %v", err)
 	}
@@ -638,6 +647,41 @@ func replaceLeadingDashes(tok, dash string) string {
 		return dash + tok[len("--"):]
 	}
 	return tok
+}
+
+// TestRunDispatch proves the subcommand router (and its single-letter
+// shorthands) reaches the right handler, by triggering a handler-specific
+// validation error that fires before any network call.
+func TestRunDispatch(t *testing.T) {
+	cases := []struct {
+		name       string
+		args       []string
+		wantCode   int
+		wantStderr string
+	}{
+		{"logs --run garbage", []string{"logs", "--run", "nope"}, 2, "--run must be"},
+		{"l shorthand", []string{"l", "--run", "nope"}, 2, "--run must be"},
+		{"reviews rejects run url", []string{"reviews", "https://github.com/o/r/actions/runs/5"}, 2, "reviews require a PR target"},
+		{"r shorthand", []string{"r", "https://github.com/o/r/actions/runs/5"}, 2, "reviews require a PR target"},
+		{"action missing arg", []string{"action"}, 2, "missing action"},
+		{"a shorthand", []string{"a"}, 2, "missing action"},
+		{"security bad state", []string{"security", "o/r", "--state", "bogus"}, 2, "invalid --state"},
+		{"s shorthand", []string{"s", "o/r", "--state", "bogus"}, 2, "invalid --state"},
+		{"all routes to default flagset", []string{"all", "--run", "x"}, 2, "not defined"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("SHUCK_HOME", t.TempDir())
+			var out, errb strings.Builder
+			code := Run(c.args, &out, &errb)
+			if code != c.wantCode {
+				t.Errorf("exit = %d, want %d; stderr=%q", code, c.wantCode, errb.String())
+			}
+			if !strings.Contains(errb.String(), c.wantStderr) {
+				t.Errorf("stderr = %q, want substring %q", errb.String(), c.wantStderr)
+			}
+		})
+	}
 }
 
 func equalStrings(a, b []string) bool {

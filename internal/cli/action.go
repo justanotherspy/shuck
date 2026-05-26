@@ -77,11 +77,7 @@ func runAction(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	if token == "" {
-		token = tokenFromEnv()
-	}
-
-	resolved, err := resolveAction(context.Background(), ref, token, refresh)
+	resolved, err := Action(context.Background(), ref, ActionOptions{Token: token, Refresh: refresh})
 	if err != nil {
 		fmt.Fprintln(stderr, "shuck:", err)
 		return 2
@@ -96,6 +92,24 @@ func runAction(args []string, stdout, stderr io.Writer) int {
 	}
 	action.Render(stdout, resolved)
 	return 0
+}
+
+// ActionOptions tunes an action resolution.
+type ActionOptions struct {
+	Token   string
+	Refresh bool
+}
+
+// Action resolves an action ref to its latest matching tag + commit SHA,
+// sharing the CLI's tag cache and selection. It is exported so the MCP
+// front-end reuses the pipeline. Auth is optional: an empty token falls back to
+// GITHUB_TOKEN/GH_TOKEN, then to unauthenticated access.
+func Action(ctx context.Context, ref action.Ref, opts ActionOptions) (action.Resolved, error) {
+	token := opts.Token
+	if token == "" {
+		token = tokenFromEnv()
+	}
+	return resolveAction(ctx, ref, token, opts.Refresh)
 }
 
 // parseActionArgs accepts the action either as a single "owner/action[@version]"

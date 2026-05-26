@@ -6,8 +6,29 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/justanotherspy/shuck/internal/action"
 	"github.com/justanotherspy/shuck/internal/model"
 )
+
+func TestActionCore(t *testing.T) {
+	s := &stubLister{tags: []model.ActionTag{
+		{Name: "v4.1.0", SHA: "sha410"},
+		{Name: "v4.2.2", SHA: "sha422"},
+	}}
+	withStubLister(t, s)
+
+	ref, err := action.ParseRef("actions/checkout@v4")
+	if err != nil {
+		t.Fatalf("ParseRef: %v", err)
+	}
+	resolved, err := Action(context.Background(), ref, ActionOptions{})
+	if err != nil {
+		t.Fatalf("Action: %v", err)
+	}
+	if resolved.Tag != "v4.2.2" || resolved.SHA != "sha422" {
+		t.Errorf("resolved = %+v, want tag v4.2.2 sha422", resolved)
+	}
+}
 
 // stubLister records how many times the network was hit and returns a fixed
 // tag list, so the action command's caching and selection can be tested
