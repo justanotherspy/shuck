@@ -31,6 +31,25 @@ logs for job attempts it has already inspected on the same commit.
 
 ## Install
 
+### Homebrew (macOS and Linux)
+
+```sh
+brew install --cask justanotherspy/tap/shuck
+```
+
+Or tap once, then install by short name:
+
+```sh
+brew tap justanotherspy/tap
+brew install --cask shuck
+```
+
+Upgrade with `brew upgrade --cask shuck`. The cask is republished to
+[`justanotherspy/homebrew-tap`](https://github.com/justanotherspy/homebrew-tap)
+automatically on every release.
+
+### Install script
+
 Download a prebuilt binary (no Go toolchain needed). The script picks the
 archive for your OS/arch, verifies its checksum, and installs `shuck` into an
 on-PATH directory:
@@ -340,4 +359,3 @@ make cover   # coverage report
 ## License
 
 MIT — see [LICENSE](LICENSE).
-

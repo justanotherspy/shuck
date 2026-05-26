@@ -53,5 +53,47 @@ changelog:
       - "^test:"
       - "^chore:"
 
+# Generate a Homebrew cask and push it to the shared tap at
+# justanotherspy/homebrew-tap, so `brew install --cask justanotherspy/tap/shuck`
+# always tracks the latest release. Pushing to the tap needs a PAT
+# (HOMEBREW_TAP_GITHUB_TOKEN) since the default GITHUB_TOKEN only reaches this repo.
+homebrew_casks:
+  - name: shuck
+    binaries:
+      - shuck
+    repository:
+      owner: justanotherspy
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Casks
+    homepage: "https://github.com/justanotherspy/shuck"
+    description: "Print the exact failing CI step logs for a GitHub PR"
+    license: MIT
+    url:
+      verified: "github.com/justanotherspy/shuck/"
+    commit_author:
+      name: github-actions[bot]
+      email: 41898282+github-actions[bot]@users.noreply.github.com
+    commit_msg_template: "chore(cask): shuck {{ .Tag }}"
+    # The release is published as a prerelease and only promoted to latest by the
+    # workflow after artifacts attach, so force the cask push that goreleaser
+    # would otherwise skip for a prerelease.
+    skip_upload: "false"
+    # The binary is unsigned, so strip the Gatekeeper quarantine flag on install
+    # (macOS only; the cask also serves Homebrew on Linux, which has no xattr).
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/shuck"]
+          end
+
 release:
+  # Publish straight away (not a draft). When a release for the tag already
+  # exists — e.g. the release-drafter draft was published manually as a
+  # pre-release — keep its curated notes and just attach the built artifacts.
   draft: false
+  mode: keep-existing
+  prerelease: true
+  make_latest: "false"
