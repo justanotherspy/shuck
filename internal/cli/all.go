@@ -57,7 +57,7 @@ func inspectAll(ctx context.Context, tgt target.Target, o options) (*combinedRes
 func withSecurity(ctx context.Context, tgt target.Target, o options, report *model.Report) *combinedResult {
 	res := &combinedResult{report: report}
 	if tgt.RunID == 0 && !o.offline {
-		res.sec, res.secErr = Security(ctx, tgt.Owner, tgt.Repo, SecurityOptions{State: o.state, Token: o.token})
+		res.sec, res.secErr = Security(ctx, tgt.Owner, tgt.Repo, SecurityOptions{State: o.state, Token: o.token, Refresh: o.refresh})
 	}
 	return res
 }

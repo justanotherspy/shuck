@@ -135,6 +135,30 @@ func TestReportReviews(t *testing.T) {
 	}
 }
 
+func TestReportReviewEmptyCommentBody(t *testing.T) {
+	r := &model.Report{
+		PR: model.PR{Owner: "o", Repo: "r", Number: 1, HeadSHA: "abc1234"},
+		Reviews: []model.Review{{
+			Author: "alice", AuthorType: model.AuthorHuman, State: "commented",
+			Threads: []model.ReviewThread{{
+				Path: "main.go", Line: 3, TotalComments: 2,
+				Comments: []model.ReviewComment{
+					{Author: "alice", AuthorType: model.AuthorHuman, Body: "   "},
+					{Author: "bob", AuthorType: model.AuthorHuman, Body: "see above"},
+				},
+			}},
+		}},
+	}
+	var buf bytes.Buffer
+	Report(&buf, r) // must not panic on a whitespace-only comment body
+	out := buf.String()
+	for _, want := range []string{"alice:", "bob: see above"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q\n---\n%s", want, out)
+		}
+	}
+}
+
 func TestReportRunTargetHeader(t *testing.T) {
 	r := &model.Report{
 		Run: &model.RunInfo{

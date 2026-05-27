@@ -148,3 +148,23 @@ func TestWithSecurityGating(t *testing.T) {
 		t.Errorf("offline should skip security, got sec=%v", res.sec)
 	}
 }
+
+// TestWithSecurityRefreshPropagates proves the combined `shuck --refresh` path
+// re-fetches the security half rather than silently reusing its cache.
+func TestWithSecurityRefreshPropagates(t *testing.T) {
+	s := okStub()
+	withStubSecurity(t, s)
+	ctx := context.Background()
+	pr := target.Target{Owner: "o", Repo: "r", Number: 42}
+	report := failingReport()
+
+	withSecurity(ctx, pr, options{state: "open"}, report)
+	withSecurity(ctx, pr, options{state: "open"}, report)
+	if s.calls != 1 {
+		t.Fatalf("warm cache should avoid a second fetch: calls = %d, want 1", s.calls)
+	}
+	withSecurity(ctx, pr, options{state: "open", refresh: true}, report)
+	if s.calls != 2 {
+		t.Errorf("--refresh should re-fetch security in the combined path: calls = %d, want 2", s.calls)
+	}
+}

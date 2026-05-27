@@ -164,8 +164,10 @@ func writeThread(w io.Writer, t model.ReviewThread) {
 			head = lines[0]
 		}
 		fmt.Fprintf(w, "          %s: %s\n", authorLabel(c.Author, c.AuthorType), head)
-		for _, line := range lines[1:] {
-			fmt.Fprintf(w, "            %s\n", line)
+		if len(lines) > 1 {
+			for _, line := range lines[1:] {
+				fmt.Fprintf(w, "            %s\n", line)
+			}
 		}
 	}
 	if t.HiddenComments > 0 {
