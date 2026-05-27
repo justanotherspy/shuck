@@ -1,0 +1,8 @@
+* text=auto eol=lf
+
+*.go text diff=golang
+go.mod text
+go.sum text
+*.png binary
+*.jpg binary
+*.gif binary
