@@ -1,0 +1,50 @@
+name: Zizmor
+
+# Static analysis of the GitHub Actions workflows themselves: template
+# injection, excessive permissions, unpinned/known-vulnerable actions,
+# cache poisoning, credential persistence, etc.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "37 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zizmor-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: Actions audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+      - name: Install zizmor
+        run: python -m pip install --upgrade zizmor
+      - name: Audit workflows (SARIF)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: zizmor --format sarif .github/workflows > zizmor.sarif
+      - name: Upload SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@9e0d7b8d25671d64c341c19c0152d693099fb5ba # v4.35.5
+        with:
+          sarif_file: zizmor.sarif
+          category: zizmor
+      - name: Fail on high-severity findings
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: zizmor --min-severity=high .github/workflows

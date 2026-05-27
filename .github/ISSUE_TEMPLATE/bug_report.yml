@@ -1,0 +1,40 @@
+name: Bug report
+description: Report a problem so it can be fixed
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug! Please fill out the sections below.
+        For security vulnerabilities, do **not** open an issue — see SECURITY.md.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, including what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Commands run, flags/config used, and the observed output.
+      placeholder: |
+        1. Run `shuck ...`
+        2. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `shuck version`.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS / architecture
+      placeholder: e.g. macOS 14 arm64, Ubuntu 24.04 amd64
+    validations:
+      required: false
