@@ -435,12 +435,13 @@ your `PATH`, and a `SessionStart` hook that checks shuck is installed, recent
 enough to run the MCP server, and that a GitHub token is present.
 
 The plugin does not install shuck — [install it yourself](#install) and keep it
-current with `shuck upgrade`. Then add the marketplace and install the plugin
-from within Claude Code:
+current with `shuck upgrade`. shuck is published through justanotherspy's central
+plugin marketplace, [`justanotherspy/claude-plugins`](https://github.com/justanotherspy/claude-plugins).
+Add the marketplace and install the plugin from within Claude Code:
 
 ```
-/plugin marketplace add justanotherspy/shuck
-/plugin install shuck@shuck-marketplace
+/plugin marketplace add justanotherspy/claude-plugins
+/plugin install shuck@justanotherspy
 ```
 
 ### Without the marketplace: `shuck setup`

@@ -1,13 +1,13 @@
 {
   "extraKnownMarketplaces": {
-    "shuck-marketplace": {
+    "justanotherspy": {
       "source": {
         "source": "github",
-        "repo": "justanotherspy/shuck"
+        "repo": "justanotherspy/claude-plugins"
       }
     }
   },
   "enabledPlugins": {
-    "shuck@shuck-marketplace": true
+    "shuck@justanotherspy": true
   }
 }
