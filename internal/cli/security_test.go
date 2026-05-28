@@ -63,6 +63,20 @@ func okStub() *stubSecurity {
 	}
 }
 
+// TestSecurityStateCaseInsensitive proves the shared core normalizes --state so
+// the `all` path and the MCP tool accept the same case-insensitive values the
+// `security` subcommand does (a mixed-case or padded value must not error).
+func TestSecurityStateCaseInsensitive(t *testing.T) {
+	withStubSecurity(t, okStub())
+	rep, err := Security(context.Background(), "o", "r", SecurityOptions{State: "  OPEN "})
+	if err != nil {
+		t.Fatalf("Security with mixed-case state: %v", err)
+	}
+	if rep.State != "open" {
+		t.Errorf("state = %q, want normalized %q", rep.State, "open")
+	}
+}
+
 func TestRunSecurityTextOutput(t *testing.T) {
 	withStubSecurity(t, okStub())
 	var out, errb bytes.Buffer

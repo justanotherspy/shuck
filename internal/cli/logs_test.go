@@ -73,3 +73,54 @@ func TestRunLogsOfflineJSON(t *testing.T) {
 		t.Errorf("unexpected doc: %+v", doc)
 	}
 }
+
+// TestOfflineFocusMatchesOnline proves the focus subcommands respect their
+// dimension even offline: the whole report is cached, so `shuck logs --offline`
+// must drop the cached reviews and `shuck reviews --offline` must drop the
+// cached CI failures (and not exit-code on them) — mirroring the online paths,
+// which each fetch only one half.
+func TestOfflineFocusMatchesOnline(t *testing.T) {
+	t.Setenv("SHUCK_HOME", t.TempDir())
+	report := &model.Report{
+		PR: model.PR{Owner: "o", Repo: "r", Number: 42, Title: "fix", HeadSHA: "abc1234"},
+		FailedJobs: []model.JobResult{{
+			ID: 1, Name: "build", Conclusion: "failure", Inspected: true,
+			FailedSteps: []model.FailedStep{{Number: 2, Name: "Run tests", Excerpt: "boom"}},
+		}},
+		Reviews: []model.Review{{
+			Author: "alice", AuthorType: model.AuthorHuman, State: "changes_requested",
+			Body: "please fix the flaky test",
+		}},
+	}
+	if err := cache.Save(report); err != nil {
+		t.Fatalf("seed cache: %v", err)
+	}
+
+	t.Run("logs drops reviews", func(t *testing.T) {
+		var out, errb strings.Builder
+		code := runLogs([]string{"o/r", "42", "--offline"}, &out, &errb)
+		if code != 1 {
+			t.Fatalf("exit = %d, want 1 (CI failed); stderr=%q", code, errb.String())
+		}
+		if strings.Contains(out.String(), "Reviews:") || strings.Contains(out.String(), "alice") {
+			t.Errorf("logs --offline leaked the cached reviews:\n%s", out.String())
+		}
+		if !strings.Contains(out.String(), "Run tests") {
+			t.Errorf("logs --offline lost the CI failure:\n%s", out.String())
+		}
+	})
+
+	t.Run("reviews drops CI", func(t *testing.T) {
+		var out, errb strings.Builder
+		code := runReviews([]string{"o/r", "42", "--offline"}, &out, &errb)
+		if code != 0 {
+			t.Fatalf("exit = %d, want 0 (CI failures not in scope); stderr=%q", code, errb.String())
+		}
+		if strings.Contains(out.String(), "Run tests") || strings.Contains(out.String(), "Summary:") {
+			t.Errorf("reviews --offline leaked the cached CI report:\n%s", out.String())
+		}
+		if !strings.Contains(out.String(), "alice") {
+			t.Errorf("reviews --offline lost the reviews:\n%s", out.String())
+		}
+	})
+}
