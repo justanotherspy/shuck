@@ -136,7 +136,10 @@ func runSecurity(args []string, stdout, stderr io.Writer) int {
 // the CLI's pipeline. An error is returned only when every source genuinely
 // failed; disabled/forbidden sources are reported in the report itself.
 func Security(ctx context.Context, owner, repo string, opts SecurityOptions) (*model.SecurityReport, error) {
-	state := opts.State
+	// Normalize here so every caller (the `all` path, the MCP tool, and the
+	// `security` subcommand) accepts the same case-insensitive values; the
+	// subcommand also validates upfront for an early, fatal error.
+	state := strings.ToLower(strings.TrimSpace(opts.State))
 	if state == "" {
 		state = "open"
 	}

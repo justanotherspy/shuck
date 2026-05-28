@@ -368,7 +368,12 @@ func inspectWith(ctx context.Context, tgt target.Target, o options) (*model.Repo
 		if tgt.RunID != 0 {
 			return nil, fmt.Errorf("offline is not supported for run/job URLs; it works only with PR targets, which are cached")
 		}
-		return loadOffline(tgt)
+		report, err := loadOffline(tgt)
+		if err != nil {
+			return nil, err
+		}
+		applyFocus(report, o.ciOnly, o.reviewsOnly)
+		return report, nil
 	}
 
 	token, err := resolveToken(o.token)
@@ -502,6 +507,25 @@ func (a *app) attachReviews(ctx context.Context, owner, repo string, number int,
 	}
 	report.Reviews = reviews
 	report.ReviewsFingerprint = fingerprint
+}
+
+// applyFocus narrows a report to a focus subcommand's single dimension, matching
+// what the online `logs` / `reviews` paths produce (each fetches only one half).
+// The offline path loads the whole cached report — which carries both halves —
+// so without this `shuck logs --offline` would also print cached reviews and
+// `shuck reviews --offline` would print (and exit-code on) cached CI failures.
+func applyFocus(report *model.Report, ciOnly, reviewsOnly bool) {
+	if ciOnly {
+		report.Reviews = nil
+		report.ReviewsFingerprint = ""
+	}
+	if reviewsOnly {
+		report.ReviewsOnly = true
+		report.FailedJobs = nil
+		report.CancelledJobs = nil
+		report.RunningJobs = nil
+		report.OtherChecks = nil
+	}
 }
 
 // loadOffline renders a PR target only from its cache, without network access.
