@@ -10,10 +10,10 @@ package action
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/justanotherspy/shuck/internal/model"
+	"github.com/justanotherspy/shuck/internal/semver"
 )
 
 // Ref is a parsed action reference: the owner/repo slug, an optional subpath
@@ -80,159 +80,32 @@ func (r Resolved) PinLine() string { return r.UsesRef() + " # " + r.Tag }
 // ignored. The latest stable release is preferred; a prerelease is returned
 // only when no stable tag matches the constraint.
 func Select(tags []model.ActionTag, constraint string) (model.ActionTag, error) {
-	con, err := parseConstraint(constraint)
-	if err != nil {
-		return model.ActionTag{}, err
+	con, ok := semver.ParseConstraint(constraint)
+	if !ok {
+		return model.ActionTag{}, fmt.Errorf("invalid version %q", constraint)
 	}
-	var best, bestStable *parsed
+	var best, bestStable *model.ActionTag
+	var bestV, bestStableV semver.Version
 	for i := range tags {
-		p, ok := parseVersion(tags[i].Name)
-		if !ok || !con.matches(p) {
+		v, ok := semver.Parse(tags[i].Name)
+		if !ok || !con.Matches(v) {
 			continue
 		}
-		p.tag = tags[i]
-		cur := p
-		if best == nil || cmp(cur, *best) > 0 {
-			b := cur
-			best = &b
+		if best == nil || semver.Compare(v, bestV) > 0 {
+			best, bestV = &tags[i], v
 		}
-		if p.pre == "" && (bestStable == nil || cmp(cur, *bestStable) > 0) {
-			b := cur
-			bestStable = &b
+		if v.Stable() && (bestStable == nil || semver.Compare(v, bestStableV) > 0) {
+			bestStable, bestStableV = &tags[i], v
 		}
 	}
 	switch {
 	case bestStable != nil:
-		return bestStable.tag, nil
+		return *bestStable, nil
 	case best != nil:
-		return best.tag, nil
+		return *best, nil
 	case constraint == "":
 		return model.ActionTag{}, fmt.Errorf("no semver-tagged releases found")
 	default:
 		return model.ActionTag{}, fmt.Errorf("no release matches %q", constraint)
-	}
-}
-
-// parsed is a semver tag broken into its numeric components and prerelease
-// suffix, carrying the originating tag for the final tie-break and the result.
-type parsed struct {
-	major, minor, patch int
-	pre                 string // prerelease suffix after '-', empty when stable
-	tag                 model.ActionTag
-}
-
-// parseVersion parses a tag name like "v4.2.2" or "1.2.3-rc.1" into its semver
-// parts. Build metadata (after '+') is dropped. It returns ok=false for any tag
-// that is not MAJOR[.MINOR[.PATCH]] with optional v prefix and prerelease.
-func parseVersion(name string) (parsed, bool) {
-	s := strings.TrimSpace(name)
-	s = strings.TrimPrefix(s, "v")
-	s = strings.TrimPrefix(s, "V")
-	if i := strings.IndexByte(s, '+'); i >= 0 {
-		s = s[:i]
-	}
-	var pre string
-	if i := strings.IndexByte(s, '-'); i >= 0 {
-		pre = s[i+1:]
-		s = s[:i]
-	}
-	fields := strings.Split(s, ".")
-	if len(fields) == 0 || len(fields) > 3 {
-		return parsed{}, false
-	}
-	var nums [3]int
-	for i, f := range fields {
-		n, err := strconv.Atoi(f)
-		if err != nil || n < 0 {
-			return parsed{}, false
-		}
-		nums[i] = n
-	}
-	return parsed{major: nums[0], minor: nums[1], patch: nums[2], pre: pre}, true
-}
-
-// constraint is a parsed version filter. specificity is how many components the
-// user pinned (0 = none, 1 = major, 2 = major.minor, 3 = exact).
-type constraint struct {
-	specificity         int
-	major, minor, patch int
-}
-
-func parseConstraint(s string) (constraint, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return constraint{}, nil
-	}
-	raw := s
-	s = strings.TrimPrefix(s, "v")
-	s = strings.TrimPrefix(s, "V")
-	if i := strings.IndexByte(s, '+'); i >= 0 {
-		s = s[:i]
-	}
-	if i := strings.IndexByte(s, '-'); i >= 0 { // a constraint ignores any prerelease
-		s = s[:i]
-	}
-	fields := strings.Split(s, ".")
-	if len(fields) == 0 || len(fields) > 3 {
-		return constraint{}, fmt.Errorf("invalid version %q", raw)
-	}
-	c := constraint{specificity: len(fields)}
-	nums := []*int{&c.major, &c.minor, &c.patch}
-	for i, f := range fields {
-		n, err := strconv.Atoi(f)
-		if err != nil || n < 0 {
-			return constraint{}, fmt.Errorf("invalid version %q", raw)
-		}
-		*nums[i] = n
-	}
-	return c, nil
-}
-
-func (c constraint) matches(p parsed) bool {
-	if c.specificity >= 1 && p.major != c.major {
-		return false
-	}
-	if c.specificity >= 2 && p.minor != c.minor {
-		return false
-	}
-	if c.specificity >= 3 && p.patch != c.patch {
-		return false
-	}
-	return true
-}
-
-// cmp orders two parsed versions: by (major, minor, patch); then a stable
-// release outranks a prerelease of the same version; then prerelease suffixes
-// compare lexically; finally the raw tag name breaks ties for determinism.
-func cmp(a, b parsed) int {
-	if a.major != b.major {
-		return sign(a.major - b.major)
-	}
-	if a.minor != b.minor {
-		return sign(a.minor - b.minor)
-	}
-	if a.patch != b.patch {
-		return sign(a.patch - b.patch)
-	}
-	if (a.pre == "") != (b.pre == "") {
-		if a.pre == "" {
-			return 1 // stable > prerelease
-		}
-		return -1
-	}
-	if a.pre != b.pre {
-		return strings.Compare(a.pre, b.pre)
-	}
-	return strings.Compare(a.tag.Name, b.tag.Name)
-}
-
-func sign(n int) int {
-	switch {
-	case n < 0:
-		return -1
-	case n > 0:
-		return 1
-	default:
-		return 0
 	}
 }

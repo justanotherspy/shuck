@@ -21,6 +21,7 @@ import (
 
 	"github.com/justanotherspy/shuck/internal/action"
 	"github.com/justanotherspy/shuck/internal/cli"
+	"github.com/justanotherspy/shuck/internal/image"
 	"github.com/justanotherspy/shuck/internal/jsonout"
 	"github.com/justanotherspy/shuck/internal/logs"
 	"github.com/justanotherspy/shuck/internal/model"
@@ -71,6 +72,22 @@ this to pin a workflow's actions to immutable SHAs.
 Pass action as owner/action[/subpath][@version]. Auth is optional for public
 repos; a GitHub token in GITHUB_TOKEN or GH_TOKEN lifts the unauthenticated
 rate limit. Tags are cached for a day; set refresh to re-fetch.`
+
+const inspectImagesDesc = `List GHCR container images for an owner, or resolve one image to its digest.
+
+Given a bare owner (or owner/repo), shuck lists every container image published
+under that owner on GitHub Container Registry (ghcr.io), each with its latest tag
+and immutable manifest digest (sha256:…). Given a full image reference like
+ghcr.io/OWNER/NAME or ghcr.io/OWNER/NAME:v1.2, shuck resolves just that image to
+its newest matching tag and digest, plus a digest-pinned reference ready to use
+(ghcr.io/OWNER/NAME@sha256:… # tag). For a multi-arch image the digest is the
+image-index digest, which is the correct value to pin.
+
+Pass image as an owner, owner/repo, a github.com URL, or a ghcr.io/owner/name[:tag]
+reference. Listing every image uses the GitHub Packages API and needs a token
+with the read:packages scope (GITHUB_TOKEN or GH_TOKEN). Resolving a single
+public image works without a token via the anonymous registry API; private
+images need a token. Results are cached for an hour; set refresh to re-fetch.`
 
 const inspectSecurityDesc = `Summarize a repository's GitHub security alerts in one shot.
 
@@ -149,6 +166,13 @@ func newServer() *mcp.Server {
 		Description: inspectActionDesc,
 		Annotations: annotations,
 	}, inspectAction)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "inspect_images",
+		Title:       "List GHCR images or resolve one to a digest",
+		Description: inspectImagesDesc,
+		Annotations: annotations,
+	}, inspectImages)
 
 	return s
 }
@@ -340,6 +364,84 @@ func inspectAction(ctx context.Context, _ *mcp.CallToolRequest, in inspectAction
 		Content: []mcp.Content{&mcp.TextContent{Text: b.String()}},
 	}
 	return res, action.NewDocument(resolved), nil
+}
+
+type inspectImagesInput struct {
+	Image   string `json:"image,omitempty" jsonschema:"An owner, owner/repo, a github.com URL, or a ghcr.io/owner/name[:tag] reference. An owner (or repo) lists every image under it; a full ghcr.io reference resolves that one image. If omitted, the local working directory's owner is used."`
+	Refresh bool   `json:"refresh,omitempty" jsonschema:"Ignore the cache and re-fetch (results are cached for an hour)."`
+}
+
+// imagesOutput is the structured result of inspect_images: exactly one of
+// Resolved (a single image pinned to its digest) or List (every image under an
+// owner) is populated, mirroring the CLI's two modes.
+type imagesOutput struct {
+	Resolved *image.Document     `json:"resolved,omitempty"`
+	List     *image.ListDocument `json:"list,omitempty"`
+}
+
+func inspectImages(ctx context.Context, _ *mcp.CallToolRequest, in inspectImagesInput) (*mcp.CallToolResult, imagesOutput, error) {
+	// A full ghcr.io/owner/name reference resolves a single image; anything else
+	// (an owner, owner/repo, URL, or nothing) lists every image under the owner —
+	// the same split the CLI's `shuck image` makes.
+	if isImageRef(in.Image) {
+		ref, err := image.ParseRef(in.Image)
+		if err != nil {
+			return nil, imagesOutput{}, err
+		}
+		if ref.ListAll() {
+			return nil, imagesOutput{}, fmt.Errorf("an image reference needs a name (ghcr.io/owner/name)")
+		}
+		resolved, err := cli.Image(ctx, ref, cli.ImageOptions{Refresh: in.Refresh})
+		if err != nil {
+			return nil, imagesOutput{}, err
+		}
+		var b strings.Builder
+		image.Render(&b, resolved)
+		doc := image.NewDocument(resolved)
+		res := &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: b.String()}}}
+		return res, imagesOutput{Resolved: &doc}, nil
+	}
+
+	owner, err := imageOwner(in.Image)
+	if err != nil {
+		return nil, imagesOutput{}, err
+	}
+	pkgs, err := cli.Images(ctx, owner, cli.ImageOptions{Refresh: in.Refresh})
+	if err != nil {
+		return nil, imagesOutput{}, err
+	}
+	var b strings.Builder
+	image.RenderList(&b, image.DefaultRegistry, owner, pkgs)
+	doc := image.NewListDocument(image.DefaultRegistry, owner, pkgs)
+	res := &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: b.String()}}}
+	return res, imagesOutput{List: &doc}, nil
+}
+
+// isImageRef reports whether s is an explicit ghcr.io/... reference (single-image
+// resolution) rather than an owner / repo / URL (listing).
+func isImageRef(s string) bool {
+	s = strings.TrimSpace(s)
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	first, _, ok := strings.Cut(s, "/")
+	return ok && strings.EqualFold(first, image.DefaultRegistry)
+}
+
+// imageOwner resolves the owner to list images for from the tool input: a bare
+// token is the owner directly; an owner/repo or github.com URL yields the repo's
+// owner; an empty string uses the local repo. It mirrors the CLI's resolution.
+func imageOwner(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if s != "" && !strings.Contains(s, "/") && !strings.Contains(s, "://") {
+		return s, nil
+	}
+	var args []string
+	if s != "" {
+		args = []string{s}
+	}
+	owner, _, err := target.ResolveRepo(args)
+	return owner, err
 }
 
 // toResult packages a report as a tool response: the rendered, human-readable

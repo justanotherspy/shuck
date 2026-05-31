@@ -59,6 +59,7 @@ Subcommands (single-letter shorthands in parentheses):
   shuck reviews (r) [target]                 a PR's reviews and review-comment threads
   shuck all [target]                         CI + reviews + security (the default)
   shuck action (a) <owner>/<action>[@<version>]  resolve an Action to its latest tag + SHA for pinning
+  shuck image (i) [owner | ghcr.io/owner/name[:tag]]  list GHCR images, or resolve one to its latest digest
   shuck security (s) [owner/repo | url]      a repo's security alerts (code scanning, secrets, Dependabot)
   shuck mcp                   run as a local MCP (stdio) server exposing shuck tools
   shuck setup                 install the shuck skill + CLAUDE.md note for Claude Code (and, optionally, the MCP)
@@ -100,6 +101,7 @@ var subcommandAliases = map[string]string{
 	"r": "reviews",
 	"a": "action",
 	"s": "security",
+	"i": "image",
 }
 
 // Run executes shuck and returns the process exit code:
@@ -117,6 +119,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			return runUpgrade(args[1:], stdout, stderr)
 		case "action":
 			return runAction(args[1:], stdout, stderr)
+		case "image", "images":
+			return runImage(args[1:], stdout, stderr)
 		case "security":
 			return runSecurity(args[1:], stdout, stderr)
 		case "logs":
