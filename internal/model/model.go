@@ -119,7 +119,7 @@ type ActionTag struct {
 type ImageVersion struct {
 	Tags      []string  `json:"tags"`
 	Digest    string    `json:"digest"` // sha256:...
-	UpdatedAt time.Time `json:"updated_at,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // ImagePackage is a single container package (image) under an owner and the

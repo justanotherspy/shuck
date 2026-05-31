@@ -12,6 +12,7 @@ package image
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/justanotherspy/shuck/internal/model"
@@ -164,10 +165,8 @@ func Select(versions []model.ImageVersion, constraint string) (model.ImageVersio
 // selectExactTag returns the version whose tag list contains tag exactly.
 func selectExactTag(versions []model.ImageVersion, tag string) (model.ImageVersion, string, error) {
 	for i := range versions {
-		for _, t := range versions[i].Tags {
-			if t == tag {
-				return versions[i], tag, nil
-			}
+		if slices.Contains(versions[i].Tags, tag) {
+			return versions[i], tag, nil
 		}
 	}
 	return model.ImageVersion{}, "", fmt.Errorf("no version tagged %q", tag)

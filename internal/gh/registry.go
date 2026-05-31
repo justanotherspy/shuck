@@ -133,7 +133,7 @@ func decodeRegistry(resp *http.Response, out any, what string) error {
 // nextLink extracts the URL of a rel="next" RFC 5988 Link header, resolving a
 // relative path against host. It returns "" when there is no next page.
 func nextLink(link, host string) string {
-	for _, part := range strings.Split(link, ",") {
+	for part := range strings.SplitSeq(link, ",") {
 		segs := strings.Split(strings.TrimSpace(part), ";")
 		if len(segs) < 2 {
 			continue
