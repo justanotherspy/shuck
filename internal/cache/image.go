@@ -25,7 +25,7 @@ type imageRecord struct {
 }
 
 // ImageDir returns the cache directory for an owner's image listings:
-// ~/.shuck/images/<owner>. SHUCK_HOME overrides the base for testing.
+// ~/.cache/shuck/images/<owner>. SHUCK_HOME overrides the base for testing.
 func ImageDir(owner string) (string, error) {
 	base, err := Base()
 	if err != nil {

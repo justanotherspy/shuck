@@ -49,6 +49,38 @@ func TestLoadMissingReturnsNil(t *testing.T) {
 	}
 }
 
+// TestBaseDefaultsToUserCacheDir verifies that, absent SHUCK_HOME, the base
+// follows the XDG cache directory (~/.cache/shuck) via os.UserCacheDir rather
+// than the legacy ~/.shuck home location. XDG_CACHE_HOME steers UserCacheDir on
+// the test platform, so it doubles as a check that the env var is honored.
+func TestBaseDefaultsToUserCacheDir(t *testing.T) {
+	t.Setenv("SHUCK_HOME", "")
+	cacheRoot := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cacheRoot)
+
+	got, err := Base()
+	if err != nil {
+		t.Fatalf("Base: %v", err)
+	}
+	if want := filepath.Join(cacheRoot, "shuck"); got != want {
+		t.Errorf("Base() = %q, want %q", got, want)
+	}
+}
+
+// TestBaseHonorsShuckHome confirms SHUCK_HOME still overrides the default base
+// outright, keeping the test/override escape hatch intact.
+func TestBaseHonorsShuckHome(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SHUCK_HOME", dir)
+	got, err := Base()
+	if err != nil {
+		t.Fatalf("Base: %v", err)
+	}
+	if got != dir {
+		t.Errorf("Base() = %q, want %q", got, dir)
+	}
+}
+
 func TestSaveLoadJobLogRoundTrip(t *testing.T) {
 	t.Setenv("SHUCK_HOME", t.TempDir())
 

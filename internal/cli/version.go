@@ -21,7 +21,7 @@ var newReleaseClient = release.New
 
 const (
 	// versionCheckFile holds the cached result of the last update check, under
-	// the shuck base dir (~/.shuck).
+	// the shuck base dir (~/.cache/shuck).
 	versionCheckFile = "version-check.json"
 	// versionCheckTTL bounds how long a cached check is fresh enough for bare
 	// `shuck version` to surface an "update available" hint offline.

@@ -1,4 +1,4 @@
-// Package cache persists a PR's last inspection under ~/.shuck so repeat runs can
+// Package cache persists a PR's last inspection under ~/.cache/shuck so repeat runs can
 // skip redundant log downloads. The cache is advisory: callers always re-validate
 // cheap metadata (head SHA, run/job listing) before trusting it.
 package cache
@@ -19,7 +19,7 @@ import (
 const fileName = "cache.json"
 
 // dirPerm/filePerm guard the cache: it can hold CI logs and security alert
-// reports, which may quote secrets. Keeping ~/.shuck owner-only avoids exposing
+// reports, which may quote secrets. Keeping ~/.cache/shuck owner-only avoids exposing
 // that data to other local users on a shared machine.
 const (
 	dirPerm  os.FileMode = 0o700
@@ -29,7 +29,7 @@ const (
 // safeSegment validates a path segment (owner or repo) before it is joined into
 // a cache path. owner/repo originate from user-supplied arguments, GitHub URLs,
 // or a git remote, so a crafted value like "../../etc" must not be allowed to
-// escape ~/.shuck via filepath.Join. Real GitHub names never contain a path
+// escape ~/.cache/shuck via filepath.Join. Real GitHub names never contain a path
 // separator or "..", so this rejects exactly the traversal cases without
 // constraining legitimate repositories.
 func safeSegment(s string) error {
@@ -43,22 +43,24 @@ func safeSegment(s string) error {
 	return nil
 }
 
-// Base returns shuck's base directory (~/.shuck), honoring SHUCK_HOME. It is the
-// parent of the per-PR cache and of cross-cutting state such as the
-// version-check record.
+// Base returns shuck's base directory (~/.cache/shuck), honoring SHUCK_HOME. It
+// is the parent of the per-PR cache and of cross-cutting state such as the
+// version-check record. The default follows the XDG Base Directory spec via
+// os.UserCacheDir (so XDG_CACHE_HOME is respected); SHUCK_HOME overrides it
+// outright, chiefly for testing.
 func Base() (string, error) {
 	if base := os.Getenv("SHUCK_HOME"); base != "" {
 		return base, nil
 	}
-	home, err := os.UserHomeDir()
+	cacheDir, err := os.UserCacheDir()
 	if err != nil {
-		return "", fmt.Errorf("locate home directory: %w", err)
+		return "", fmt.Errorf("locate cache directory: %w", err)
 	}
-	return filepath.Join(home, ".shuck"), nil
+	return filepath.Join(cacheDir, "shuck"), nil
 }
 
-// Dir returns the cache directory for a PR: ~/.shuck/cache/<owner>/<repo>/<pr>.
-// SHUCK_HOME overrides the base (~/.shuck) for testing.
+// Dir returns the cache directory for a PR: ~/.cache/shuck/cache/<owner>/<repo>/<pr>.
+// SHUCK_HOME overrides the base (~/.cache/shuck) for testing.
 func Dir(owner, repo string, pr int) (string, error) {
 	base, err := Base()
 	if err != nil {
@@ -122,7 +124,7 @@ func Save(r *model.Report) error {
 }
 
 // logFile returns the path of a job attempt's raw log within a PR's cache:
-// ~/.shuck/cache/<owner>/<repo>/<pr>/logs/<jobID>-<attempt>.log.
+// ~/.cache/shuck/cache/<owner>/<repo>/<pr>/logs/<jobID>-<attempt>.log.
 func logFile(owner, repo string, pr int, jobID int64, attempt int) (string, error) {
 	dir, err := Dir(owner, repo, pr)
 	if err != nil {
@@ -195,7 +197,7 @@ func Purge(ttl time.Duration, keep string) error {
 			// entryDir is always under the user-owned cache base resolved above
 			// and only reached for a known cache record name, so this is not an
 			// attacker-controlled traversal target.
-			_ = os.RemoveAll(entryDir) //nolint:gosec // path is within the user's own ~/.shuck cache
+			_ = os.RemoveAll(entryDir) //nolint:gosec // path is within the user's own ~/.cache/shuck cache
 			return nil
 		})
 	}
