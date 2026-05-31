@@ -1,6 +1,7 @@
 package release
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -22,7 +23,7 @@ func TestReplaceRunning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != string(newBin) {
+	if !bytes.Equal(got, newBin) {
 		t.Errorf("contents = %q, want %q", got, newBin)
 	}
 	info, err := os.Stat(exe)

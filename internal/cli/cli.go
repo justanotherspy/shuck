@@ -150,7 +150,7 @@ func runDefault(args []string, stdout, stderr io.Writer) int {
 
 	ctx := context.Background()
 	if o.watch {
-		// In watch mode we block for a long time, so honour Ctrl-C: cancelling
+		// In watch mode we block for a long time, so honor Ctrl-C: canceling
 		// the context stops the poll loop and prints the latest result.
 		var stop context.CancelFunc
 		ctx, stop = signal.NotifyContext(ctx, os.Interrupt)
@@ -609,8 +609,7 @@ func permuteArgs(fs *flag.FlagSet, args []string) []string {
 		}
 		positional = append(positional, args[i])
 	}
-	out := append(flags, "--")
-	return append(out, positional...)
+	return append(append(flags, "--"), positional...)
 }
 
 // canonicalDashes rewrites a leading run of Unicode dash characters into the
@@ -676,6 +675,8 @@ func flagTakesValue(fs *flag.FlagSet, arg string) bool {
 }
 
 // app holds the dependencies needed to drill into a failed job's logs.
+//
+//nolint:gocritic // declared next to its constructor and helpers below
 type app struct {
 	client             *gh.Client
 	opts               logs.Options

@@ -23,3 +23,15 @@ updates:
       github-actions:
         patterns:
           - "*"
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - docker
+    groups:
+      docker:
+        patterns:
+          - "*"

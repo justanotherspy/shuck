@@ -1,0 +1,36 @@
+# Keep the build context small and reproducible: send only what the build needs.
+# NOTE: plugins/ is intentionally NOT ignored — main.go //go:embeds
+# plugins/shuck/skills/shuck/SKILL.md, so the build fails without it.
+.git
+.github
+.claude
+
+# Build / test artifacts
+bin/
+dist/
+profiles/
+/shuck
+/plugins/shuck/bin/
+*.out
+coverage.*
+*.coverprofile
+*.prof
+*.test
+bench-*.txt
+
+# Docs & meta (not needed to compile the binary). The embedded plugin skill is
+# a .md file, so re-include it after the blanket *.md exclusion.
+*.md
+!plugins/shuck/skills/shuck/SKILL.md
+LICENSE
+SECURITY.md
+CONTRIBUTING.md
+install.sh
+.goreleaser.yaml
+.golangci.yml
+.editorconfig
+.gitattributes
+.gitignore
+.pre-commit-config.yaml
+Dockerfile
+.dockerignore

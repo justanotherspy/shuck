@@ -11,18 +11,29 @@ failures down to the failed steps + their error logs, and caches results under
 
 ## Commands
 
+Run `make help` for the full list. The essentials:
+
 ```sh
-make build   # build the ./shuck binary
-make test    # go test -race ./...
-make vet     # go vet ./...
-make lint    # golangci-lint run ./...  (run `make lint-install` once first)
-make cover   # coverage summary
-make fmt     # gofmt -w .
-make fix     # go fix ./...  (apply Go 1.26 modernizers)
-make fix-check # fail if any modernization is pending (CI gate)
-make tidy    # go mod tidy
+make tools           # install the pinned dev tools (lint, releaser, gopls…)
+make build           # build ./bin/shuck
+make test            # go test -race -covermode=atomic … (coverage in coverage.out)
+make vet             # go vet ./...
+make lint            # golangci-lint run
+make fmt             # gofmt + goimports via golangci-lint
+make modernize       # go fix ./...  (apply Go 1.26 modernizers)
+make modernize-check # fail if any modernization is pending (CI gate; alias: fix-check)
+make cover-report    # Markdown coverage report (CI posts it on PRs)
+make vuln            # govulncheck vulnerability scan
+make fuzz FUZZ=Fuzz… # actively fuzz one target (FUZZTIME, FUZZPKG)
+make fuzz-all        # briefly fuzz every target (nightly workflow)
+make bench           # run benchmarks (BENCH, BENCHPKG, BENCHTIME)
+make docker-build    # build the container image locally
+make snapshot        # local goreleaser snapshot (no publish)
+make tidy            # go mod tidy
+make ci              # what CI runs: deps + lint + modernize-check + test + build
 ```
 
+`make fix` / `make fix-check` remain as aliases of `modernize` / `modernize-check`.
 Always run `make test` and `make lint` before pushing; CI runs both.
 
 ## Architecture
@@ -117,8 +128,38 @@ render → update cache.
 ## Conventions
 
 - Standard library `flag` for CLI parsing; no cobra.
-- Keep `internal/model` dependency-free to avoid import cycles.
+- Keep `internal/model` dependency-free to avoid import cycles. The domain types
+  are passed by value on purpose; `gocritic`'s `hugeParam`/`rangeValCopy` checks
+  are disabled in `.golangci.yml` so this stays idiomatic.
 - Errors from `fmt.Fprint*` to stdout/stderr are intentionally ignored (see the
   errcheck exclusion in `.golangci.yml`).
+- `GOTOOLCHAIN=auto` (set by the Makefile) lets the `toolchain` directive in
+  `go.mod` fetch a patched Go on demand; bump that directive when a newer patch
+  fixes a govulncheck finding.
 - Tests are table-driven where practical; pure logic in `logs`/`target`/`render`
   is unit-tested without network.
+
+## Testing, fuzzing & profiling
+
+- **Coverage on PRs.** `make test` writes `coverage.out`; CI renders it with
+  `make cover-report` into the job summary and one sticky PR comment (report-only,
+  never gates the build).
+- **Fuzzing.** `FuzzXxx` targets live next to the code (see
+  `internal/logs/fuzz_test.go`, which fuzzes the log parsers). Seed corpora run
+  as ordinary unit tests under `make test`; `make fuzz FUZZ=FuzzParse` does active
+  mutation locally and the nightly `fuzz.yml` workflow runs `make fuzz-all`
+  (auto-discovers every target). Commit any minimized crasher under
+  `testdata/fuzz/<FuzzXxx>/` as a regression seed, then fix the bug.
+- **Benchmarks & profiling.** Use the modern `for b.Loop() { … }` form with
+  `b.ReportAllocs()` (see `internal/logs/bench_test.go`). `make bench` runs them;
+  `make profile BENCH=…` captures CPU+mem profiles and `make pprof-cpu`/`pprof-mem`
+  open them.
+
+## Distribution
+
+- Tag-triggered `release.yml` runs GoReleaser: multi-platform builds, a cosign
+  keyless signature over `checksums.txt`, an SPDX SBOM per archive (syft), an
+  SLSA build-provenance attestation, and the Homebrew cask push to
+  `justanotherspy/homebrew-tap`. `docker.yml` builds/pushes a multi-arch image to
+  GHCR (cosign-signed + provenance). Versioning stays `git describe`-derived
+  (injected into `internal/cli.version`); there is no `VERSION` file.

@@ -108,7 +108,7 @@ func (c *Client) Download(ctx context.Context, tag, goos, goarch string) ([]byte
 }
 
 func (c *Client) get(ctx context.Context, url string) (io.ReadCloser, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return nil, err
 	}
@@ -201,8 +201,9 @@ func extractZip(data []byte, binName string) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		defer func() { _ = rc.Close() }()
-		return io.ReadAll(rc)
+		b, err := io.ReadAll(rc)
+		_ = rc.Close()
+		return b, err
 	}
 	return nil, fmt.Errorf("%s not found in archive", binName)
 }

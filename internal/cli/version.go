@@ -17,7 +17,7 @@ import (
 
 // newReleaseClient builds the client used by `version --check` and `upgrade`. It
 // is a package var so tests can point it at a local server.
-var newReleaseClient = func(token string) *release.Client { return release.New(token) }
+var newReleaseClient = release.New
 
 const (
 	// versionCheckFile holds the cached result of the last update check, under
@@ -140,5 +140,5 @@ func saveVersionCheck(latest string) {
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(path, data, 0o644)
+	_ = os.WriteFile(path, data, 0o644) //nolint:gosec // version-check cache marker; 0644 is fine
 }

@@ -6,10 +6,16 @@ working in this repository.
 ## Getting started
 
 ```sh
-make lint-install   # install the pinned golangci-lint (one time)
-make build          # build the ./shuck binary
-make test           # go test -race ./...
+make tools          # install the pinned dev tools (lint, releaser, gopls…)
+make build          # build the ./bin/shuck binary
+make test           # tests with the race detector + coverage
+make ci             # run the full pipeline CI runs
 ```
+
+Run `make help` to see every target. `make hooks` installs the pre-commit /
+pre-push hooks (mirroring the CI guardrails) if you use [pre-commit][pc].
+
+[pc]: https://pre-commit.com
 
 ## Development workflow
 
@@ -18,10 +24,11 @@ make test           # go test -race ./...
 3. Format, vet, lint, and test locally before pushing:
 
    ```sh
-   make fmt    # gofmt -w .
+   make fmt    # gofmt + goimports via golangci-lint
    make vet    # go vet ./...
-   make lint   # golangci-lint run ./...
+   make lint   # golangci-lint run
    make test   # tests with the race detector
+   make vuln   # govulncheck vulnerability scan
    ```
 
 4. Run `make tidy` if you touched dependencies, and keep `go.mod`/`go.sum`

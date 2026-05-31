@@ -8,9 +8,20 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
+    name: Test
     runs-on: ubuntu-latest
+    # pull-requests: write lets the coverage step post/update a PR comment.
+    # The token is read-only on fork PRs, so that step is guarded to same-repo
+    # PRs below; coverage still lands in the job summary either way.
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -24,11 +35,40 @@ jobs:
       - name: Vet
         run: go vet ./...
       - name: Modernize (go fix)
-        run: make fix-check
+        run: make modernize-check
       - name: Test
-        run: go test -race -coverprofile=coverage.out ./...
+        run: make test
+      - name: Coverage report (job summary)
+        run: make cover-report | tee coverage-report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Comment coverage on PR
+        # Skip on fork PRs (read-only token) and on pushes to main.
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- coverage-report -->';
+            const body = `${marker}\n${fs.readFileSync('coverage-report.md', 'utf8')}`;
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            // Reuse the existing sticky comment (found by its hidden marker) so
+            // each push updates one comment instead of stacking new ones.
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number, per_page: 100,
+            });
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+              core.info(`Updated coverage comment on PR #${issue_number}`);
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+              core.info(`Created coverage comment on PR #${issue_number}`);
+            }
 
   lint:
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -42,7 +82,55 @@ jobs:
         with:
           version: v2.12.2
 
+  vuln:
+    name: Govulncheck
+    runs-on: ubuntu-latest
+    env:
+      # Let go.mod's `toolchain` directive pull the patched Go for the scan,
+      # so CI matches `make vuln` locally instead of a runner's base toolchain.
+      GOTOOLCHAIN: auto
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+      - run: make vuln
+
+  tidy:
+    name: Tidy check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+      - name: Verify go.mod/go.sum are tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+  actionlint:
+    name: Actionlint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Lint workflows (actionlint + shellcheck)
+        uses: reviewdog/action-actionlint@6fb7acc99f4a1008869fa8a0f09cfca740837d9d # v1.72.0
+        with:
+          reporter: github-check
+          fail_level: error
+
   shellcheck:
+    name: ShellCheck
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -52,6 +140,7 @@ jobs:
         run: find . -type f -name '*.sh' -print0 | xargs -0 -r shellcheck
 
   plugin-validate:
+    name: Plugin validate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

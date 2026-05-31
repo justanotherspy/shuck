@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/google/go-github/v88/github"
+
 	"github.com/justanotherspy/shuck/internal/model"
 )
 
