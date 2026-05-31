@@ -1,7 +1,6 @@
 # 🌽 shuck
 
 [![CI](https://github.com/justanotherspy/shuck/actions/workflows/ci.yml/badge.svg)](https://github.com/justanotherspy/shuck/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/justanotherspy/shuck/actions/workflows/codeql.yml/badge.svg)](https://github.com/justanotherspy/shuck/actions/workflows/codeql.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/justanotherspy/shuck/badge)](https://scorecard.dev/viewer/?uri=github.com/justanotherspy/shuck)
 
 **shuck the husk, keep the kernel.**
