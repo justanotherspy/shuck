@@ -3,7 +3,7 @@ GOLANGCI_LINT_VERSION := v2.12.2
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null)
 LDFLAGS := -X github.com/justanotherspy/shuck/internal/cli.version=$(VERSION)
 
-.PHONY: all build test cover vet fmt tidy lint lint-install install clean
+.PHONY: all build test cover vet fmt fix fix-check tidy lint lint-install install clean
 
 all: build
 
@@ -22,6 +22,17 @@ vet:
 
 fmt:
 	gofmt -w .
+
+fix:
+	go fix ./...
+
+fix-check:
+	@out="$$(go fix -diff ./... 2>/dev/null)"; \
+	if [ -n "$$out" ]; then \
+		echo "go fix would modernize the following; run 'make fix':"; \
+		echo "$$out"; \
+		exit 1; \
+	fi
 
 tidy:
 	go mod tidy

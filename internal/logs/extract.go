@@ -48,10 +48,7 @@ func Extract(lines []string, opts Options) string {
 	}
 
 	if len(hits) == 0 {
-		start := len(lines) - opts.Tail
-		if start < 0 {
-			start = 0
-		}
+		start := max(len(lines)-opts.Tail, 0)
 		omitted := start
 		out := lines[start:]
 		if omitted > 0 {
@@ -68,14 +65,8 @@ type window struct{ start, end int } // [start, end)
 func mergeWindows(hits []int, ctx, n int) []window {
 	var ws []window
 	for _, h := range hits {
-		s := h - ctx
-		if s < 0 {
-			s = 0
-		}
-		e := h + ctx + 1
-		if e > n {
-			e = n
-		}
+		s := max(h-ctx, 0)
+		e := min(h+ctx+1, n)
 		if len(ws) > 0 && s <= ws[len(ws)-1].end {
 			if e > ws[len(ws)-1].end {
 				ws[len(ws)-1].end = e

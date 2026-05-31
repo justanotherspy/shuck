@@ -16,7 +16,7 @@ func TestExtractShortReturnsWhole(t *testing.T) {
 
 func TestExtractLongTailsWhenNoMatch(t *testing.T) {
 	var lines []string
-	for i := 0; i < 300; i++ {
+	for i := range 300 {
 		lines = append(lines, fmt.Sprintf("clean line %d", i))
 	}
 	opts := Options{ShortThreshold: 100, Context: 10, Tail: 50, Pattern: DefaultPattern()}
@@ -34,7 +34,7 @@ func TestExtractLongTailsWhenNoMatch(t *testing.T) {
 
 func TestExtractLongGrepsWithContext(t *testing.T) {
 	var lines []string
-	for i := 0; i < 200; i++ {
+	for i := range 200 {
 		lines = append(lines, fmt.Sprintf("clean line %d", i))
 	}
 	lines[150] = "fatal: something exploded"
@@ -57,7 +57,7 @@ func TestExtractLongGrepsWithContext(t *testing.T) {
 
 func TestExtractMergesAdjacentWindows(t *testing.T) {
 	var lines []string
-	for i := 0; i < 200; i++ {
+	for i := range 200 {
 		lines = append(lines, fmt.Sprintf("clean line %d", i))
 	}
 	lines[100] = "error one"

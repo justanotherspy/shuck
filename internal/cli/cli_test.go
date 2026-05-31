@@ -335,7 +335,7 @@ func reportSeq(calls *int, reports ...*model.Report) func(context.Context) (*mod
 
 func running(n int) *model.Report {
 	r := &model.Report{}
-	for i := 0; i < n; i++ {
+	for i := range n {
 		r.RunningJobs = append(r.RunningJobs, model.RunningJob{Name: fmt.Sprintf("job-%d", i), Status: "in_progress"})
 	}
 	return r
