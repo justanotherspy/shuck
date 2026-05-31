@@ -167,7 +167,9 @@ func installSkill(dir, skill string, dryRun bool, stdout io.Writer) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create skill directory: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(skill), 0o644); err != nil {
+	// The skill is a documentation file the user (and Claude) reads; 0644 keeps
+	// it world-readable on purpose.
+	if err := os.WriteFile(path, []byte(skill), 0o644); err != nil { //nolint:gosec // user-readable doc file
 		return fmt.Errorf("write skill: %w", err)
 	}
 	fmt.Fprintf(stdout, "%s skill: %s\n", verb, path)
@@ -195,7 +197,9 @@ func refreshInstalledSkill(dir, skill string, dryRun bool, stdout io.Writer) err
 		fmt.Fprintf(stdout, "[dry-run] would refresh installed skill: %s\n", path)
 		return nil
 	}
-	if err := os.WriteFile(path, []byte(skill), 0o644); err != nil {
+	// The skill is a documentation file the user (and Claude) reads; 0644 keeps
+	// it world-readable on purpose.
+	if err := os.WriteFile(path, []byte(skill), 0o644); err != nil { //nolint:gosec // user-readable doc file
 		return fmt.Errorf("write skill: %w", err)
 	}
 	fmt.Fprintf(stdout, "refreshed installed skill: %s\n", path)
@@ -224,7 +228,8 @@ func updateClaudeMD(dir string, dryRun bool, stdout io.Writer) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create config directory: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+	// CLAUDE.md is a documentation file meant to be read; 0644 is intentional.
+	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil { //nolint:gosec // user-readable doc file
 		return fmt.Errorf("write CLAUDE.md: %w", err)
 	}
 	fmt.Fprintf(stdout, "%s CLAUDE.md note: %s\n", verb, path)
@@ -235,7 +240,7 @@ func updateClaudeMD(dir string, dryRun bool, stdout io.Writer) error {
 // plus a verb describing the change ("added", "updated", or "unchanged"). When
 // the markers are absent the block is appended after a blank line; when present,
 // the span between them (inclusive) is replaced.
-func spliceSection(content, block string) (string, string) {
+func spliceSection(content, block string) (result, verb string) {
 	begin := strings.Index(content, claudeBegin)
 	if begin >= 0 {
 		if rel := strings.Index(content[begin:], claudeEnd); rel >= 0 {

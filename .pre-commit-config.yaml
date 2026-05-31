@@ -1,0 +1,46 @@
+# Local pre-commit hooks that mirror the CI guardrails, so problems are caught
+# before they're pushed. Install them with `make hooks` (sets up both the
+# pre-commit and pre-push stages). See https://pre-commit.com.
+minimum_pre_commit_version: "3.5.0"
+default_install_hook_types: [pre-commit, pre-push]
+
+repos:
+  # Generic hygiene checks.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+
+  # Go checks reuse the Makefile so they run exactly what CI runs. They're fast
+  # enough for every commit; the full test suite runs on push instead.
+  - repo: local
+    hooks:
+      - id: make-fmt
+        name: make fmt
+        entry: make fmt
+        language: system
+        types: [go]
+        pass_filenames: false
+      - id: make-lint
+        name: make lint
+        entry: make lint
+        language: system
+        types: [go]
+        pass_filenames: false
+      - id: make-modernize-check
+        name: make modernize-check
+        entry: make modernize-check
+        language: system
+        types: [go]
+        pass_filenames: false
+      - id: make-test
+        name: make test
+        entry: make test
+        language: system
+        types: [go]
+        pass_filenames: false
+        stages: [pre-push]

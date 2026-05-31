@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -80,7 +81,7 @@ func TestRunIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if string(first) != string(second) {
+	if !bytes.Equal(first, second) {
 		t.Errorf("CLAUDE.md changed on second run:\nfirst:\n%s\nsecond:\n%s", first, second)
 	}
 	if !strings.HasPrefix(string(second), preamble) {

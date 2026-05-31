@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/go-github/v88/github"
+
 	"github.com/justanotherspy/shuck/internal/model"
 )
 
@@ -236,7 +237,7 @@ func (c *Client) JobLog(ctx context.Context, owner, repo string, jobID int64) (s
 	if err != nil {
 		return "", fmt.Errorf("get log URL for job %d: %w", jobID, err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), http.NoBody)
 	if err != nil {
 		return "", err
 	}

@@ -192,7 +192,10 @@ func Purge(ttl time.Duration, keep string) error {
 			if entryDir == keep {
 				return nil
 			}
-			_ = os.RemoveAll(entryDir)
+			// entryDir is always under the user-owned cache base resolved above
+			// and only reached for a known cache record name, so this is not an
+			// attacker-controlled traversal target.
+			_ = os.RemoveAll(entryDir) //nolint:gosec // path is within the user's own ~/.shuck cache
 			return nil
 		})
 	}

@@ -19,7 +19,13 @@ profile.cov
 
 # Built binary
 /shuck
+/bin/
 /dist/
+
+# Benchmark / profiling artifacts (make bench / make profile)
+/profiles/
+bench-*.txt
+*.prof
 
 # Plugin-managed binary (downloaded on demand by the shuck plugin's installer)
 /plugins/shuck/bin/

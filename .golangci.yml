@@ -1,10 +1,25 @@
+# golangci-lint v2 configuration.
+# Docs: https://golangci-lint.run/usage/configuration/
 version: "2"
 
+run:
+  timeout: 5m
+  tests: true
+
 linters:
+  # Start from the curated "standard" set (errcheck, govet, ineffassign,
+  # staticcheck, unused) and layer on extra linters.
+  default: standard
   enable:
+    - bodyclose
+    - errorlint
+    - gocritic
+    - gosec
     - misspell
+    - nolintlint
     - revive
-  # errcheck, govet, ineffassign, staticcheck and unused are on by default.
+    - unconvert
+    - whitespace
   settings:
     errcheck:
       # Writes to stdout/stderr in a CLI conventionally ignore the error.
@@ -12,8 +27,47 @@ linters:
         - fmt.Fprint
         - fmt.Fprintf
         - fmt.Fprintln
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+        - style
+      disabled-checks:
+        # shuck deliberately passes its small domain types (internal/model) by
+        # value for simplicity; hugeParam/rangeValCopy would force a pervasive
+        # pointer/indexing refactor that fights that design for negligible gain.
+        - hugeParam
+        - rangeValCopy
+    misspell:
+      locale: US
+      # "cancelled" is part of the stable JSON output schema (json:"cancelled")
+      # and the model's exported field names; renaming it would break consumers.
+      ignore-rules:
+        - cancelled
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    revive:
+      rules:
+        - name: exported
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters:
+          - bodyclose
+          - gosec
 
 formatters:
   enable:
     - gofmt
     - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/justanotherspy/shuck

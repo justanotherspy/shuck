@@ -12,6 +12,9 @@
 - name: github-actions
   color: 2088ff
   description: GitHub Actions / CI workflows
+- name: docker
+  color: 2496ed
+  description: Docker / container images
 
 # --- release-drafter categories ---
 - name: feature

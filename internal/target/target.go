@@ -38,9 +38,10 @@ func Resolve(args []string) (Target, error) {
 		if err != nil {
 			return Target{}, err
 		}
-		n, err := strconv.Atoi(args[1])
+		pr := args[1] //nolint:gosec // len(args) == 2 in this switch case
+		n, err := strconv.Atoi(pr)
 		if err != nil {
-			return Target{}, fmt.Errorf("invalid PR number %q", args[1])
+			return Target{}, fmt.Errorf("invalid PR number %q", pr)
 		}
 		return Target{Owner: owner, Repo: repo, Number: n}, nil
 
@@ -122,7 +123,7 @@ func parseRepoURL(s string) (owner, repo string, ok bool) {
 	return parts[1], strings.TrimSuffix(parts[2], ".git"), true
 }
 
-func splitSlug(slug string) (string, string, error) {
+func splitSlug(slug string) (owner, repo string, err error) {
 	parts := strings.SplitN(slug, "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return "", "", fmt.Errorf("invalid repo %q (expected owner/repo)", slug)
@@ -229,7 +230,7 @@ func localRepo() (owner, repo, branch string, err error) {
 
 // ParseRemote extracts owner and repo from a GitHub remote URL in scp-like
 // (git@github.com:owner/repo.git), HTTPS, or ssh:// form.
-func ParseRemote(raw string) (string, string, error) {
+func ParseRemote(raw string) (owner, repo string, err error) {
 	s := strings.TrimSpace(raw)
 	s = strings.TrimSuffix(s, ".git")
 

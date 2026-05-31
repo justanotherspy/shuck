@@ -1,5 +1,9 @@
 # 🌽 shuck
 
+[![CI](https://github.com/justanotherspy/shuck/actions/workflows/ci.yml/badge.svg)](https://github.com/justanotherspy/shuck/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/justanotherspy/shuck/actions/workflows/codeql.yml/badge.svg)](https://github.com/justanotherspy/shuck/actions/workflows/codeql.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/justanotherspy/shuck/badge)](https://scorecard.dev/viewer/?uri=github.com/justanotherspy/shuck)
+
 **shuck the husk, keep the kernel.**
 
 `shuck` is a Go CLI that returns the *exact* failing CI step logs for a pull
@@ -81,6 +85,17 @@ go install github.com/justanotherspy/shuck@latest
 Binaries are also available on the
 [releases](https://github.com/justanotherspy/shuck/releases) page (built with
 GoReleaser).
+
+### Docker
+
+A multi-arch image (linux/amd64, linux/arm64) is published to GHCR on each
+release and tagged `:latest`, plus `:edge` for `main`. It runs as a non-root
+user on a minimal static base, and images are cosign-signed with SLSA build
+provenance:
+
+```sh
+docker run --rm -e GITHUB_TOKEN ghcr.io/justanotherspy/shuck:latest <pr>
+```
 
 ### Keeping shuck up to date
 

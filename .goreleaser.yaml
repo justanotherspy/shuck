@@ -34,6 +34,13 @@ archives:
 checksum:
   name_template: checksums.txt
 
+# Generate an SPDX SBOM per release archive (syft). The release workflow
+# installs syft; local `make snapshot` skips this (and signing) so no extra
+# tooling is needed for a local build.
+sboms:
+  - id: archives
+    artifacts: archive
+
 signs:
   - cmd: cosign
     signature: "${artifact}.sigstore.json"
@@ -44,6 +51,9 @@ signs:
       - "--yes"
     artifacts: checksum
     output: true
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot-{{ .ShortCommit }}"
 
 changelog:
   sort: asc

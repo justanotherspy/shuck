@@ -1,0 +1,59 @@
+name: Fuzz
+
+# Seed corpora already run as ordinary unit tests in CI (`make test`). This
+# workflow does active, mutation-based fuzzing on a schedule to find inputs the
+# seeds don't cover. It discovers every Fuzz* target in the module via
+# `make fuzz-all`, so new targets are picked up automatically.
+
+on:
+  schedule:
+    # Nightly at 03:17 UTC.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: "Per-target fuzz budget (e.g. 5m, 30m)"
+        required: false
+        default: "5m"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    name: Nightly fuzz
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+      - name: Fuzz every target
+        env:
+          FUZZTIME_CI: ${{ github.event.inputs.fuzztime || '5m' }}
+        run: make fuzz-all
+      - name: Surface crasher
+        if: failure()
+        run: |
+          set -uo pipefail
+          {
+            echo "## 💥 Fuzzing found a failing input"
+            echo
+            echo "Go minimized the failing input and wrote it under \`testdata/fuzz/\`."
+            echo "Commit that file as a regression seed, then fix the bug. The input is below."
+          } >> "$GITHUB_STEP_SUMMARY"
+          find . -type f -path '*/testdata/fuzz/*' -print0 | while IFS= read -r -d '' f; do
+            {
+              echo
+              echo "### $f"
+              echo '```'
+              cat "$f"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
