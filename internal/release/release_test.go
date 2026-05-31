@@ -212,6 +212,47 @@ func makeTarGz(t *testing.T, name string, content []byte) []byte {
 	return buf.Bytes()
 }
 
+// makeTarGzSymlink builds an archive whose only "shuck" entry is a symlink, used
+// to verify extraction refuses to follow it instead of producing a 0-byte binary.
+func makeTarGzSymlink(t *testing.T, name, target string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	if err := tw.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeSymlink, Linkname: target, Mode: 0o777}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestDownloadRejectsSymlinkBinary(t *testing.T) {
+	archive := makeTarGzSymlink(t, "shuck", "/etc/passwd")
+	archiveName := "shuck_1.4.2_linux_amd64.tar.gz"
+	checksums := fmt.Sprintf("%s  %s\n", sha256Hex(archive), archiveName)
+
+	srv := serveAssets(t, map[string][]byte{
+		archiveName:     archive,
+		"checksums.txt": []byte(checksums),
+	})
+	defer srv.Close()
+
+	c := New("")
+	c.DownloadBase = srv.URL
+	// The archive passes checksum verification but contains no regular "shuck"
+	// file, so extraction must report it as not found rather than returning the
+	// (empty) symlink body.
+	if _, err := c.Download(context.Background(), "v1.4.2", "linux", "amd64"); err == nil ||
+		!strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected 'not found' for a symlink-only archive, got %v", err)
+	}
+}
+
 func makeZip(t *testing.T, name string, content []byte) []byte {
 	t.Helper()
 	var buf bytes.Buffer

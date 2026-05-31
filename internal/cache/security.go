@@ -31,6 +31,12 @@ func SecurityDir(owner, repo string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if err := safeSegment(owner); err != nil {
+		return "", err
+	}
+	if err := safeSegment(repo); err != nil {
+		return "", err
+	}
 	return filepath.Join(base, "security", owner, repo), nil
 }
 
@@ -76,7 +82,7 @@ func SaveSecurityReport(r *model.SecurityReport, defaultSHA string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), dirPerm); err != nil {
 		return fmt.Errorf("create security cache dir: %w", err)
 	}
 	rec := securityRecord{Owner: r.Owner, Repo: r.Repo, State: r.State, FetchedAt: time.Now(), DefaultSHA: defaultSHA, Report: r}
@@ -84,7 +90,7 @@ func SaveSecurityReport(r *model.SecurityReport, defaultSHA string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := os.WriteFile(path, data, filePerm); err != nil {
 		return fmt.Errorf("write security cache %s: %w", path, err)
 	}
 	return nil

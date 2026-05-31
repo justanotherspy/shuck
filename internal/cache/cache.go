@@ -5,16 +5,43 @@ package cache
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/justanotherspy/shuck/internal/model"
 )
 
 const fileName = "cache.json"
+
+// dirPerm/filePerm guard the cache: it can hold CI logs and security alert
+// reports, which may quote secrets. Keeping ~/.shuck owner-only avoids exposing
+// that data to other local users on a shared machine.
+const (
+	dirPerm  os.FileMode = 0o700
+	filePerm os.FileMode = 0o600
+)
+
+// safeSegment validates a path segment (owner or repo) before it is joined into
+// a cache path. owner/repo originate from user-supplied arguments, GitHub URLs,
+// or a git remote, so a crafted value like "../../etc" must not be allowed to
+// escape ~/.shuck via filepath.Join. Real GitHub names never contain a path
+// separator or "..", so this rejects exactly the traversal cases without
+// constraining legitimate repositories.
+func safeSegment(s string) error {
+	if s == "" {
+		return errors.New("empty path segment")
+	}
+	if s == "." || s == ".." || strings.Contains(s, "..") ||
+		strings.ContainsAny(s, `/\`) || strings.ContainsRune(s, 0) {
+		return fmt.Errorf("invalid path segment %q", s)
+	}
+	return nil
+}
 
 // Base returns shuck's base directory (~/.shuck), honoring SHUCK_HOME. It is the
 // parent of the per-PR cache and of cross-cutting state such as the
@@ -35,6 +62,12 @@ func Base() (string, error) {
 func Dir(owner, repo string, pr int) (string, error) {
 	base, err := Base()
 	if err != nil {
+		return "", err
+	}
+	if err := safeSegment(owner); err != nil {
+		return "", err
+	}
+	if err := safeSegment(repo); err != nil {
 		return "", err
 	}
 	return filepath.Join(base, "cache", owner, repo, strconv.Itoa(pr)), nil
@@ -75,14 +108,14 @@ func Save(r *model.Report) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), dirPerm); err != nil {
 		return fmt.Errorf("create cache dir: %w", err)
 	}
 	data, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := os.WriteFile(path, data, filePerm); err != nil {
 		return fmt.Errorf("write cache %s: %w", path, err)
 	}
 	return nil
@@ -106,10 +139,10 @@ func SaveJobLog(owner, repo string, pr int, jobID int64, attempt int, raw string
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), dirPerm); err != nil {
 		return fmt.Errorf("create log cache dir: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(raw), filePerm); err != nil {
 		return fmt.Errorf("write log cache %s: %w", path, err)
 	}
 	return nil

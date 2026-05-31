@@ -176,7 +176,10 @@ func extractTarGz(data []byte, binName string) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read tar: %w", err)
 		}
-		if pathBase(hdr.Name) == binName {
+		// Only accept a regular file. A symlink (or other irregular entry) named
+		// like the binary must not be followed: its tar body is empty, which would
+		// otherwise overwrite the running binary with a zero-byte file.
+		if pathBase(hdr.Name) == binName && hdr.FileInfo().Mode().IsRegular() {
 			return io.ReadAll(tr)
 		}
 	}
@@ -189,7 +192,9 @@ func extractZip(data []byte, binName string) ([]byte, error) {
 		return nil, fmt.Errorf("open zip: %w", err)
 	}
 	for _, f := range zr.File {
-		if pathBase(f.Name) != binName {
+		// Skip anything that is not a regular file (e.g. a symlink entry, whose
+		// target would otherwise be read in place of the binary).
+		if pathBase(f.Name) != binName || !f.Mode().IsRegular() {
 			continue
 		}
 		rc, err := f.Open()

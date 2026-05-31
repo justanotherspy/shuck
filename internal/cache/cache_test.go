@@ -121,3 +121,58 @@ func TestPurgeSkipsKeptStaleEntry(t *testing.T) {
 		t.Errorf("kept entry should survive even when stale, stat err=%v", err)
 	}
 }
+
+func TestDirRejectsPathTraversal(t *testing.T) {
+	t.Setenv("SHUCK_HOME", t.TempDir())
+	cases := []struct{ owner, repo string }{
+		{"o", "../../../../tmp/evil"},
+		{"..", "r"},
+		{"o", ".."},
+		{"o/x", "r"},
+		{"o", "r/../../etc"},
+		{"", "r"},
+		{"o", ""},
+		{`o`, `..\..\win`},
+	}
+	for _, c := range cases {
+		if _, err := Dir(c.owner, c.repo, 1); err == nil {
+			t.Errorf("Dir(%q,%q) accepted a traversal segment", c.owner, c.repo)
+		}
+		if _, err := ActionDir(c.owner, c.repo); err == nil {
+			t.Errorf("ActionDir(%q,%q) accepted a traversal segment", c.owner, c.repo)
+		}
+		if _, err := SecurityDir(c.owner, c.repo); err == nil {
+			t.Errorf("SecurityDir(%q,%q) accepted a traversal segment", c.owner, c.repo)
+		}
+	}
+}
+
+func TestDirAllowsLegitimateNames(t *testing.T) {
+	t.Setenv("SHUCK_HOME", t.TempDir())
+	// A dot is legal in a repo name (e.g. github.io repos); only ".." is rejected.
+	if _, err := Dir("octo-cat", "my.repo_v2", 3); err != nil {
+		t.Errorf("Dir rejected a legitimate name: %v", err)
+	}
+}
+
+func TestSaveUsesOwnerOnlyPermissions(t *testing.T) {
+	t.Setenv("SHUCK_HOME", t.TempDir())
+	if err := Save(&model.Report{PR: model.PR{Owner: "o", Repo: "r", Number: 1, HeadSHA: "x"}}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	path, _ := file("o", "r", 1)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != filePerm {
+		t.Errorf("cache file perm = %v, want %v", perm, filePerm)
+	}
+	dirInfo, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("stat dir: %v", err)
+	}
+	if perm := dirInfo.Mode().Perm(); perm != dirPerm {
+		t.Errorf("cache dir perm = %v, want %v", perm, dirPerm)
+	}
+}
