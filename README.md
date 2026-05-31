@@ -29,7 +29,7 @@ Given a PR, `shuck`:
 6. Surfaces cancelled jobs and any checks still running, with an upfront
    `N failed, M cancelled, …` summary so nothing is silently dropped.
 
-A local cache under `~/.shuck` makes repeat runs cheap: it avoids re-downloading
+A local cache under `~/.cache/shuck` makes repeat runs cheap: it avoids re-downloading
 logs for job attempts it has already inspected on the same commit.
 
 ## Install
@@ -292,7 +292,7 @@ stable matches. Add `--json` for a machine-readable document:
 }
 ```
 
-Resolved tags are cached under `~/.shuck/actions/<owner>/<repo>` for a day to
+Resolved tags are cached under `~/.cache/shuck/actions/<owner>/<repo>` for a day to
 avoid re-listing; `--refresh` re-fetches immediately. Authentication is optional
 for public repos — set `GITHUB_TOKEN`/`GH_TOKEN` (or `--token`) to lift the
 unauthenticated rate limit.
@@ -346,7 +346,7 @@ Code scanning: not enabled or no access — skipped.
 Secret scanning: not enabled or no access — skipped.
 ```
 
-Results are cached under `~/.shuck/security/<owner>/<repo>` for an hour;
+Results are cached under `~/.cache/shuck/security/<owner>/<repo>` for an hour;
 `--refresh` re-fetches immediately. Security data — especially on private repos —
 needs a token (`GITHUB_TOKEN`/`GH_TOKEN`, or `--token`) with the
 `security_events` (or `repo`) scope. The exit code is `0` on any successful run

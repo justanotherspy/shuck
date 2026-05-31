@@ -7,7 +7,7 @@ Guidance for agents working in this repository.
 `shuck` is a Go CLI that prints the exact failing CI step logs for a GitHub PR.
 It resolves a PR, reads its checks via the GitHub API, drills GitHub Actions
 failures down to the failed steps + their error logs, and caches results under
-`~/.shuck` to avoid redundant log downloads.
+`~/.cache/shuck` to avoid redundant log downloads.
 
 ## Commands
 
@@ -54,7 +54,7 @@ render → update cache.
 | `internal/setup` | `shuck setup`: install the embedded skill into `~/.claude/skills/shuck`, add a managed note to the user's `CLAUDE.md`, and optionally register the MCP at user scope (`claude mcp add`). The skill is `go:embed`-ed from the plugin in `main.go`, so the standalone install and the marketplace stay in sync. |
 | `internal/target` | Resolve owner/repo/PR from args or the local repo (via go-git). |
 | `internal/gh` | go-github (v88) wrappers: PR head, Actions runs/jobs, job-log download, non-Actions checks, the security-alert lists (`security.go`), and the GHCR Packages API (`packages.go`: `ListContainerPackages` / `ListImageVersions`, org-then-user 404 fallback). Also two small hand-rolled HTTP clients over `c.http`/`c.token`: a GraphQL client (`reviews.go`) for PR reviews + comment threads (`isResolved`/`resolvedBy` are GraphQL-only), and an OCI registry-v2 client (`registry.go`: `RegistryTags` / `RegistryDigest`) for resolving a public image's digest anonymously. |
-| `internal/cache` | `~/.shuck/cache/<owner>/<repo>/<pr>/cache.json` load/save plus whole raw job logs under that PR's `logs/<jobID>-<attempt>.log` (re-parsed locally on re-run). Also `~/.shuck/actions/<owner>/<repo>/tags.json` for `shuck action`, `~/.shuck/security/<owner>/<repo>/alerts.json` for `shuck security`, and `~/.shuck/images/<owner>/images.json` for `shuck image` (all keyed on the default-branch SHA + TTL by the CLI). `Purge(ttl, keep)` sweeps stale entries (by record mtime) off disk; every command calls it, exempting the active target. |
+| `internal/cache` | `~/.cache/shuck/cache/<owner>/<repo>/<pr>/cache.json` load/save plus whole raw job logs under that PR's `logs/<jobID>-<attempt>.log` (re-parsed locally on re-run). Also `~/.cache/shuck/actions/<owner>/<repo>/tags.json` for `shuck action`, `~/.cache/shuck/security/<owner>/<repo>/alerts.json` for `shuck security`, and `~/.cache/shuck/images/<owner>/images.json` for `shuck image` (all keyed on the default-branch SHA + TTL by the CLI). `Purge(ttl, keep)` sweeps stale entries (by record mtime) off disk; every command calls it, exempting the active target. |
 | `internal/logs` | Parse a job log into `##[group]`-delimited sections; extract the high-signal error excerpt. |
 | `internal/render` | Format a `model.Report` to text. |
 | `internal/model` | Shared domain types (imports nothing internal). |
@@ -99,7 +99,7 @@ render → update cache.
   `Docker-Content-Digest` header — for multi-arch images that is the image-index
   digest, the correct pin target). Selection (`image.Select`) shares
   `internal/semver`; non-semver tags fall back to the most recently updated
-  version. Listings cache for `imageCacheTTL` (1h) under `~/.shuck/images/<owner>`,
+  version. Listings cache for `imageCacheTTL` (1h) under `~/.cache/shuck/images/<owner>`,
   keyed on the owner's default-branch SHA with the same cheap reuse logic as
   `shuck action`. The fetch client is the exported `NewImageLister` package var
   (interface `ImageLister`) so embedders and tests stub the network.

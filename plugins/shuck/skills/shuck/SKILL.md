@@ -224,7 +224,7 @@ The security JSON document (also `inspect_security`'s structured output):
 
 Exit code (CLI): `0` on any successful run, `2` only on an operational error;
 `--exit-code` makes open findings exit `1` for CI gating. Results are cached
-under `~/.shuck/security/<owner>/<repo>` for an hour; `--refresh` re-fetches.
+under `~/.cache/shuck/security/<owner>/<repo>` for an hour; `--refresh` re-fetches.
 Security data — especially private repos — needs a token with the
 `security_events` (or `repo`) scope.
 
@@ -303,7 +303,7 @@ The plugin's SessionStart hook stays quiet when both are satisfied. It warns
 
 ## Notes
 
-- Results are cached under `~/.shuck`, keyed by job + run attempt, so repeat runs
+- Results are cached under `~/.cache/shuck`, keyed by job + run attempt, so repeat runs
   are cheap; pass `--refresh` / `refresh` when a job has been re-run.
 - Non-Actions checks (external statuses) are listed by name only — no logs exist
   for them via the API.

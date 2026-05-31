@@ -57,7 +57,7 @@ The digest is the immutable manifest digest (sha256:…). For a multi-arch image
 it is the image-index digest, which is the correct value to pin.
 
 Auth: set GITHUB_TOKEN (or GH_TOKEN), or pass --token. Results are cached under
-~/.shuck for an hour; --refresh re-fetches.
+~/.cache/shuck for an hour; --refresh re-fetches.
 
 Flags:
 `

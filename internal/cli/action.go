@@ -47,7 +47,7 @@ It prints the resolved tag, the commit SHA, and a pin line ready to drop after
   owner/action@<sha> # <tag>
 
 Auth is optional for public repos: set GITHUB_TOKEN/GH_TOKEN or pass --token to
-lift the unauthenticated rate limit. Tags are cached under ~/.shuck for an hour,
+lift the unauthenticated rate limit. Tags are cached under ~/.cache/shuck for an hour,
 re-validated against the repo's default-branch commit.
 
 Flags:

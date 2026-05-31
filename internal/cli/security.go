@@ -54,7 +54,7 @@ advisories surface as Dependabot alerts) with severity, file:line, the vulnerabl
 package -> fix version, and CVE/GHSA IDs. Raw secret values are never shown.
 
 A source that is not enabled, or not visible to the token, is reported and
-skipped rather than failing the command. Results are cached under ~/.shuck for
+skipped rather than failing the command. Results are cached under ~/.cache/shuck for
 an hour; --refresh re-fetches.
 
 Auth: set GITHUB_TOKEN (or GH_TOKEN), or pass --token. Security data on private

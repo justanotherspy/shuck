@@ -23,7 +23,7 @@ type actionTagsRecord struct {
 }
 
 // ActionDir returns the cache directory for an action repository's tags:
-// ~/.shuck/actions/<owner>/<repo>. SHUCK_HOME overrides the base for testing.
+// ~/.cache/shuck/actions/<owner>/<repo>. SHUCK_HOME overrides the base for testing.
 func ActionDir(owner, repo string) (string, error) {
 	base, err := Base()
 	if err != nil {

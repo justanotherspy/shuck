@@ -25,7 +25,7 @@ type securityRecord struct {
 }
 
 // SecurityDir returns the cache directory for a repo's security alerts:
-// ~/.shuck/security/<owner>/<repo>. SHUCK_HOME overrides the base for testing.
+// ~/.cache/shuck/security/<owner>/<repo>. SHUCK_HOME overrides the base for testing.
 func SecurityDir(owner, repo string) (string, error) {
 	base, err := Base()
 	if err != nil {
