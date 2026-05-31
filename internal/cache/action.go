@@ -29,6 +29,12 @@ func ActionDir(owner, repo string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if err := safeSegment(owner); err != nil {
+		return "", err
+	}
+	if err := safeSegment(repo); err != nil {
+		return "", err
+	}
 	return filepath.Join(base, "actions", owner, repo), nil
 }
 
@@ -71,7 +77,7 @@ func SaveActionTags(owner, repo, defaultSHA string, tags []model.ActionTag) erro
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), dirPerm); err != nil {
 		return fmt.Errorf("create action cache dir: %w", err)
 	}
 	rec := actionTagsRecord{Owner: owner, Repo: repo, FetchedAt: time.Now(), DefaultSHA: defaultSHA, Tags: tags}
@@ -79,7 +85,7 @@ func SaveActionTags(owner, repo, defaultSHA string, tags []model.ActionTag) erro
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := os.WriteFile(path, data, filePerm); err != nil {
 		return fmt.Errorf("write action cache %s: %w", path, err)
 	}
 	return nil
