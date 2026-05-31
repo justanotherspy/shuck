@@ -115,7 +115,7 @@ func Parse(raw string) []Section {
 		}
 	}
 
-	for _, raw := range strings.Split(raw, "\n") {
+	for raw := range strings.SplitSeq(raw, "\n") {
 		line := tsPrefix.ReplaceAllString(raw, "")
 
 		switch {

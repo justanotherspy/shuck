@@ -140,7 +140,7 @@ func (c *Client) download(ctx context.Context, url string) ([]byte, error) {
 func verifyChecksum(archive string, data, checksums []byte) error {
 	sum := sha256.Sum256(data)
 	got := hex.EncodeToString(sum[:])
-	for _, line := range strings.Split(string(checksums), "\n") {
+	for line := range strings.SplitSeq(string(checksums), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) == 2 && fields[1] == archive {
 			if fields[0] != got {

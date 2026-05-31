@@ -189,7 +189,7 @@ func plural(n int) string {
 // bodyLines splits a comment/review body into trimmed, non-empty display lines.
 func bodyLines(body string) []string {
 	var out []string
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		if s := strings.TrimRight(line, "\r "); s != "" {
 			out = append(out, s)
 		}
@@ -236,7 +236,7 @@ func reviewStateLabel(state string) string {
 
 func writeFenced(w io.Writer, indent, content string) {
 	fmt.Fprintf(w, "%s```\n", indent)
-	for _, line := range strings.Split(strings.TrimRight(content, "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimRight(content, "\n"), "\n") {
 		fmt.Fprintf(w, "%s%s\n", indent, line)
 	}
 	fmt.Fprintf(w, "%s```\n", indent)

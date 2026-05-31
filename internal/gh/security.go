@@ -79,7 +79,7 @@ func (c *Client) ListDependabotAlerts(ctx context.Context, owner, repo, state st
 	}
 	opts := &github.ListAlertsOptions{ListOptions: github.ListOptions{PerPage: 100}}
 	if apiState != "" {
-		opts.State = github.Ptr(apiState)
+		opts.State = new(apiState)
 	}
 	var out []model.DependabotAlert
 	for {

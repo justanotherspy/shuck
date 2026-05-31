@@ -411,10 +411,8 @@ func summarizeThread(t rawThread, commentLimit int) model.ReviewThread {
 		return mt
 	}
 
-	limit := commentLimit
-	if limit < 1 {
-		limit = 1 // always keep the first comment of an active thread
-	}
+	// always keep the first comment of an active thread
+	limit := max(commentLimit, 1)
 	for i, cm := range t.Comments {
 		if i >= limit {
 			break

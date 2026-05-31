@@ -18,6 +18,8 @@ make vet     # go vet ./...
 make lint    # golangci-lint run ./...  (run `make lint-install` once first)
 make cover   # coverage summary
 make fmt     # gofmt -w .
+make fix     # go fix ./...  (apply Go 1.26 modernizers)
+make fix-check # fail if any modernization is pending (CI gate)
 make tidy    # go mod tidy
 ```
 

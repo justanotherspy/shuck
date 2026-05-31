@@ -724,12 +724,9 @@ func (a *app) buildFailedSteps(job model.JobResult, raw string) []model.FailedSt
 		return []model.FailedStep{fs}
 	}
 
-	n := len(failedSteps)
-	if len(errSecs) > n {
-		n = len(errSecs)
-	}
+	n := max(len(errSecs), len(failedSteps))
 	out := make([]model.FailedStep, 0, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		fs := model.FailedStep{Name: "(unnamed step)"}
 		if i < len(failedSteps) {
 			fs.Number = failedSteps[i].Number

@@ -236,8 +236,8 @@ func ParseRemote(raw string) (string, string, error) {
 	switch {
 	case strings.Contains(s, "://"):
 		rest := s[strings.Index(s, "://")+3:]
-		if k := strings.Index(rest, "/"); k >= 0 {
-			s = rest[k+1:]
+		if _, after, ok := strings.Cut(rest, "/"); ok {
+			s = after
 		}
 	case strings.Contains(s, "@") && strings.Contains(s, ":"):
 		s = s[strings.Index(s, ":")+1:]
