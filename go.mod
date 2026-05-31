@@ -12,6 +12,7 @@ require (
 	github.com/google/go-github/v88 v88.0.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	golang.org/x/term v0.43.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

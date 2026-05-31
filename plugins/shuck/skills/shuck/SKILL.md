@@ -2,13 +2,15 @@
 name: shuck
 description: >-
   Show the exact failing CI step logs for a GitHub pull request, summarize its
-  reviews, list a repo's security alerts, and pin GitHub Actions to SHAs — plus
-  watch a PR's checks until they finish. Works two ways: the `shuck` CLI (with
-  `--json` for structured output) or the shuck MCP tools (`inspect_logs`,
-  `inspect_reviews`, `inspect_security`, `inspect_action`) — use either or both.
-  Use when the user wants to know why CI is failing, debug a failed GitHub
-  Actions check, pull the error logs for a PR, see what reviewers asked for,
-  triage a repo's security findings, or SHA-pin an action.
+  reviews, list a repo's security alerts, check a repo's settings against a
+  committed compliance policy, and pin GitHub Actions to SHAs — plus watch a PR's
+  checks until they finish. Works two ways: the `shuck` CLI (with `--json` for
+  structured output) or the shuck MCP tools (`inspect_logs`, `inspect_reviews`,
+  `inspect_security`, `check_compliance`, `inspect_action`, `inspect_images`) —
+  use either or both. Use when the user wants to know why CI is failing, debug a
+  failed GitHub Actions check, pull the error logs for a PR, see what reviewers
+  asked for, triage a repo's security findings, verify a repo's settings match
+  policy, or SHA-pin an action.
 ---
 
 # shuck — failing CI logs, reviews, and security for a PR
@@ -26,7 +28,7 @@ so they return the same data; pick whichever is wired up.
 | Front-end | How you call it | Best when |
 | --- | --- | --- |
 | **CLI** (`shuck …`, Bash) | run the binary; add `--json` for structured data | the binary is on PATH; you want to **watch** CI to completion, script exit codes, or pipe `--json` |
-| **MCP tools** | call `inspect_logs` / `inspect_reviews` / `inspect_security` / `inspect_action` | the shuck MCP server is registered; you want typed structured output with no parsing |
+| **MCP tools** | call `inspect_logs` / `inspect_reviews` / `inspect_security` / `check_compliance` / `inspect_action` / `inspect_images` | the shuck MCP server is registered; you want typed structured output with no parsing |
 
 For one-shot inspection the two are interchangeable; only the CLI does `--watch`.
 
@@ -39,6 +41,7 @@ For one-shot inspection the two are interchangeable; only the CLI does `--watch`
 | Logs for a single Actions run | `shuck logs --run <id\|url>` | `inspect_logs` with `run` |
 | A PR's reviews | `shuck reviews [target]` (alias `r`) | `inspect_reviews` |
 | A repo's security alerts | `shuck security [repo]` (alias `s`) | `inspect_security` |
+| Check settings against policy | `shuck compliance [repo]` (alias `c`) | `check_compliance` |
 | Resolve an Action to a SHA pin | `shuck action <ref>` (alias `a`) | `inspect_action` |
 
 Running `shuck` with **no subcommand** is the same as `shuck all`: CI + reviews +
@@ -81,6 +84,7 @@ shuck --watch [flags] [target]  # poll until every check finishes, then report
 | `shuck logs [target] [--run <id\|url>]` (`l`) | failing CI step logs for a PR or a single run |
 | `shuck reviews [target]` (`r`) | a PR's reviews and review-comment threads |
 | `shuck security [owner/repo \| url]` (`s`) | a repo's security alerts (code scanning, secrets, Dependabot) |
+| `shuck compliance [owner/repo \| url]` (`c`) | check a repo's settings against its `.shuck/compliance.yaml` |
 | `shuck action <owner>/<action>[@<ver>]` (`a`) | resolve an Action to its latest tag + commit SHA for pinning |
 | `shuck version [--check]` | print the installed version; `--check` looks for a newer release |
 | `shuck upgrade` | download + install the latest release in place (and refresh the installed skill) |
@@ -171,7 +175,7 @@ running. To wait for the final verdict, watch the PR (below).
 
 ## Using the MCP tools
 
-The MCP server (`shuck mcp`) exposes four read-only tools. Each returns the
+The MCP server (`shuck mcp`) exposes six read-only tools. Each returns the
 rendered report as text **and** the matching JSON document as structured output.
 
 | Tool | Use it for | Inputs |
@@ -179,7 +183,9 @@ rendered report as text **and** the matching JSON document as structured output.
 | `inspect_logs` | a PR's failing CI, or one run | PR target fields per the table above; **or** `run` (a run/job URL, or a bare run ID with `repo`) |
 | `inspect_reviews` | a PR's reviews and comment threads | PR target fields; optional `review_comment_limit` |
 | `inspect_security` | a repo's security alerts | `repo` (`owner/repo`) **or** `url`, or none → the local repo; optional `state`, `refresh` |
+| `check_compliance` | a repo's settings vs its compliance config | `repo` (`owner/repo`) **or** `url`, or none → the local repo; optional `config`, `ref` |
 | `inspect_action` | resolve an Action to a SHA pin | `action` (`owner/action[/subpath][@version]`); optional `refresh` |
+| `inspect_images` | list GHCR images, or resolve one to a digest | `image` (an owner, `owner/repo`, a URL, or `ghcr.io/owner/name[:tag]`), or none → the local repo; optional `refresh` |
 
 `inspect_logs` also accepts the extraction knobs (`full`, `context`, `pattern`,
 `short_threshold`, `tail`) and the cache knobs (`refresh`, `no_cache`, `offline`).
@@ -227,6 +233,75 @@ Exit code (CLI): `0` on any successful run, `2` only on an operational error;
 under `~/.shuck/security/<owner>/<repo>` for an hour; `--refresh` re-fetches.
 Security data — especially private repos — needs a token with the
 `security_events` (or `repo`) scope.
+
+## Settings compliance
+
+`shuck compliance [owner/repo | url]` (alias `c`) and the `check_compliance` tool
+check a repository's **live GitHub settings** against a `.shuck/compliance.yaml`
+committed in the repo. That file is the **definitive statement of intended
+settings** — merge options, features, security, branch protection — so a CI job
+can gate on drift.
+
+```sh
+shuck compliance                       # the local checkout's .shuck/compliance.yaml
+shuck compliance owner/repo            # fetch the config from the repo and check it
+shuck compliance --config policy.yaml owner/repo   # an explicit local config file
+shuck compliance --json owner/repo     # the stable JSON document
+shuck compliance --exit-zero owner/repo  # report-only (never fail the build)
+```
+
+How it behaves, and the rules that bite:
+
+- The config is **partial**: only the keys it declares are checked. A repo can
+  assert just what it cares about.
+- A **typo'd key is rejected** (the parse fails) rather than silently skipping a
+  check — so a misspelled setting can't pass by accident.
+- A setting the token **cannot read** (branch protection and `security_and_analysis`
+  need admin / `repo` access) is reported as **skipped**, never a false pass. An
+  unprotected branch that the config says should be protected **fails**.
+- Config discovery: a bare `shuck compliance` reads the **checked-out** file (the
+  CI case); an explicit `owner/repo` **fetches** `.shuck/compliance.yaml` from the
+  repo (use `--ref` for a branch/tag/SHA); `--config` overrides both with a path.
+
+Config shape (all sections and keys optional):
+
+```yaml
+repository:        # general settings
+  visibility: public            # public | private | internal
+  allow_merge_commit: false
+  allow_squash_merge: true
+  delete_branch_on_merge: true
+  has_wiki: false
+  web_commit_signoff_required: true
+security:          # security_and_analysis (needs admin to read)
+  secret_scanning: true
+  secret_scanning_push_protection: true
+  dependabot_security_updates: true
+  vulnerability_alerts: true
+branch_protection: # keyed by branch name
+  main:
+    required_approving_review_count: 1
+    dismiss_stale_reviews: true
+    require_code_owner_reviews: true
+    enforce_admins: true
+    required_linear_history: true
+    allow_force_pushes: false
+    allow_deletions: false
+    required_conversation_resolution: true
+    required_signatures: true
+    required_status_checks: [test, lint]   # order-insensitive set
+```
+
+The compliance JSON document (also `check_compliance`'s structured output):
+`schema_version` (int), `repo` `{owner, repo}`, `config_source`, `compliant`
+(bool), `summary` `{total, pass, fail, skipped}`, and `checks[]` — each
+`{category, setting, expected, actual?, status, message?}` where status is
+`pass` | `fail` | `skipped` | `error`.
+
+Exit code (CLI): `0` when compliant, `1` when a setting drifted (CI gating —
+suppress with `--exit-zero`), `2` on an operational error. Reading branch
+protection and security settings needs a token with the `repo` scope and admin
+access.
 
 ## Pinning actions to SHAs
 

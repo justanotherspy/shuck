@@ -45,15 +45,16 @@ render → update cache.
 | Package | Responsibility |
 | --- | --- |
 | `main.go` | Thin entry; dispatches the `mcp` and `setup` subcommands, else calls `cli.Run`. Holds the `go:embed` of the plugin's `SKILL.md` that `setup` installs. |
-| `internal/cli` | Flag parsing + pipeline orchestration; the `app.drill` / `app.buildFailedSteps` logic that pairs failed API steps with error log sections. Subcommands `logs` (CI only, `--run` for a single run), `reviews` (reviews only), `all` (CI + reviews + security — also the bare-`shuck` default, see `inspectAll`/`emitAll` in `all.go`), plus `action` / `image` / `security` / `version` / `upgrade`. Single-letter aliases (`l`/`r`/`a`/`s`/`i`) resolve via `subcommandAliases`. The exported `cli.Inspect` / `cli.Security` / `cli.Action` / `cli.Image` / `cli.Images` cores back both the CLI and the MCP server. |
+| `internal/cli` | Flag parsing + pipeline orchestration; the `app.drill` / `app.buildFailedSteps` logic that pairs failed API steps with error log sections. Subcommands `logs` (CI only, `--run` for a single run), `reviews` (reviews only), `all` (CI + reviews + security — also the bare-`shuck` default, see `inspectAll`/`emitAll` in `all.go`), plus `action` / `image` / `security` / `compliance` / `version` / `upgrade`. Single-letter aliases (`l`/`r`/`a`/`s`/`c`/`i`) resolve via `subcommandAliases`. The exported `cli.Inspect` / `cli.Security` / `cli.Compliance` / `cli.Action` / `cli.Image` / `cli.Images` cores back both the CLI and the MCP server. |
 | `internal/action` | `shuck action`: parse an `owner/action[@version]` ref and pick the latest matching semver tag from a repo's tag list (pure selection in `Select`; stable preferred, prerelease only as a fallback), then render the SHA-pin line / JSON. The stable JSON shape is exported as `action.Document` (`NewDocument` projects it; `EncodeJSON` reuses it) so the MCP `inspect_action` tool returns typed output. The semver parsing/ordering is shared with `internal/semver`. |
 | `internal/image` | `shuck image`: parse an image ref (`[ghcr.io/]owner/name[:tag]`, or a bare `owner` to list all) and pick the latest matching version + manifest digest (pure selection in `Select`, sharing `internal/semver`; non-semver tags fall back to most-recent). Renders the digest-pin line / JSON; the stable shapes `image.Document` (single resolve) and `image.ListDocument` (list-all) back the MCP `inspect_images` tool. |
 | `internal/semver` | Tiny dependency-free semver slice (`Parse` / `Compare` / `Constraint.Matches`) shared by `action` and `image` for "pick the latest matching tag". |
 | `internal/security` | `shuck security`: sort + render a `model.SecurityReport` (code scanning, secret scanning, Dependabot alerts) to text / versioned JSON. Pure presentation; the gh layer fetches, the `cli.Security` core assembles. |
+| `internal/compliance` | `shuck compliance`: parse a `.shuck/compliance.yaml` (`Parse`, strict / unknown-key-rejecting via yaml.v3) into a `Config`, then `Evaluate` it against the live settings the gh layer fetched (`Actual`) into a `model.ComplianceReport` — one pass/fail/skipped check per declared key. Renders text / versioned JSON (`Document`). Pure logic; the `cli.Compliance` core does the I/O. |
 | `internal/release` | Self-update: resolve the latest GitHub release, download + checksum-verify the matching archive, and replace the running binary in place. Backs `shuck version --check` / `shuck upgrade`. |
 | `internal/setup` | `shuck setup`: install the embedded skill into `~/.claude/skills/shuck`, add a managed note to the user's `CLAUDE.md`, and optionally register the MCP at user scope (`claude mcp add`). The skill is `go:embed`-ed from the plugin in `main.go`, so the standalone install and the marketplace stay in sync. |
 | `internal/target` | Resolve owner/repo/PR from args or the local repo (via go-git). |
-| `internal/gh` | go-github (v88) wrappers: PR head, Actions runs/jobs, job-log download, non-Actions checks, the security-alert lists (`security.go`), and the GHCR Packages API (`packages.go`: `ListContainerPackages` / `ListImageVersions`, org-then-user 404 fallback). Also two small hand-rolled HTTP clients over `c.http`/`c.token`: a GraphQL client (`reviews.go`) for PR reviews + comment threads (`isResolved`/`resolvedBy` are GraphQL-only), and an OCI registry-v2 client (`registry.go`: `RegistryTags` / `RegistryDigest`) for resolving a public image's digest anonymously. |
+| `internal/gh` | go-github (v88) wrappers: PR head, Actions runs/jobs, job-log download, non-Actions checks, the security-alert lists (`security.go`), the repo-settings / branch-protection / vulnerability-alerts / file-content reads for compliance (`compliance.go`, same soft 403/404 degradation as security), and the GHCR Packages API (`packages.go`: `ListContainerPackages` / `ListImageVersions`, org-then-user 404 fallback). Also two small hand-rolled HTTP clients over `c.http`/`c.token`: a GraphQL client (`reviews.go`) for PR reviews + comment threads (`isResolved`/`resolvedBy` are GraphQL-only), and an OCI registry-v2 client (`registry.go`: `RegistryTags` / `RegistryDigest`) for resolving a public image's digest anonymously. |
 | `internal/cache` | `~/.shuck/cache/<owner>/<repo>/<pr>/cache.json` load/save plus whole raw job logs under that PR's `logs/<jobID>-<attempt>.log` (re-parsed locally on re-run). Also `~/.shuck/actions/<owner>/<repo>/tags.json` for `shuck action`, `~/.shuck/security/<owner>/<repo>/alerts.json` for `shuck security`, and `~/.shuck/images/<owner>/images.json` for `shuck image` (all keyed on the default-branch SHA + TTL by the CLI). `Purge(ttl, keep)` sweeps stale entries (by record mtime) off disk; every command calls it, exempting the active target. |
 | `internal/logs` | Parse a job log into `##[group]`-delimited sections; extract the high-signal error excerpt. |
 | `internal/render` | Format a `model.Report` to text. |
@@ -124,6 +125,22 @@ render → update cache.
   repo's default-branch SHA (same cheap `gh.DefaultBranchSHA` reuse logic as
   `shuck action`); a result with any errored source is not cached. Exit is `0` on
   success, `2` on an operational error; `--exit-code` makes open findings exit `1`.
+- **Compliance** (`shuck compliance`): `cli.Compliance` loads the intended
+  settings from a `.shuck/compliance.yaml` and compares them against the repo's
+  live settings. **The config is the source of truth** and is **partial** — only
+  declared keys are checked, and `compliance.Parse` rejects unknown keys (a typo
+  must not silently skip a check). Config discovery: `--config <path>` wins; else a
+  bare `shuck compliance` reads the **local checkout** (`PreferLocal`), falling
+  back to fetching it from the repo, while an explicit `owner/repo` fetches it from
+  the repo (`gh.FileContent`, `--ref` for a branch/tag/SHA). The gh reads
+  **degrade like security**: branch protection / `security_and_analysis` need
+  admin, so an unreadable setting is a **skipped** check (via `model.SettingsSource`),
+  never a false pass; a 404 on branch protection means "not protected" ⇒ each
+  declared protection **fails**. The fetch client is the `newComplianceLister`
+  package var (interface `complianceLister`), stubbed in tests. Compliance is
+  **uncached** (a few cheap reads, and the config is usually local). Exit is `0`
+  when compliant, `1` on drift (CI gating, suppress with `--exit-zero`), `2` on an
+  operational error.
 
 ## Conventions
 
