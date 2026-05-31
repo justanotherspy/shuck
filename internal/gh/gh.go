@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/google/go-github/v68/github"
+	"github.com/google/go-github/v88/github"
 	"github.com/justanotherspy/shuck/internal/model"
 )
 
@@ -25,10 +25,13 @@ type Client struct {
 // unauthenticated client (subject to GitHub's lower anonymous rate limit),
 // which suffices for read-only calls against public repositories.
 func New(token string) *Client {
-	gc := github.NewClient(nil)
+	var opts []github.ClientOptionsFunc
 	if token != "" {
-		gc = gc.WithAuthToken(token)
+		opts = append(opts, github.WithAuthToken(token))
 	}
+	// NewClient only errors for option funcs that can fail (e.g. enterprise
+	// URLs); WithAuthToken never does, so the error is structurally nil here.
+	gc, _ := github.NewClient(opts...)
 	return &Client{
 		gh:    gc,
 		http:  &http.Client{Timeout: 60 * time.Second},
