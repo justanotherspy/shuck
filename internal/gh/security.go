@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/google/go-github/v68/github"
+	"github.com/google/go-github/v88/github"
 	"github.com/justanotherspy/shuck/internal/model"
 )
 

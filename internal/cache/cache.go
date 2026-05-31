@@ -177,8 +177,8 @@ func Purge(ttl time.Duration, keep string) error {
 		return err
 	}
 	cutoff := time.Now().Add(-ttl)
-	records := map[string]bool{fileName: true, actionsFileName: true, securityFileName: true}
-	for _, root := range []string{"cache", "actions", "security"} {
+	records := map[string]bool{fileName: true, actionsFileName: true, securityFileName: true, imagesFileName: true}
+	for _, root := range []string{"cache", "actions", "security", "images"} {
 		rootDir := filepath.Join(base, root)
 		_ = filepath.WalkDir(rootDir, func(path string, d os.DirEntry, walkErr error) error {
 			if walkErr != nil || d.IsDir() || !records[d.Name()] {

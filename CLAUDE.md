@@ -34,14 +34,16 @@ render → update cache.
 | Package | Responsibility |
 | --- | --- |
 | `main.go` | Thin entry; dispatches the `mcp` and `setup` subcommands, else calls `cli.Run`. Holds the `go:embed` of the plugin's `SKILL.md` that `setup` installs. |
-| `internal/cli` | Flag parsing + pipeline orchestration; the `app.drill` / `app.buildFailedSteps` logic that pairs failed API steps with error log sections. Subcommands `logs` (CI only, `--run` for a single run), `reviews` (reviews only), `all` (CI + reviews + security — also the bare-`shuck` default, see `inspectAll`/`emitAll` in `all.go`), plus `action` / `security` / `version` / `upgrade`. Single-letter aliases (`l`/`r`/`a`/`s`) resolve via `subcommandAliases`. The exported `cli.Inspect` / `cli.Security` / `cli.Action` cores back both the CLI and the MCP server. |
-| `internal/action` | `shuck action`: parse an `owner/action[@version]` ref and pick the latest matching semver tag from a repo's tag list (pure selection in `Select`; stable preferred, prerelease only as a fallback), then render the SHA-pin line / JSON. The stable JSON shape is exported as `action.Document` (`NewDocument` projects it; `EncodeJSON` reuses it) so the MCP `inspect_action` tool returns typed output. |
+| `internal/cli` | Flag parsing + pipeline orchestration; the `app.drill` / `app.buildFailedSteps` logic that pairs failed API steps with error log sections. Subcommands `logs` (CI only, `--run` for a single run), `reviews` (reviews only), `all` (CI + reviews + security — also the bare-`shuck` default, see `inspectAll`/`emitAll` in `all.go`), plus `action` / `image` / `security` / `version` / `upgrade`. Single-letter aliases (`l`/`r`/`a`/`s`/`i`) resolve via `subcommandAliases`. The exported `cli.Inspect` / `cli.Security` / `cli.Action` / `cli.Image` / `cli.Images` cores back both the CLI and the MCP server. |
+| `internal/action` | `shuck action`: parse an `owner/action[@version]` ref and pick the latest matching semver tag from a repo's tag list (pure selection in `Select`; stable preferred, prerelease only as a fallback), then render the SHA-pin line / JSON. The stable JSON shape is exported as `action.Document` (`NewDocument` projects it; `EncodeJSON` reuses it) so the MCP `inspect_action` tool returns typed output. The semver parsing/ordering is shared with `internal/semver`. |
+| `internal/image` | `shuck image`: parse an image ref (`[ghcr.io/]owner/name[:tag]`, or a bare `owner` to list all) and pick the latest matching version + manifest digest (pure selection in `Select`, sharing `internal/semver`; non-semver tags fall back to most-recent). Renders the digest-pin line / JSON; the stable shapes `image.Document` (single resolve) and `image.ListDocument` (list-all) back the MCP `inspect_images` tool. |
+| `internal/semver` | Tiny dependency-free semver slice (`Parse` / `Compare` / `Constraint.Matches`) shared by `action` and `image` for "pick the latest matching tag". |
 | `internal/security` | `shuck security`: sort + render a `model.SecurityReport` (code scanning, secret scanning, Dependabot alerts) to text / versioned JSON. Pure presentation; the gh layer fetches, the `cli.Security` core assembles. |
 | `internal/release` | Self-update: resolve the latest GitHub release, download + checksum-verify the matching archive, and replace the running binary in place. Backs `shuck version --check` / `shuck upgrade`. |
 | `internal/setup` | `shuck setup`: install the embedded skill into `~/.claude/skills/shuck`, add a managed note to the user's `CLAUDE.md`, and optionally register the MCP at user scope (`claude mcp add`). The skill is `go:embed`-ed from the plugin in `main.go`, so the standalone install and the marketplace stay in sync. |
 | `internal/target` | Resolve owner/repo/PR from args or the local repo (via go-git). |
-| `internal/gh` | go-github wrappers: PR head, Actions runs/jobs, job-log download, non-Actions checks, and the security-alert lists (`security.go`: code scanning / secret scanning / Dependabot). Also a small hand-rolled GraphQL client (`reviews.go`) for PR reviews + comment threads, since `isResolved`/`resolvedBy` are GraphQL-only. |
-| `internal/cache` | `~/.shuck/cache/<owner>/<repo>/<pr>/cache.json` load/save plus whole raw job logs under that PR's `logs/<jobID>-<attempt>.log` (re-parsed locally on re-run). Also `~/.shuck/actions/<owner>/<repo>/tags.json` for `shuck action`'s tag list and `~/.shuck/security/<owner>/<repo>/alerts.json` for `shuck security` (both keyed on the default-branch SHA + TTL by the CLI). `Purge(ttl, keep)` sweeps stale entries (by record mtime) off disk; every command calls it, exempting the active target. |
+| `internal/gh` | go-github (v88) wrappers: PR head, Actions runs/jobs, job-log download, non-Actions checks, the security-alert lists (`security.go`), and the GHCR Packages API (`packages.go`: `ListContainerPackages` / `ListImageVersions`, org-then-user 404 fallback). Also two small hand-rolled HTTP clients over `c.http`/`c.token`: a GraphQL client (`reviews.go`) for PR reviews + comment threads (`isResolved`/`resolvedBy` are GraphQL-only), and an OCI registry-v2 client (`registry.go`: `RegistryTags` / `RegistryDigest`) for resolving a public image's digest anonymously. |
+| `internal/cache` | `~/.shuck/cache/<owner>/<repo>/<pr>/cache.json` load/save plus whole raw job logs under that PR's `logs/<jobID>-<attempt>.log` (re-parsed locally on re-run). Also `~/.shuck/actions/<owner>/<repo>/tags.json` for `shuck action`, `~/.shuck/security/<owner>/<repo>/alerts.json` for `shuck security`, and `~/.shuck/images/<owner>/images.json` for `shuck image` (all keyed on the default-branch SHA + TTL by the CLI). `Purge(ttl, keep)` sweeps stale entries (by record mtime) off disk; every command calls it, exempting the active target. |
 | `internal/logs` | Parse a job log into `##[group]`-delimited sections; extract the high-signal error excerpt. |
 | `internal/render` | Format a `model.Report` to text. |
 | `internal/model` | Shared domain types (imports nothing internal). |
@@ -75,6 +77,21 @@ render → update cache.
   `--refresh` forces a re-fetch. The fetch client is the exported `NewTagLister`
   package var (interface `TagLister`) so embedders and tests stub the network.
   Auth is optional here, so `gh.New("")` is unauthenticated.
+- **Image pinning** (`shuck image`): two modes, split on the ref. A bare `owner`
+  (or `owner/repo` / URL) **lists** every container package via the GitHub
+  Packages API (`gh.ListContainerPackages` + `gh.ListImageVersions`, where the
+  version `Name` is the `sha256:` digest and `metadata.container.tags` the tags) —
+  this **requires a token** with `read:packages` (no anonymous enumeration), so a
+  tokenless list errors with guidance. A full `ghcr.io/owner/name[:tag]` **resolves**
+  one image: authed it reuses the Packages data; tokenless it falls back to the
+  anonymous OCI **registry v2** API (`gh.RegistryTags` + `gh.RegistryDigest`, the
+  `Docker-Content-Digest` header — for multi-arch images that is the image-index
+  digest, the correct pin target). Selection (`image.Select`) shares
+  `internal/semver`; non-semver tags fall back to the most recently updated
+  version. Listings cache for `imageCacheTTL` (1h) under `~/.shuck/images/<owner>`,
+  keyed on the owner's default-branch SHA with the same cheap reuse logic as
+  `shuck action`. The fetch client is the exported `NewImageLister` package var
+  (interface `ImageLister`) so embedders and tests stub the network.
 - **Reviews** (`gh.PRReviews`, rendered grouped by verdict) collapse resolved/
   outdated threads to a one-line reason and cap active-thread comments at
   `--review-comment-limit`. A cheap `gh.ReviewsFingerprint` short-circuits the

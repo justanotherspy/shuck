@@ -112,6 +112,24 @@ type ActionTag struct {
 	SHA  string `json:"sha"`
 }
 
+// ImageVersion is one published version of a container image: the immutable
+// manifest digest (sha256:...) and the tags that currently point at it, with the
+// time the version was last updated. shuck uses it to pin an image reference to
+// its digest.
+type ImageVersion struct {
+	Tags      []string  `json:"tags"`
+	Digest    string    `json:"digest"` // sha256:...
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ImagePackage is a single container package (image) under an owner and the
+// versions published for it, newest first as assembled by the caller.
+type ImagePackage struct {
+	Owner    string         `json:"owner"`
+	Name     string         `json:"name"`
+	Versions []ImageVersion `json:"versions"`
+}
+
 // OtherCheck is a non-Actions check (external app check run or legacy commit
 // status). We list these by name/conclusion/url; no logs are available.
 type OtherCheck struct {
