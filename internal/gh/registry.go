@@ -32,7 +32,7 @@ func (c *Client) RegistryTags(ctx context.Context, owner, name string) ([]string
 	url := registryHost + "/v2/" + repo + "/tags/list?n=100"
 	var tags []string
 	for url != "" {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 		if err != nil {
 			return nil, err
 		}
@@ -66,7 +66,7 @@ func (c *Client) RegistryDigest(ctx context.Context, owner, name, tag string) (s
 	}
 	repo := owner + "/" + name
 	url := registryHost + "/v2/" + repo + "/manifests/" + tag
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return "", err
 	}
@@ -95,7 +95,7 @@ func (c *Client) RegistryDigest(ctx context.Context, owner, name, tag string) (s
 func (c *Client) ghcrToken(ctx context.Context, owner, name string) (string, error) {
 	repo := owner + "/" + name
 	url := fmt.Sprintf("%s/token?service=ghcr.io&scope=repository:%s:pull", registryHost, repo)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return "", err
 	}
