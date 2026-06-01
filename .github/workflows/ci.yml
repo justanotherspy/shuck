@@ -66,6 +66,10 @@ jobs:
               await github.rest.issues.createComment({ owner, repo, issue_number, body });
               core.info(`Created coverage comment on PR #${issue_number}`);
             }
+      # Gate after the report/comment steps so the coverage numbers still land
+      # on the PR even when the gate fails.
+      - name: Coverage gate (>= 80%)
+        run: make cover-check
 
   lint:
     name: Lint
