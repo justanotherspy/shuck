@@ -35,3 +35,30 @@ updates:
       docker:
         patterns:
           - "*"
+
+  # Hash-pinned pip requirements used by the zizmor / semgrep workflows
+  # (.github/requirements/*.txt).
+  - package-ecosystem: pip
+    directory: /.github
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - github-actions
+    groups:
+      pip:
+        patterns:
+          - "*"
+
+  # Lockfile-pinned Claude Code CLI used by the plugin-validate CI job.
+  - package-ecosystem: npm
+    directory: /.github/plugin-validate
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - github-actions
+    groups:
+      npm:
+        patterns:
+          - "*"
