@@ -42,6 +42,7 @@ For one-shot inspection the two are interchangeable; only the CLI does `--watch`
 | A PR's reviews | `shuck reviews [target]` (alias `r`) | `inspect_reviews` |
 | A repo's security alerts | `shuck security [repo]` (alias `s`) | `inspect_security` |
 | Check settings against policy | `shuck compliance [repo]` (alias `c`) | `check_compliance` |
+| Bootstrap/sync the policy file | `shuck compliance discover [repo]` | (CLI only) |
 | Resolve an Action to a SHA pin | `shuck action <ref>` (alias `a`) | `inspect_action` |
 
 Running `shuck` with **no subcommand** is the same as `shuck all`: CI + reviews +
@@ -85,6 +86,7 @@ shuck --watch [flags] [target]  # poll until every check finishes, then report
 | `shuck reviews [target]` (`r`) | a PR's reviews and review-comment threads |
 | `shuck security [owner/repo \| url]` (`s`) | a repo's security alerts (code scanning, secrets, Dependabot) |
 | `shuck compliance [owner/repo \| url]` (`c`) | check a repo's settings against its `.github/compliance.yml` |
+| `shuck compliance discover [owner/repo \| url]` | snapshot the live settings into the local `.github/compliance.yml` (create it, or sync drifted declared keys) |
 | `shuck action <owner>/<action>[@<ver>]` (`a`) | resolve an Action to its latest tag + commit SHA for pinning |
 | `shuck version [--check]` | print the installed version; `--check` looks for a newer release |
 | `shuck upgrade` | download + install the latest release in place (and refresh the installed skill) |
@@ -264,6 +266,27 @@ How it behaves, and the rules that bite:
 - Config discovery: a bare `shuck compliance` reads the **checked-out** file (the
   CI case); an explicit `owner/repo` **fetches** `.github/compliance.yml` from the
   repo (use `--ref` for a branch/tag/SHA); `--config` overrides both with a path.
+
+### Bootstrapping the config: `shuck compliance discover`
+
+`shuck compliance discover [owner/repo | url]` writes the config for you from the
+repository's **live settings** (general, security, and the default branch's
+protection):
+
+```sh
+shuck compliance discover              # snapshot the local repo into .github/compliance.yml
+shuck compliance discover owner/repo   # snapshot an explicit repo's settings
+shuck compliance discover --dry-run    # preview without writing
+shuck compliance discover --json       # machine-readable result
+```
+
+- **No config yet** → a complete snapshot of every readable setting is created.
+- **Config exists** → its declared keys are kept (partial stays partial); each
+  declared value that drifted from the live settings is updated **in place**,
+  preserving comments and key order.
+- **Up to date** → nothing is written.
+- Unreadable settings (need admin) are omitted / left untouched, with a note.
+- Exit `0` on success (created, updated, or up to date), `2` on operational error.
 
 Config shape (all sections and keys optional):
 

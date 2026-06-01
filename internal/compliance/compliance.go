@@ -23,55 +23,57 @@ import (
 
 // Config is the parsed .github/compliance.yml: the repository's intended
 // settings. Every field is a pointer (or a map), so an omitted key means "do not
-// check this" rather than "expect the zero value".
+// check this" rather than "expect the zero value". The yaml tags carry omitempty
+// so a Config can also be marshaled (by `shuck compliance discover`) without
+// emitting nulls for undeclared keys.
 type Config struct {
-	Repository       *RepositoryConfig        `yaml:"repository"`
-	Security         *SecurityConfig          `yaml:"security"`
-	BranchProtection map[string]*BranchConfig `yaml:"branch_protection"`
+	Repository       *RepositoryConfig        `yaml:"repository,omitempty"`
+	Security         *SecurityConfig          `yaml:"security,omitempty"`
+	BranchProtection map[string]*BranchConfig `yaml:"branch_protection,omitempty"`
 }
 
 // RepositoryConfig declares intended general repository settings.
 type RepositoryConfig struct {
-	Visibility               *string `yaml:"visibility"`
-	DefaultBranch            *string `yaml:"default_branch"`
-	AllowMergeCommit         *bool   `yaml:"allow_merge_commit"`
-	AllowSquashMerge         *bool   `yaml:"allow_squash_merge"`
-	AllowRebaseMerge         *bool   `yaml:"allow_rebase_merge"`
-	AllowAutoMerge           *bool   `yaml:"allow_auto_merge"`
-	AllowUpdateBranch        *bool   `yaml:"allow_update_branch"`
-	DeleteBranchOnMerge      *bool   `yaml:"delete_branch_on_merge"`
-	HasIssues                *bool   `yaml:"has_issues"`
-	HasWiki                  *bool   `yaml:"has_wiki"`
-	HasProjects              *bool   `yaml:"has_projects"`
-	HasDiscussions           *bool   `yaml:"has_discussions"`
-	WebCommitSignoffRequired *bool   `yaml:"web_commit_signoff_required"`
-	Archived                 *bool   `yaml:"archived"`
+	Visibility               *string `yaml:"visibility,omitempty"`
+	DefaultBranch            *string `yaml:"default_branch,omitempty"`
+	AllowMergeCommit         *bool   `yaml:"allow_merge_commit,omitempty"`
+	AllowSquashMerge         *bool   `yaml:"allow_squash_merge,omitempty"`
+	AllowRebaseMerge         *bool   `yaml:"allow_rebase_merge,omitempty"`
+	AllowAutoMerge           *bool   `yaml:"allow_auto_merge,omitempty"`
+	AllowUpdateBranch        *bool   `yaml:"allow_update_branch,omitempty"`
+	DeleteBranchOnMerge      *bool   `yaml:"delete_branch_on_merge,omitempty"`
+	HasIssues                *bool   `yaml:"has_issues,omitempty"`
+	HasWiki                  *bool   `yaml:"has_wiki,omitempty"`
+	HasProjects              *bool   `yaml:"has_projects,omitempty"`
+	HasDiscussions           *bool   `yaml:"has_discussions,omitempty"`
+	WebCommitSignoffRequired *bool   `yaml:"web_commit_signoff_required,omitempty"`
+	Archived                 *bool   `yaml:"archived,omitempty"`
 }
 
 // SecurityConfig declares intended security-and-analysis settings. The values
 // are booleans; GitHub reports each as the string "enabled"/"disabled".
 type SecurityConfig struct {
-	SecretScanning               *bool `yaml:"secret_scanning"`
-	SecretScanningPushProtection *bool `yaml:"secret_scanning_push_protection"`
-	DependabotSecurityUpdates    *bool `yaml:"dependabot_security_updates"`
-	VulnerabilityAlerts          *bool `yaml:"vulnerability_alerts"`
+	SecretScanning               *bool `yaml:"secret_scanning,omitempty"`
+	SecretScanningPushProtection *bool `yaml:"secret_scanning_push_protection,omitempty"`
+	DependabotSecurityUpdates    *bool `yaml:"dependabot_security_updates,omitempty"`
+	VulnerabilityAlerts          *bool `yaml:"vulnerability_alerts,omitempty"`
 }
 
 // BranchConfig declares intended protection for one branch (keyed by branch
 // name under branch_protection).
 type BranchConfig struct {
-	RequiredApprovingReviewCount  *int      `yaml:"required_approving_review_count"`
-	DismissStaleReviews           *bool     `yaml:"dismiss_stale_reviews"`
-	RequireCodeOwnerReviews       *bool     `yaml:"require_code_owner_reviews"`
-	RequireLastPushApproval       *bool     `yaml:"require_last_push_approval"`
-	RequiredStatusChecks          *[]string `yaml:"required_status_checks"`
-	StrictStatusChecks            *bool     `yaml:"strict_status_checks"`
-	EnforceAdmins                 *bool     `yaml:"enforce_admins"`
-	RequireLinearHistory          *bool     `yaml:"required_linear_history"`
-	AllowForcePushes              *bool     `yaml:"allow_force_pushes"`
-	AllowDeletions                *bool     `yaml:"allow_deletions"`
-	RequireConversationResolution *bool     `yaml:"required_conversation_resolution"`
-	RequiredSignatures            *bool     `yaml:"required_signatures"`
+	RequiredApprovingReviewCount  *int      `yaml:"required_approving_review_count,omitempty"`
+	DismissStaleReviews           *bool     `yaml:"dismiss_stale_reviews,omitempty"`
+	RequireCodeOwnerReviews       *bool     `yaml:"require_code_owner_reviews,omitempty"`
+	RequireLastPushApproval       *bool     `yaml:"require_last_push_approval,omitempty"`
+	RequiredStatusChecks          *[]string `yaml:"required_status_checks,omitempty"`
+	StrictStatusChecks            *bool     `yaml:"strict_status_checks,omitempty"`
+	EnforceAdmins                 *bool     `yaml:"enforce_admins,omitempty"`
+	RequireLinearHistory          *bool     `yaml:"required_linear_history,omitempty"`
+	AllowForcePushes              *bool     `yaml:"allow_force_pushes,omitempty"`
+	AllowDeletions                *bool     `yaml:"allow_deletions,omitempty"`
+	RequireConversationResolution *bool     `yaml:"required_conversation_resolution,omitempty"`
+	RequiredSignatures            *bool     `yaml:"required_signatures,omitempty"`
 }
 
 // Parse decodes a .github/compliance.yml document. Unknown keys are rejected so
