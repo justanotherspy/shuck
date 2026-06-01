@@ -170,12 +170,20 @@ errors → render → update cache.
   `main.go` is a thin untested entrypoint. CI renders it with `make cover-report`
   into the job summary and one sticky PR comment, then `make cover-check` gates
   the build: it fails when total coverage is below `COVER_THRESHOLD` (80%).
-- **Fuzzing.** `FuzzXxx` targets live next to the code (see
-  `internal/logs/fuzz_test.go`, which fuzzes the log parsers). Seed corpora run
-  as ordinary unit tests under `make test`; `make fuzz FUZZ=FuzzParse` does active
-  mutation locally and the nightly `fuzz.yml` workflow runs `make fuzz-all`
-  (auto-discovers every target). Commit any minimized crasher under
-  `testdata/fuzz/<FuzzXxx>/` as a regression seed, then fix the bug.
+- **Fuzzing.** `FuzzXxx` targets live next to the code in a `fuzz_test.go` per
+  package. Every parser of untrusted/external input is fuzzed: job logs
+  (`internal/logs`), semver tags/constraints (`internal/semver`), action and
+  image refs + tag selection (`internal/action`, `internal/image`), repo
+  slugs/URLs/remotes (`internal/target`), the strict compliance YAML
+  (`internal/compliance`), and release archives + checksums
+  (`internal/release`). Targets assert semantic invariants (round-trips,
+  selection contracts, fail-closed verification), not just panic-safety. Seed
+  corpora run as ordinary unit tests under `make test`; `make fuzz
+  FUZZ=FuzzName` does active mutation locally (it finds the target's package
+  itself) and the nightly `fuzz.yml` workflow runs `make fuzz-all`
+  (auto-discovers every target). Keep fuzz-target names unique module-wide.
+  Commit any minimized crasher under `testdata/fuzz/<FuzzXxx>/` as a regression
+  seed, then fix the bug.
 - **Benchmarks & profiling.** Use the modern `for b.Loop() { … }` form with
   `b.ReportAllocs()` (see `internal/logs/bench_test.go`). `make bench` runs them;
   `make profile BENCH=…` captures CPU+mem profiles and `make pprof-cpu`/`pprof-mem`
