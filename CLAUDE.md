@@ -23,6 +23,7 @@ make fmt             # gofmt + goimports via golangci-lint
 make modernize       # go fix ./...  (apply Go 1.26 modernizers)
 make modernize-check # fail if any modernization is pending (CI gate; alias: fix-check)
 make cover-report    # Markdown coverage report (CI posts it on PRs)
+make cover-check     # fail if coverage is below COVER_THRESHOLD (80%; CI gate)
 make vuln            # govulncheck vulnerability scan
 make fuzz FUZZ=Fuzz… # actively fuzz one target (FUZZTIME, FUZZPKG)
 make fuzz-all        # briefly fuzz every target (nightly workflow)
@@ -30,7 +31,7 @@ make bench           # run benchmarks (BENCH, BENCHPKG, BENCHTIME)
 make docker-build    # build the container image locally
 make snapshot        # local goreleaser snapshot (no publish)
 make tidy            # go mod tidy
-make ci              # what CI runs: deps + lint + modernize-check + test + build
+make ci              # what CI runs: deps + lint + modernize-check + test + cover-check + build
 ```
 
 `make fix` / `make fix-check` remain as aliases of `modernize` / `modernize-check`.
@@ -164,9 +165,11 @@ errors → render → update cache.
 
 ## Testing, fuzzing & profiling
 
-- **Coverage on PRs.** `make test` writes `coverage.out`; CI renders it with
-  `make cover-report` into the job summary and one sticky PR comment (report-only,
-  never gates the build).
+- **Coverage on PRs.** `make test` writes `coverage.out` with `main.go` filtered
+  out (`COVER_EXCLUDE`) — the numbers reflect the `internal/` packages only, since
+  `main.go` is a thin untested entrypoint. CI renders it with `make cover-report`
+  into the job summary and one sticky PR comment, then `make cover-check` gates
+  the build: it fails when total coverage is below `COVER_THRESHOLD` (80%).
 - **Fuzzing.** `FuzzXxx` targets live next to the code (see
   `internal/logs/fuzz_test.go`, which fuzzes the log parsers). Seed corpora run
   as ordinary unit tests under `make test`; `make fuzz FUZZ=FuzzParse` does active

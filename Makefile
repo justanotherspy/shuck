@@ -55,10 +55,13 @@ BENCHFILE   ?= bench-new.txt
 PROFPKG     ?= ./internal/logs
 PROFILE_DIR ?= profiles
 
-# Coverage filter. shuck has no cmd/ entrypoints to drop, so this is empty by
-# default; keep the mechanism for parity with the template. Override with an
-# extended regexp matched against coverage.out paths.
-COVER_EXCLUDE ?=
+# Coverage filter & threshold. main.go is a thin entrypoint with no unit tests,
+# so it is dropped from coverage.out — the numbers (and the gate below) reflect
+# the internal/ packages only. COVER_EXCLUDE is an extended regexp matched
+# against coverage.out paths; COVER_THRESHOLD is the minimum total coverage
+# percentage `make cover-check` accepts (CI fails below it).
+COVER_EXCLUDE   ?= ^github\.com/justanotherspy/shuck/main\.go:
+COVER_THRESHOLD ?= 80
 
 # ==============================================================================
 .PHONY: help
@@ -223,10 +226,19 @@ cover-html: test ## Open the HTML coverage report
 cover-total: ## Print the total coverage percentage (needs an existing coverage.out)
 	@$(GO) tool cover -func=$(COVERAGE) | awk '/^total:/ {print $$3}'
 
+.PHONY: cover-check
+cover-check: ## Fail if total coverage is below COVER_THRESHOLD% (needs an existing coverage.out)
+	@total=$$($(GO) tool cover -func=$(COVERAGE) | awk '/^total:/ {sub(/%/, "", $$3); print $$3}'); \
+	echo ">> total coverage: $$total% (threshold: $(COVER_THRESHOLD)%)"; \
+	awk -v total="$$total" -v min="$(COVER_THRESHOLD)" 'BEGIN { exit !(total+0 >= min+0) }' || { \
+		echo ">> FAIL: coverage $$total% is below the required $(COVER_THRESHOLD)%"; \
+		exit 1; \
+	}
+
 .PHONY: cover-report
 cover-report: ## Emit a Markdown coverage report to stdout (used by CI to comment on PRs)
 	@total=$$($(GO) tool cover -func=$(COVERAGE) | awk '/^total:/ {print $$3}'); \
-	printf '### 🧪 Code coverage: %s\n\n' "$$total"; \
+	printf '### 🧪 Code coverage: %s (threshold: %s%%)\n\n' "$$total" "$(COVER_THRESHOLD)"; \
 	printf '<details><summary>Per-function coverage</summary>\n\n'; \
 	printf '```\n'; \
 	$(GO) tool cover -func=$(COVERAGE); \
@@ -343,7 +355,7 @@ snapshot: goreleaser ## Build a local snapshot release (no publish)
 
 # ---- Aggregates -------------------------------------------------------------
 .PHONY: ci
-ci: deps lint modernize-check test build ## Run the pipeline that CI runs
+ci: deps lint modernize-check test cover-check build ## Run the pipeline that CI runs
 
 .PHONY: all
 all: tidy fmt modernize lint test build ## Tidy, format, modernize, lint, test, and build
