@@ -50,7 +50,7 @@ errors → render → update cache.
 | `internal/image` | `shuck image`: parse an image ref (`[ghcr.io/]owner/name[:tag]`, or a bare `owner` to list all) and pick the latest matching version + manifest digest (pure selection in `Select`, sharing `internal/semver`; non-semver tags fall back to most-recent). Renders the digest-pin line / JSON; the stable shapes `image.Document` (single resolve) and `image.ListDocument` (list-all) back the MCP `inspect_images` tool. |
 | `internal/semver` | Tiny dependency-free semver slice (`Parse` / `Compare` / `Constraint.Matches`) shared by `action` and `image` for "pick the latest matching tag". |
 | `internal/security` | `shuck security`: sort + render a `model.SecurityReport` (code scanning, secret scanning, Dependabot alerts) to text / versioned JSON. Pure presentation; the gh layer fetches, the `cli.Security` core assembles. |
-| `internal/compliance` | `shuck compliance`: parse a `.shuck/compliance.yaml` (`Parse`, strict / unknown-key-rejecting via yaml.v3) into a `Config`, then `Evaluate` it against the live settings the gh layer fetched (`Actual`) into a `model.ComplianceReport` — one pass/fail/skipped check per declared key. Renders text / versioned JSON (`Document`). Pure logic; the `cli.Compliance` core does the I/O. |
+| `internal/compliance` | `shuck compliance`: parse a `.github/compliance.yml` (`Parse`, strict / unknown-key-rejecting via yaml.v3) into a `Config`, then `Evaluate` it against the live settings the gh layer fetched (`Actual`) into a `model.ComplianceReport` — one pass/fail/skipped check per declared key. Renders text / versioned JSON (`Document`). Pure logic; the `cli.Compliance` core does the I/O. |
 | `internal/release` | Self-update: resolve the latest GitHub release, download + checksum-verify the matching archive, and replace the running binary in place. Backs `shuck version --check` / `shuck upgrade`. |
 | `internal/setup` | `shuck setup`: install the embedded skill into `~/.claude/skills/shuck`, add a managed note to the user's `CLAUDE.md`, and optionally register the MCP at user scope (`claude mcp add`). The skill is `go:embed`-ed from the plugin in `main.go`, so the standalone install and the marketplace stay in sync. |
 | `internal/target` | Resolve owner/repo/PR from args or the local repo (via go-git). |
@@ -132,7 +132,7 @@ errors → render → update cache.
   `shuck action`); a result with any errored source is not cached. Exit is `0` on
   success, `2` on an operational error; `--exit-code` makes open findings exit `1`.
 - **Compliance** (`shuck compliance`): `cli.Compliance` loads the intended
-  settings from a `.shuck/compliance.yaml` and compares them against the repo's
+  settings from a `.github/compliance.yml` and compares them against the repo's
   live settings. **The config is the source of truth** and is **partial** — only
   declared keys are checked, and `compliance.Parse` rejects unknown keys (a typo
   must not silently skip a check). Config discovery: `--config <path>` wins; else a

@@ -128,7 +128,7 @@ shuck reviews [target]      # (r) a PR's reviews and review-comment threads
 shuck all [target]          # CI + reviews + security (the default)
 shuck action <owner>/<action>[@<version>]  # (a) resolve an Action to its latest tag + SHA for pinning
 shuck security [owner/repo | url]  # (s) summarize a repo's security alerts (code scanning, secrets, Dependabot)
-shuck compliance [owner/repo | url]  # (c) check a repo's settings against its .shuck/compliance.yaml
+shuck compliance [owner/repo | url]  # (c) check a repo's settings against its .github/compliance.yml
 shuck setup                 # install the shuck skill + CLAUDE.md note for Claude Code
 shuck version [--check]     # print the installed version; --check looks for an update
 shuck upgrade               # download and install the latest release in place
@@ -360,13 +360,13 @@ exit `1` for CI gating.
 ### Settings compliance
 
 `shuck compliance [owner/repo | url]` (alias `c`) checks a repository's live
-GitHub settings against a `.shuck/compliance.yaml` committed in the repo. That
+GitHub settings against a `.github/compliance.yml` committed in the repo. That
 file is the **definitive statement of the repo's intended settings** — merge
 options, features, security, and branch protection — so a CI job can fail when a
 setting drifts from policy:
 
 ```sh
-shuck compliance                       # the local checkout's .shuck/compliance.yaml
+shuck compliance                       # the local checkout's .github/compliance.yml
 shuck compliance justanotherspy/shuck  # fetch the config from the repo and check it
 shuck compliance --config policy.yaml owner/repo   # use an explicit config file
 shuck compliance --json owner/repo     # the stable JSON document
@@ -380,7 +380,7 @@ security need admin/`repo` access) is reported as **skipped**, never a false
 pass.
 
 ```yaml
-# .shuck/compliance.yaml — the intended settings for this repo.
+# .github/compliance.yml — the intended settings for this repo.
 repository:
   visibility: public
   allow_merge_commit: false
@@ -405,7 +405,7 @@ branch_protection:
 
 ```
 justanotherspy/shuck — compliance
-config: .shuck/compliance.yaml
+config: .github/compliance.yml
 
 Summary: 12 checked — 11 pass, 1 fail
 
@@ -418,7 +418,7 @@ Repository:
 ```
 
 Config discovery: a bare `shuck compliance` reads the checked-out file (the CI
-case); an explicit `owner/repo` fetches `.shuck/compliance.yaml` from the repo
+case); an explicit `owner/repo` fetches `.github/compliance.yml` from the repo
 (use `--ref` for a branch/tag/SHA); `--config` overrides both with a local path.
 The exit code is `0` when compliant, `1` when a setting drifted (for CI gating),
 and `2` on an operational error; `--exit-zero` makes it report-only.
@@ -486,7 +486,7 @@ It exposes six read-only tools:
 | `inspect_logs` | Failing CI step logs for a PR, or one Actions run. | `repo` (`owner/repo`), `pr`, `url`; or none → the open PR for the current branch; or `run` (a run/job URL, or a bare run ID with `repo`) |
 | `inspect_reviews` | A PR's reviews and review-comment threads. | `repo` (`owner/repo`), `pr`, `url`; or none → the current branch. Optional `review_comment_limit` |
 | `inspect_security` | A repo's security alerts (code scanning, secrets, Dependabot). | `repo` (`owner/repo`) or `url`; or none → the local repo. Optional `state`, `refresh` |
-| `check_compliance` | Check a repo's settings against its `.shuck/compliance.yaml`. | `repo` (`owner/repo`) or `url`; or none → the local repo. Optional `config`, `ref` |
+| `check_compliance` | Check a repo's settings against its `.github/compliance.yml`. | `repo` (`owner/repo`) or `url`; or none → the local repo. Optional `config`, `ref` |
 | `inspect_action` | Resolve a GitHub Action to its latest tag + commit SHA for pinning. | `action` (`owner/action[/subpath][@version]`). Optional `refresh` |
 | `inspect_images` | List GHCR images for an owner, or resolve one image to its digest. | `image` (an owner, `owner/repo`, a URL, or `ghcr.io/owner/name[:tag]`); or none → the local repo. Optional `refresh` |
 

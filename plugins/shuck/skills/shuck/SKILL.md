@@ -84,7 +84,7 @@ shuck --watch [flags] [target]  # poll until every check finishes, then report
 | `shuck logs [target] [--run <id\|url>]` (`l`) | failing CI step logs for a PR or a single run |
 | `shuck reviews [target]` (`r`) | a PR's reviews and review-comment threads |
 | `shuck security [owner/repo \| url]` (`s`) | a repo's security alerts (code scanning, secrets, Dependabot) |
-| `shuck compliance [owner/repo \| url]` (`c`) | check a repo's settings against its `.shuck/compliance.yaml` |
+| `shuck compliance [owner/repo \| url]` (`c`) | check a repo's settings against its `.github/compliance.yml` |
 | `shuck action <owner>/<action>[@<ver>]` (`a`) | resolve an Action to its latest tag + commit SHA for pinning |
 | `shuck version [--check]` | print the installed version; `--check` looks for a newer release |
 | `shuck upgrade` | download + install the latest release in place (and refresh the installed skill) |
@@ -239,13 +239,13 @@ Security data — especially private repos — needs a token with the
 ## Settings compliance
 
 `shuck compliance [owner/repo | url]` (alias `c`) and the `check_compliance` tool
-check a repository's **live GitHub settings** against a `.shuck/compliance.yaml`
+check a repository's **live GitHub settings** against a `.github/compliance.yml`
 committed in the repo. That file is the **definitive statement of intended
 settings** — merge options, features, security, branch protection — so a CI job
 can gate on drift.
 
 ```sh
-shuck compliance                       # the local checkout's .shuck/compliance.yaml
+shuck compliance                       # the local checkout's .github/compliance.yml
 shuck compliance owner/repo            # fetch the config from the repo and check it
 shuck compliance --config policy.yaml owner/repo   # an explicit local config file
 shuck compliance --json owner/repo     # the stable JSON document
@@ -262,7 +262,7 @@ How it behaves, and the rules that bite:
   need admin / `repo` access) is reported as **skipped**, never a false pass. An
   unprotected branch that the config says should be protected **fails**.
 - Config discovery: a bare `shuck compliance` reads the **checked-out** file (the
-  CI case); an explicit `owner/repo` **fetches** `.shuck/compliance.yaml` from the
+  CI case); an explicit `owner/repo` **fetches** `.github/compliance.yml` from the
   repo (use `--ref` for a branch/tag/SHA); `--config` overrides both with a path.
 
 Config shape (all sections and keys optional):
