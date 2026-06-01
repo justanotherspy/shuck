@@ -44,7 +44,7 @@ func (c *Client) graphQL(ctx context.Context, query string, vars map[string]any,
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, graphQLEndpoint, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.graphqlURL, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
