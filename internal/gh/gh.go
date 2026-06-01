@@ -20,6 +20,11 @@ type Client struct {
 	gh    *github.Client
 	http  *http.Client
 	token string // retained for the hand-rolled GraphQL calls (reviews)
+	// graphqlURL and registryURL default to the public GitHub GraphQL endpoint
+	// and the GHCR registry host; they are fields (rather than the consts) only
+	// so tests can point the hand-rolled clients at a local httptest server.
+	graphqlURL  string
+	registryURL string
 }
 
 // New builds a client from a personal access token. An empty token yields an
@@ -34,9 +39,11 @@ func New(token string) *Client {
 	// URLs); WithAuthToken never does, so the error is structurally nil here.
 	gc, _ := github.NewClient(opts...)
 	return &Client{
-		gh:    gc,
-		http:  &http.Client{Timeout: 60 * time.Second},
-		token: token,
+		gh:          gc,
+		http:        &http.Client{Timeout: 60 * time.Second},
+		token:       token,
+		graphqlURL:  graphQLEndpoint,
+		registryURL: registryHost,
 	}
 }
 

@@ -29,7 +29,7 @@ func (c *Client) RegistryTags(ctx context.Context, owner, name string) ([]string
 		return nil, err
 	}
 	repo := owner + "/" + name
-	url := registryHost + "/v2/" + repo + "/tags/list?n=100"
+	url := c.registryURL + "/v2/" + repo + "/tags/list?n=100"
 	var tags []string
 	for url != "" {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
@@ -51,7 +51,7 @@ func (c *Client) RegistryTags(ctx context.Context, owner, name string) ([]string
 			return nil, err
 		}
 		tags = append(tags, page.Tags...)
-		url = nextLink(resp.Header.Get("Link"), registryHost)
+		url = nextLink(resp.Header.Get("Link"), c.registryURL)
 		_ = resp.Body.Close()
 	}
 	return tags, nil
@@ -65,7 +65,7 @@ func (c *Client) RegistryDigest(ctx context.Context, owner, name, tag string) (s
 		return "", err
 	}
 	repo := owner + "/" + name
-	url := registryHost + "/v2/" + repo + "/manifests/" + tag
+	url := c.registryURL + "/v2/" + repo + "/manifests/" + tag
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return "", err
@@ -94,7 +94,7 @@ func (c *Client) RegistryDigest(ctx context.Context, owner, name, tag string) (s
 // token is set it is exchanged (Basic auth) so private images resolve too.
 func (c *Client) ghcrToken(ctx context.Context, owner, name string) (string, error) {
 	repo := owner + "/" + name
-	url := fmt.Sprintf("%s/token?service=ghcr.io&scope=repository:%s:pull", registryHost, repo)
+	url := fmt.Sprintf("%s/token?service=ghcr.io&scope=repository:%s:pull", c.registryURL, repo)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return "", err

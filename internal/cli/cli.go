@@ -385,7 +385,7 @@ func inspectWith(ctx context.Context, tgt target.Target, o options) (*model.Repo
 		return nil, err
 	}
 	a := &app{
-		client:             gh.New(token),
+		client:             newInspectClient(token),
 		opts:               extractOpts,
 		maxCommandLines:    o.maxCommandLines,
 		reviewCommentLimit: o.reviewCommentLimit,
@@ -666,11 +666,29 @@ func flagTakesValue(fs *flag.FlagSet, arg string) bool {
 	return !ok || !bf.IsBoolFlag()
 }
 
+// inspectClient is the slice of *gh.Client the PR / run inspection pipeline
+// (app, prReport, runReport, drill, drillJobs, attachReviews) needs. It is an
+// interface so tests can stub the network. *gh.Client satisfies it.
+type inspectClient interface {
+	GetPR(ctx context.Context, owner, repo string, number int) (model.PR, error)
+	FindOpenPR(ctx context.Context, owner, repo, headOwner, branch string) (int, error)
+	ListJobs(ctx context.Context, owner, repo, headSHA string) (failed, cancelled []model.JobResult, running []model.RunningJob, err error)
+	OtherChecks(ctx context.Context, owner, repo, sha string) ([]model.OtherCheck, error)
+	JobLog(ctx context.Context, owner, repo string, jobID int64) (string, error)
+	ReviewsFingerprint(ctx context.Context, owner, repo string, number int) (string, error)
+	PRReviews(ctx context.Context, owner, repo string, number, commentLimit int) ([]model.Review, error)
+	RunReport(ctx context.Context, owner, repo string, runID, jobID int64) (info model.RunInfo, failed, cancelled []model.JobResult, running []model.RunningJob, err error)
+}
+
+// newInspectClient builds the client used by the PR / run inspection pipeline.
+// It is a package var so tests can supply a stub without hitting GitHub.
+var newInspectClient = func(token string) inspectClient { return gh.New(token) }
+
 // app holds the dependencies needed to drill into a failed job's logs.
 //
 //nolint:gocritic // declared next to its constructor and helpers below
 type app struct {
-	client             *gh.Client
+	client             inspectClient
 	opts               logs.Options
 	maxCommandLines    int
 	reviewCommentLimit int

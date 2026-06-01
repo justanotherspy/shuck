@@ -140,11 +140,13 @@ func Select(versions []model.ImageVersion, constraint string) (model.ImageVersio
 			if !ok || !con.Matches(v) {
 				continue
 			}
+			// The gosec G602 suppressions below are false positives: i comes
+			// from `range versions`, so versions[i] is always in bounds.
 			if best == nil || semver.Compare(v, bestV) > 0 {
-				best, bestTag, bestV = &versions[i], tag, v
+				best, bestTag, bestV = &versions[i], tag, v //nolint:gosec // G602 false positive
 			}
 			if v.Stable() && (bestStable == nil || semver.Compare(v, bestStableV) > 0) {
-				bestStable, bestStableTag, bestStableV = &versions[i], tag, v
+				bestStable, bestStableTag, bestStableV = &versions[i], tag, v //nolint:gosec // G602 false positive
 			}
 		}
 	}
