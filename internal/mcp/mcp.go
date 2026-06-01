@@ -21,6 +21,7 @@ import (
 
 	"github.com/justanotherspy/shuck/internal/action"
 	"github.com/justanotherspy/shuck/internal/cli"
+	"github.com/justanotherspy/shuck/internal/compliance"
 	"github.com/justanotherspy/shuck/internal/image"
 	"github.com/justanotherspy/shuck/internal/jsonout"
 	"github.com/justanotherspy/shuck/internal/logs"
@@ -105,6 +106,22 @@ filters which alerts to show (open by default; open|all|dismissed|fixed|resolved
 Requires a GitHub token in GITHUB_TOKEN or GH_TOKEN in the server's environment;
 private-repo security data needs the security_events (or repo) scope.`
 
+const checkComplianceDesc = `Check a repository's settings against its .shuck/compliance.yaml.
+
+The .shuck/compliance.yaml file declares a repo's intended settings (merge
+options, features, security, branch protection). shuck reads the repo's live
+settings via the GitHub API and returns, per declared setting, whether the repo
+matches — pass, fail (drift), or skipped (the setting could not be read with the
+current token). Reach for this to verify a repo is configured the way its policy
+says, or to find what drifted.
+
+Target selection: pass url for a github.com/<owner>/<repo>[/...] URL, or repo as
+owner/repo, or nothing to use the repo of the local working directory. The config
+is fetched from the repo by default (set ref to pick a branch/tag/SHA); set
+config to read a local file path instead. Requires a GitHub token in GITHUB_TOKEN
+or GH_TOKEN; reading branch protection and security settings needs the repo scope
+and admin access.`
+
 // Serve runs the shuck MCP server over stdio until the client disconnects or
 // ctx is cancelled. It takes no positional arguments.
 func Serve(ctx context.Context, args []string) error {
@@ -159,6 +176,13 @@ func newServer() *mcp.Server {
 		Description: inspectSecurityDesc,
 		Annotations: annotations,
 	}, inspectSecurity)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "check_compliance",
+		Title:       "Check a repo's settings against its compliance config",
+		Description: checkComplianceDesc,
+		Annotations: annotations,
+	}, checkCompliance)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "inspect_action",
@@ -341,6 +365,45 @@ func prTargetArgs(url, repo string, pr int) ([]string, error) {
 		return []string{strconv.Itoa(pr)}, nil
 	default:
 		return nil, nil
+	}
+}
+
+type checkComplianceInput struct {
+	Repo   string `json:"repo,omitempty" jsonschema:"GitHub repository as owner/repo. If omitted, it is inferred from the local working directory's origin remote."`
+	URL    string `json:"url,omitempty" jsonschema:"A github.com/<owner>/<repo>[/...] URL. Takes precedence over repo."`
+	Config string `json:"config,omitempty" jsonschema:"Path to a local compliance config file. If omitted, .shuck/compliance.yaml is fetched from the repo."`
+	Ref    string `json:"ref,omitempty" jsonschema:"Git ref (branch/tag/SHA) to fetch the config from when reading it from the repo. Default: the repo's default branch."`
+}
+
+func checkCompliance(ctx context.Context, _ *mcp.CallToolRequest, in checkComplianceInput) (*mcp.CallToolResult, compliance.Document, error) {
+	owner, repo, err := target.ResolveRepo(in.targetArgs())
+	if err != nil {
+		return nil, compliance.Document{}, err
+	}
+	report, err := cli.Compliance(ctx, owner, repo, cli.ComplianceOptions{
+		ConfigPath:  in.Config,
+		Ref:         in.Ref,
+		PreferLocal: in.Config == "" && in.Repo == "" && in.URL == "",
+	})
+	if err != nil {
+		return nil, compliance.Document{}, err
+	}
+	var b strings.Builder
+	compliance.Render(&b, report)
+	res := &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: b.String()}}}
+	return res, compliance.NewDocument(report), nil
+}
+
+// targetArgs maps the tool inputs onto the positional args target.ResolveRepo
+// understands, so the MCP and CLI share one resolution path.
+func (in checkComplianceInput) targetArgs() []string {
+	switch {
+	case in.URL != "":
+		return []string{in.URL}
+	case in.Repo != "":
+		return []string{in.Repo}
+	default:
+		return nil // local repo
 	}
 }
 

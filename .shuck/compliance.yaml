@@ -1,0 +1,34 @@
+# .shuck/compliance.yaml — the definitive, intended settings for this repository.
+#
+# `shuck compliance` reads the repo's live GitHub settings and checks them
+# against this file, so CI can fail when a setting drifts from policy. The file
+# is partial: only the keys declared here are checked. A setting the token
+# cannot read (branch protection and security need admin/repo access) is
+# reported as skipped, never a silent pass.
+#
+# See `shuck compliance --help` or the README's "Settings compliance" section.
+
+repository:
+  visibility: public
+  default_branch: main
+  allow_merge_commit: false
+  allow_squash_merge: true
+  delete_branch_on_merge: true
+  has_wiki: false
+  has_projects: false
+
+security:
+  secret_scanning: true
+  secret_scanning_push_protection: true
+  dependabot_security_updates: true
+  vulnerability_alerts: true
+
+branch_protection:
+  main:
+    required_approving_review_count: 1
+    dismiss_stale_reviews: true
+    enforce_admins: true
+    required_linear_history: true
+    allow_force_pushes: false
+    allow_deletions: false
+    required_conversation_resolution: true

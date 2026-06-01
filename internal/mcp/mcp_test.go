@@ -91,7 +91,7 @@ func TestExtractInputApplyDefaults(t *testing.T) {
 }
 
 // TestRoundtripInspectLogsOffline drives the server end-to-end over an in-memory
-// transport: it lists the tools (asserting the four are advertised with typed
+// transport: it lists the tools (asserting they are advertised with typed
 // input/output schemas) and calls inspect_logs against a seeded cache so no
 // network or token is needed.
 func TestRoundtripInspectLogsOffline(t *testing.T) {
@@ -118,7 +118,7 @@ func TestRoundtripInspectLogsOffline(t *testing.T) {
 	for _, tl := range tools.Tools {
 		byName[tl.Name] = tl
 	}
-	for _, want := range []string{"inspect_logs", "inspect_reviews", "inspect_security", "inspect_action"} {
+	for _, want := range []string{"inspect_logs", "inspect_reviews", "inspect_security", "check_compliance", "inspect_action", "inspect_images"} {
 		tl, ok := byName[want]
 		if !ok {
 			t.Fatalf("tool %q not advertised; got %v", want, byName)

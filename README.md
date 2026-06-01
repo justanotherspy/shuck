@@ -128,6 +128,7 @@ shuck reviews [target]      # (r) a PR's reviews and review-comment threads
 shuck all [target]          # CI + reviews + security (the default)
 shuck action <owner>/<action>[@<version>]  # (a) resolve an Action to its latest tag + SHA for pinning
 shuck security [owner/repo | url]  # (s) summarize a repo's security alerts (code scanning, secrets, Dependabot)
+shuck compliance [owner/repo | url]  # (c) check a repo's settings against its .shuck/compliance.yaml
 shuck setup                 # install the shuck skill + CLAUDE.md note for Claude Code
 shuck version [--check]     # print the installed version; --check looks for an update
 shuck upgrade               # download and install the latest release in place
@@ -356,6 +357,72 @@ needs a token (`GITHUB_TOKEN`/`GH_TOKEN`, or `--token`) with the
 and `2` only on an operational error; pass `--exit-code` to make open findings
 exit `1` for CI gating.
 
+### Settings compliance
+
+`shuck compliance [owner/repo | url]` (alias `c`) checks a repository's live
+GitHub settings against a `.shuck/compliance.yaml` committed in the repo. That
+file is the **definitive statement of the repo's intended settings** — merge
+options, features, security, and branch protection — so a CI job can fail when a
+setting drifts from policy:
+
+```sh
+shuck compliance                       # the local checkout's .shuck/compliance.yaml
+shuck compliance justanotherspy/shuck  # fetch the config from the repo and check it
+shuck compliance --config policy.yaml owner/repo   # use an explicit config file
+shuck compliance --json owner/repo     # the stable JSON document
+shuck compliance --exit-zero owner/repo  # report-only (never fail the build)
+```
+
+The config is **partial by design**: only the keys it declares are checked, so a
+repo can assert just what it cares about. A typo'd key is rejected rather than
+silently ignored, and a setting the token cannot read (branch protection and
+security need admin/`repo` access) is reported as **skipped**, never a false
+pass.
+
+```yaml
+# .shuck/compliance.yaml — the intended settings for this repo.
+repository:
+  visibility: public
+  allow_merge_commit: false
+  allow_squash_merge: true
+  delete_branch_on_merge: true
+  has_wiki: false
+security:
+  secret_scanning: true
+  secret_scanning_push_protection: true
+  vulnerability_alerts: true
+branch_protection:
+  main:
+    required_approving_review_count: 1
+    dismiss_stale_reviews: true
+    enforce_admins: true
+    required_linear_history: true
+    allow_force_pushes: false
+    required_status_checks:
+      - test
+      - lint
+```
+
+```
+justanotherspy/shuck — compliance
+config: .shuck/compliance.yaml
+
+Summary: 12 checked — 11 pass, 1 fail
+
+Repository:
+  ✓ allow_merge_commit = false
+  ✗ has_wiki: want false, got true
+  ...
+
+✗ Not compliant — 1 setting(s) drifted from the config.
+```
+
+Config discovery: a bare `shuck compliance` reads the checked-out file (the CI
+case); an explicit `owner/repo` fetches `.shuck/compliance.yaml` from the repo
+(use `--ref` for a branch/tag/SHA); `--config` overrides both with a local path.
+The exit code is `0` when compliant, `1` when a setting drifted (for CI gating),
+and `2` on an operational error; `--exit-zero` makes it report-only.
+
 ### How log extraction works
 
 For each failed step:
@@ -412,14 +479,16 @@ instead of scraping CLI text. Start it over stdio with:
 shuck mcp
 ```
 
-It exposes four read-only tools:
+It exposes six read-only tools:
 
 | Tool | Purpose | Key inputs |
 | --- | --- | --- |
 | `inspect_logs` | Failing CI step logs for a PR, or one Actions run. | `repo` (`owner/repo`), `pr`, `url`; or none → the open PR for the current branch; or `run` (a run/job URL, or a bare run ID with `repo`) |
 | `inspect_reviews` | A PR's reviews and review-comment threads. | `repo` (`owner/repo`), `pr`, `url`; or none → the current branch. Optional `review_comment_limit` |
 | `inspect_security` | A repo's security alerts (code scanning, secrets, Dependabot). | `repo` (`owner/repo`) or `url`; or none → the local repo. Optional `state`, `refresh` |
+| `check_compliance` | Check a repo's settings against its `.shuck/compliance.yaml`. | `repo` (`owner/repo`) or `url`; or none → the local repo. Optional `config`, `ref` |
 | `inspect_action` | Resolve a GitHub Action to its latest tag + commit SHA for pinning. | `action` (`owner/action[/subpath][@version]`). Optional `refresh` |
+| `inspect_images` | List GHCR images for an owner, or resolve one image to its digest. | `image` (an owner, `owner/repo`, a URL, or `ghcr.io/owner/name[:tag]`); or none → the local repo. Optional `refresh` |
 
 `inspect_logs` accepts the same log-extraction knobs as the CLI (`context`,
 `short_threshold`, `tail`, `pattern`, `full`) plus the cache flags (`refresh`,
@@ -446,8 +515,8 @@ runs the `shuck` on your `PATH`, so install shuck first (see [Install](#install)
 
 `shuck` also ships as a [Claude Code](https://claude.com/claude-code) plugin so
 agents can pull failing CI logs for you. It adds a `/shuck` skill, an MCP server
-(the `inspect_logs` / `inspect_reviews` / `inspect_security` / `inspect_action`
-tools above) that runs the `shuck` binary from
+(the `inspect_logs` / `inspect_reviews` / `inspect_security` / `check_compliance`
+/ `inspect_action` / `inspect_images` tools above) that runs the `shuck` binary from
 your `PATH`, and a `SessionStart` hook that checks shuck is installed, recent
 enough to run the MCP server, and that a GitHub token is present.
 
