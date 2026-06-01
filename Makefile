@@ -248,10 +248,23 @@ cover-report: ## Emit a Markdown coverage report to stdout (used by CI to commen
 # Seed corpora run as ordinary unit tests under `make test`. These targets do
 # active, mutation-based fuzzing; crashers are written to testdata/fuzz/<Fuzz>/
 # next to the test — commit them as regression seeds.
+# `go test -fuzz` only accepts a single package, so when FUZZPKG is the ./...
+# default the target's package is discovered by listing every package's Fuzz*
+# functions and matching FUZZ against them.
 .PHONY: fuzz
 fuzz: ## Actively fuzz ONE target: make fuzz FUZZ=FuzzName [FUZZPKG=./pkg FUZZTIME=1m]
 	@if [ -z "$(FUZZ)" ]; then echo ">> set FUZZ=FuzzName (a single fuzz target)"; exit 2; fi
-	$(GO) test -run '^$$' -fuzz '^$(FUZZ)$$' -fuzztime $(FUZZTIME) $(FUZZPKG)
+	@set -euo pipefail; \
+	pkg='$(FUZZPKG)'; \
+	if [ "$$pkg" = "./..." ]; then \
+		pkg=""; \
+		for p in $$($(GO) list ./...); do \
+			if $(GO) test -list '^$(FUZZ)$$' $$p 2>/dev/null | grep -E '^$(FUZZ)$$' >/dev/null; then pkg=$$p; break; fi; \
+		done; \
+		if [ -z "$$pkg" ]; then echo ">> no package defines $(FUZZ)"; exit 2; fi; \
+	fi; \
+	echo ">> fuzzing $(FUZZ) ($$pkg) for $(FUZZTIME)"; \
+	$(GO) test -run '^$$' -fuzz '^$(FUZZ)$$' -fuzztime $(FUZZTIME) $$pkg
 
 .PHONY: fuzz-all
 fuzz-all: ## Briefly fuzz every target in the module (used by the nightly workflow)
