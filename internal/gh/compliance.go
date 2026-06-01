@@ -125,7 +125,7 @@ func mapBranchProtection(branch string, p *github.Protection) model.BranchProtec
 
 // FileContent fetches a single file's decoded contents from a repository at the
 // given ref (empty ref = the repository's default branch). It is used to read a
-// repo's .shuck/compliance.yaml when no local copy is available.
+// repo's .github/compliance.yml when no local copy is available.
 func (c *Client) FileContent(ctx context.Context, owner, repo, path, ref string) ([]byte, error) {
 	var opts *github.RepositoryContentGetOptions
 	if ref != "" {

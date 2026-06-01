@@ -1,5 +1,5 @@
 // Package compliance compares a repository's actual GitHub settings against the
-// intended settings declared in its .shuck/compliance.yaml. It does no network
+// intended settings declared in its .github/compliance.yml. It does no network
 // I/O: the gh layer fetches the live settings, this package parses the config
 // and evaluates the two into a model.ComplianceReport for text or JSON output.
 //
@@ -21,7 +21,7 @@ import (
 	"github.com/justanotherspy/shuck/internal/model"
 )
 
-// Config is the parsed .shuck/compliance.yaml: the repository's intended
+// Config is the parsed .github/compliance.yml: the repository's intended
 // settings. Every field is a pointer (or a map), so an omitted key means "do not
 // check this" rather than "expect the zero value".
 type Config struct {
@@ -74,7 +74,7 @@ type BranchConfig struct {
 	RequiredSignatures            *bool     `yaml:"required_signatures"`
 }
 
-// Parse decodes a .shuck/compliance.yaml document. Unknown keys are rejected so
+// Parse decodes a .github/compliance.yml document. Unknown keys are rejected so
 // a typo (which would otherwise silently skip a check) surfaces as an error.
 func Parse(data []byte) (Config, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(data))

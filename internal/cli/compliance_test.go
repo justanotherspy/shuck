@@ -59,11 +59,11 @@ func withStubCompliance(t *testing.T, s *stubCompliance) {
 	t.Cleanup(func() { newComplianceLister = prev })
 }
 
-// writeConfig writes a compliance.yaml into a temp dir and returns its path.
+// writeConfig writes a compliance.yml into a temp dir and returns its path.
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "compliance.yaml")
+	path := filepath.Join(dir, "compliance.yml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestRunComplianceConfigNotFound(t *testing.T) {
 	withStubCompliance(t, &stubCompliance{
 		// gh.FileNotFound falls back to a "404" substring check when the error is
 		// not a typed *github.ErrorResponse, which is what a 404 wraps to.
-		fileErr: errors.New("get .shuck/compliance.yaml from o/r: GET https://api.github.com/...: 404 Not Found"),
+		fileErr: errors.New("get .github/compliance.yml from o/r: GET https://api.github.com/...: 404 Not Found"),
 	})
 	var out, errb bytes.Buffer
 	code := runCompliance([]string{"o/r"}, &out, &errb)

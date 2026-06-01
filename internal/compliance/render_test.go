@@ -11,7 +11,7 @@ import (
 
 func sampleReport() *model.ComplianceReport {
 	return &model.ComplianceReport{
-		Owner: "justanotherspy", Repo: "shuck", ConfigSource: ".shuck/compliance.yaml",
+		Owner: "justanotherspy", Repo: "shuck", ConfigSource: ".github/compliance.yml",
 		Checks: []model.ComplianceCheck{
 			{Category: "repository", Setting: "allow_merge_commit", Expected: "false", Actual: "false", Status: model.CompliancePass},
 			{Category: "repository", Setting: "has_wiki", Expected: "false", Actual: "true", Status: model.ComplianceFail},
@@ -28,7 +28,7 @@ func TestRenderContainsKeyFields(t *testing.T) {
 	out := b.String()
 	for _, want := range []string{
 		"justanotherspy/shuck — compliance",
-		"config: .shuck/compliance.yaml",
+		"config: .github/compliance.yml",
 		"Summary: 4 checked — 2 pass, 1 fail, 1 skipped",
 		"Repository:",
 		"✓ allow_merge_commit = false",
@@ -101,7 +101,7 @@ func TestEncodeJSONShapeAndCounts(t *testing.T) {
 	if doc.Repo.Owner != "justanotherspy" || doc.Repo.Repo != "shuck" {
 		t.Errorf("repo = %+v", doc.Repo)
 	}
-	if doc.ConfigSource != ".shuck/compliance.yaml" {
+	if doc.ConfigSource != ".github/compliance.yml" {
 		t.Errorf("config_source = %q", doc.ConfigSource)
 	}
 	if len(doc.Checks) != 4 {

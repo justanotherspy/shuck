@@ -106,9 +106,9 @@ filters which alerts to show (open by default; open|all|dismissed|fixed|resolved
 Requires a GitHub token in GITHUB_TOKEN or GH_TOKEN in the server's environment;
 private-repo security data needs the security_events (or repo) scope.`
 
-const checkComplianceDesc = `Check a repository's settings against its .shuck/compliance.yaml.
+const checkComplianceDesc = `Check a repository's settings against its .github/compliance.yml.
 
-The .shuck/compliance.yaml file declares a repo's intended settings (merge
+The .github/compliance.yml file declares a repo's intended settings (merge
 options, features, security, branch protection). shuck reads the repo's live
 settings via the GitHub API and returns, per declared setting, whether the repo
 matches — pass, fail (drift), or skipped (the setting could not be read with the
@@ -371,7 +371,7 @@ func prTargetArgs(url, repo string, pr int) ([]string, error) {
 type checkComplianceInput struct {
 	Repo   string `json:"repo,omitempty" jsonschema:"GitHub repository as owner/repo. If omitted, it is inferred from the local working directory's origin remote."`
 	URL    string `json:"url,omitempty" jsonschema:"A github.com/<owner>/<repo>[/...] URL. Takes precedence over repo."`
-	Config string `json:"config,omitempty" jsonschema:"Path to a local compliance config file. If omitted, .shuck/compliance.yaml is fetched from the repo."`
+	Config string `json:"config,omitempty" jsonschema:"Path to a local compliance config file. If omitted, .github/compliance.yml is fetched from the repo."`
 	Ref    string `json:"ref,omitempty" jsonschema:"Git ref (branch/tag/SHA) to fetch the config from when reading it from the repo. Default: the repo's default branch."`
 }
 

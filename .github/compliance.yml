@@ -1,4 +1,4 @@
-# .shuck/compliance.yaml — the definitive, intended settings for this repository.
+# .github/compliance.yml — the definitive, intended settings for this repository.
 #
 # `shuck compliance` reads the repo's live GitHub settings and checks them
 # against this file, so CI can fail when a setting drifts from policy. The file

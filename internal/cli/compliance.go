@@ -16,7 +16,7 @@ import (
 
 // defaultComplianceConfig is the in-repo path shuck reads the intended settings
 // from when --config is not given.
-const defaultComplianceConfig = ".shuck/compliance.yaml"
+const defaultComplianceConfig = ".github/compliance.yml"
 
 // complianceLister is the slice of gh.Client the compliance command needs. It is
 // an interface so tests can stub the network.
@@ -33,26 +33,26 @@ var newComplianceLister = func(token string) complianceLister { return gh.New(to
 
 // ComplianceOptions tunes a compliance check.
 type ComplianceOptions struct {
-	ConfigPath  string // explicit path to a compliance.yaml (overrides discovery)
+	ConfigPath  string // explicit path to a compliance config file (overrides discovery)
 	Ref         string // git ref to fetch a remote config from (default branch when empty)
 	Token       string
-	PreferLocal bool // try the local .shuck/compliance.yaml before fetching from the repo
+	PreferLocal bool // try the local .github/compliance.yml before fetching from the repo
 }
 
-const complianceUsage = `shuck compliance — check a repository's settings against its .shuck/compliance.yaml.
+const complianceUsage = `shuck compliance — check a repository's settings against its .github/compliance.yml.
 
 Usage:
   shuck compliance                 the repo of the local working directory
   shuck compliance <owner>/<repo>  an explicit repository
   shuck compliance <url>           a github.com/<owner>/<repo>[/...] URL
 
-The .shuck/compliance.yaml file is the definitive statement of a repo's intended
+The .github/compliance.yml file is the definitive statement of a repo's intended
 settings (merge options, features, security, branch protection). shuck reads the
 repo's live settings via the GitHub API and reports, per setting, whether they
 match — so a CI job can gate on drift.
 
 Config discovery (override with --config): for the local repo, the checked-out
-.shuck/compliance.yaml is used; for an explicit repo, it is fetched from that
+.github/compliance.yml is used; for an explicit repo, it is fetched from that
 repo (use --ref to pick a branch/tag/SHA). Only the keys the file declares are
 checked. A setting the token cannot read (branch protection and security need
 admin/repo access) is reported as skipped, never a silent pass.
