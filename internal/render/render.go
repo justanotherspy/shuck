@@ -77,19 +77,24 @@ func writeJob(w io.Writer, job model.JobResult) {
 	for _, s := range job.Steps {
 		fmt.Fprintf(w, "  %d. %s (%s)\n", s.Number, s.Name, stepState(s))
 	}
+	cancelled := model.IsCancelledConclusion(job.Conclusion)
 	for _, fs := range job.FailedSteps {
-		writeFailedStep(w, fs)
+		writeFailedStep(w, fs, cancelled)
 	}
 }
 
-func writeFailedStep(w io.Writer, fs model.FailedStep) {
-	fmt.Fprintf(w, "\n  ▸ Step %d — %s (failed)\n", fs.Number, fs.Name)
+func writeFailedStep(w io.Writer, fs model.FailedStep, cancelled bool) {
+	verdict, logsLabel := "failed", "error logs:"
+	if cancelled {
+		verdict, logsLabel = "cancelled", "logs before cancellation:"
+	}
+	fmt.Fprintf(w, "\n  ▸ Step %d — %s (%s)\n", fs.Number, fs.Name, verdict)
 	if fs.Command != "" {
 		fmt.Fprintln(w, "    Step command:")
 		fmt.Fprintf(w, "      * %s:\n", commandLabel(fs.Kind))
 		writeFenced(w, "        ", fs.Command)
 	}
-	fmt.Fprintln(w, "    error logs:")
+	fmt.Fprintf(w, "    %s\n", logsLabel)
 	writeFenced(w, "      ", fs.Excerpt)
 }
 
@@ -107,12 +112,27 @@ func writeOther(w io.Writer, checks []model.OtherCheck) {
 	}
 }
 
-func writeCancelled(w io.Writer, jobs []model.CancelledJob) {
+// writeCancelled renders the cancelled jobs. Jobs whose logs were drilled show
+// the interrupted step and its last output like a failed job; jobs with no log
+// detail (e.g. cancelled before the runner started) fall back to a one-line
+// listing so they are still not silently dropped.
+func writeCancelled(w io.Writer, jobs []model.JobResult) {
 	if len(jobs) == 0 {
 		return
 	}
-	fmt.Fprintln(w, "\nCancelled (no logs drilled):")
+	var bare []model.JobResult
 	for _, j := range jobs {
+		if len(j.FailedSteps) > 0 {
+			writeJob(w, j)
+		} else {
+			bare = append(bare, j)
+		}
+	}
+	if len(bare) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "\nCancelled (no logs available):")
+	for _, j := range bare {
 		if j.WorkflowName != "" {
 			fmt.Fprintf(w, "  ⊘ %s (%s)\n", j.Name, j.WorkflowName)
 		} else {

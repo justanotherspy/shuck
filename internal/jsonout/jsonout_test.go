@@ -21,9 +21,17 @@ func TestEncodeGolden(t *testing.T) {
 				Command: "go test ./...", Excerpt: "--- FAIL",
 			}},
 		}},
-		CancelledJobs: []model.CancelledJob{{Name: "e2e", Conclusion: "cancelled", WorkflowName: "CI"}},
-		OtherChecks:   []model.OtherCheck{{Name: "lint", Conclusion: "failure", URL: "http://x"}},
-		RunningJobs:   []model.RunningJob{{Name: "deploy", Status: "in_progress", WorkflowName: "CD"}},
+		CancelledJobs: []model.JobResult{{
+			ID: 8, RunID: 9, Name: "e2e", Conclusion: "cancelled",
+			WorkflowName: "CI", WorkflowPath: ".github/workflows/ci.yml",
+			Inspected: true,
+			FailedSteps: []model.FailedStep{{
+				Number: 2, Name: "Run e2e", Kind: model.KindBash,
+				Command: "make e2e", Excerpt: "##[error]The operation was canceled.",
+			}},
+		}},
+		OtherChecks: []model.OtherCheck{{Name: "lint", Conclusion: "failure", URL: "http://x"}},
+		RunningJobs: []model.RunningJob{{Name: "deploy", Status: "in_progress", WorkflowName: "CD"}},
 	}
 
 	want := `{
@@ -64,9 +72,21 @@ func TestEncodeGolden(t *testing.T) {
   ],
   "cancelled_jobs": [
     {
+      "id": 8,
+      "run_id": 9,
       "name": "e2e",
       "conclusion": "cancelled",
-      "workflow_name": "CI"
+      "workflow_name": "CI",
+      "workflow_path": ".github/workflows/ci.yml",
+      "failed_steps": [
+        {
+          "number": 2,
+          "name": "Run e2e",
+          "kind": "bash",
+          "command": "make e2e",
+          "excerpt": "##[error]The operation was canceled."
+        }
+      ]
     }
   ],
   "other_checks": [

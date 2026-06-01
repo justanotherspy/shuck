@@ -48,6 +48,69 @@ func TestBuildFailedStepsAssociatesErrorSection(t *testing.T) {
 	}
 }
 
+// cancelLog is a job that was cancelled mid-test-run: GitHub marks the
+// interrupted step's section with "##[error]The operation was canceled." and
+// the API marks that step (and every queued one after it) "cancelled".
+const cancelLog = `2024-05-01T10:00:00.0000000Z ##[group]Run actions/checkout@v4
+2024-05-01T10:00:00.0000001Z ##[endgroup]
+2024-05-01T10:00:01.0000000Z Synced
+2024-05-01T10:00:02.0000000Z ##[group]Run go test ./...
+2024-05-01T10:00:02.0000001Z go test ./...
+2024-05-01T10:00:02.0000002Z ##[endgroup]
+2024-05-01T10:00:03.0000000Z ok   pkg/a  0.5s
+2024-05-01T10:00:04.0000000Z ##[error]The operation was canceled.
+`
+
+func TestBuildFailedStepsCancelledJob(t *testing.T) {
+	a := &app{opts: logs.DefaultOptions()}
+	job := model.JobResult{
+		Conclusion: "cancelled",
+		Steps: []model.StepOverview{
+			{Number: 1, Name: "Checkout", Conclusion: "success"},
+			{Number: 2, Name: "Run tests", Conclusion: "cancelled"},
+			{Number: 3, Name: "Upload coverage", Conclusion: "cancelled"},
+			{Number: 4, Name: "Notify", Conclusion: "cancelled"},
+		},
+	}
+	fs := a.buildFailedSteps(job, cancelLog)
+
+	// Only the step with an error section is reported; the queued-but-never-run
+	// cancelled steps must not each emit a "(no matching section)" entry.
+	if len(fs) != 1 {
+		t.Fatalf("got %d steps, want 1: %+v", len(fs), fs)
+	}
+	if fs[0].Name != "Run tests" || fs[0].Number != 2 {
+		t.Errorf("step name/number = %q/%d, want Run tests/2", fs[0].Name, fs[0].Number)
+	}
+	if fs[0].Command != "go test ./..." {
+		t.Errorf("command = %q", fs[0].Command)
+	}
+	if !strings.Contains(fs[0].Excerpt, "The operation was canceled.") {
+		t.Errorf("excerpt missing cancellation marker: %q", fs[0].Excerpt)
+	}
+}
+
+func TestBuildFailedStepsCancelledJobNoErrorMarker(t *testing.T) {
+	// A cancelled job whose log carries no ##[error] marker still gets the
+	// whole-log fallback excerpt, named after the interrupted step.
+	a := &app{opts: logs.DefaultOptions()}
+	raw := "2024-05-01T10:00:00.0000000Z ##[group]Run make e2e\n2024-05-01T10:00:00.0000001Z ##[endgroup]\n2024-05-01T10:00:01.0000000Z spinning up fixtures\n"
+	job := model.JobResult{
+		Conclusion: "cancelled",
+		Steps:      []model.StepOverview{{Number: 1, Name: "Run e2e", Conclusion: "cancelled"}},
+	}
+	fs := a.buildFailedSteps(job, raw)
+	if len(fs) != 1 {
+		t.Fatalf("got %d steps, want 1", len(fs))
+	}
+	if fs[0].Name != "Run e2e" {
+		t.Errorf("fallback should use the interrupted step name, got %q", fs[0].Name)
+	}
+	if !strings.Contains(fs[0].Excerpt, "spinning up fixtures") {
+		t.Errorf("fallback excerpt should contain the log body: %q", fs[0].Excerpt)
+	}
+}
+
 func TestBuildFailedStepsFallbackNoErrorMarker(t *testing.T) {
 	a := &app{opts: logs.DefaultOptions()}
 	raw := "2024-05-01T10:00:00.0000000Z ##[group]Run go build\n2024-05-01T10:00:00.0000001Z ##[endgroup]\n2024-05-01T10:00:01.0000000Z some output\n"

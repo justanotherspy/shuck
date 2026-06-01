@@ -145,15 +145,6 @@ type RunningJob struct {
 	WorkflowName string `json:"workflow_name"`
 }
 
-// CancelledJob is a completed job whose run was cancelled. We surface it so it
-// is not silently dropped, but we do not drill its logs: a cancelled job has no
-// genuine failure to extract.
-type CancelledJob struct {
-	Name         string `json:"name"`
-	Conclusion   string `json:"conclusion"`
-	WorkflowName string `json:"workflow_name"`
-}
-
 // RunInfo identifies a workflow-run inspection: shuck was pointed at a run URL
 // (the whole run) or a single-job URL rather than a PR. When a Report's Run is
 // non-nil, render and jsonout show a run-oriented header in place of the PR line
@@ -173,13 +164,16 @@ type RunInfo struct {
 // targets) what we cache. Exactly one of PR / Run is meaningful: Run is non-nil
 // for run/job URL targets, otherwise the report is PR-anchored.
 type Report struct {
-	PR            PR             `json:"pr"`
-	Run           *RunInfo       `json:"run,omitempty"`
-	FailedJobs    []JobResult    `json:"failed_jobs"`
-	CancelledJobs []CancelledJob `json:"cancelled_jobs"`
-	RunningJobs   []RunningJob   `json:"running_jobs"`
-	OtherChecks   []OtherCheck   `json:"other_checks"`
-	Reviews       []Review       `json:"reviews,omitempty"`
+	PR         PR          `json:"pr"`
+	Run        *RunInfo    `json:"run,omitempty"`
+	FailedJobs []JobResult `json:"failed_jobs"`
+	// CancelledJobs are jobs whose run was cancelled. Their logs are drilled
+	// best-effort (a cancelled job's log shows what was running when it was
+	// interrupted), but cancellation alone never flips the exit code.
+	CancelledJobs []JobResult  `json:"cancelled_jobs"`
+	RunningJobs   []RunningJob `json:"running_jobs"`
+	OtherChecks   []OtherCheck `json:"other_checks"`
+	Reviews       []Review     `json:"reviews,omitempty"`
 	// ReviewsFingerprint is a cheap signature of the PR's review state, persisted
 	// so a later run can skip the full review pull when nothing changed.
 	ReviewsFingerprint string `json:"reviews_fingerprint,omitempty"`
@@ -211,7 +205,15 @@ func IsFailureConclusion(conclusion string) bool {
 }
 
 // IsCancelledConclusion reports whether a terminal conclusion is a cancellation.
-// shuck surfaces cancelled jobs in the summary but does not drill their logs.
+// shuck surfaces cancelled jobs and drills their logs best-effort (to show what
+// was interrupted), but cancellation alone never makes the exit code non-zero.
 func IsCancelledConclusion(conclusion string) bool {
 	return conclusion == "cancelled"
+}
+
+// IsDrillableConclusion reports whether a step's conclusion is worth pairing
+// with the log's error sections: a genuine failure, or the cancellation marker
+// GitHub puts on the step that was running when its job was cancelled.
+func IsDrillableConclusion(conclusion string) bool {
+	return IsFailureConclusion(conclusion) || IsCancelledConclusion(conclusion)
 }

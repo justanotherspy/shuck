@@ -20,15 +20,17 @@ const SchemaVersion = 1
 // of pr / run carries the target's head context: run is present (and pr left
 // zero-valued) for run/job URL targets, otherwise the report is PR-anchored.
 type Document struct {
-	SchemaVersion int            `json:"schema_version"`
-	PR            PR             `json:"pr"`
-	Run           *Run           `json:"run,omitempty"`
-	Summary       Summary        `json:"summary"`
-	FailedJobs    []Job          `json:"failed_jobs"`
-	CancelledJobs []CancelledJob `json:"cancelled_jobs"`
-	OtherChecks   []OtherCheck   `json:"other_checks"`
-	RunningJobs   []RunningJob   `json:"running_jobs"`
-	Reviews       []Review       `json:"reviews"`
+	SchemaVersion int     `json:"schema_version"`
+	PR            PR      `json:"pr"`
+	Run           *Run    `json:"run,omitempty"`
+	Summary       Summary `json:"summary"`
+	FailedJobs    []Job   `json:"failed_jobs"`
+	// CancelledJobs share the Job shape: when a cancelled job's logs were
+	// drilled, failed_steps holds the interrupted step and its last output.
+	CancelledJobs []Job        `json:"cancelled_jobs"`
+	OtherChecks   []OtherCheck `json:"other_checks"`
+	RunningJobs   []RunningJob `json:"running_jobs"`
+	Reviews       []Review     `json:"reviews"`
 }
 
 // Run identifies a workflow-run (or single-job) target and its head context. It
@@ -64,7 +66,8 @@ type Summary struct {
 	Reviews     int `json:"reviews"`
 }
 
-// Job is a failed GitHub Actions job and its failing steps.
+// Job is a failed (or cancelled) GitHub Actions job and its failing — or, for a
+// cancelled job, interrupted — steps.
 type Job struct {
 	ID           int64        `json:"id"`
 	RunID        int64        `json:"run_id"`
@@ -89,13 +92,6 @@ type OtherCheck struct {
 	Name       string `json:"name"`
 	Conclusion string `json:"conclusion"`
 	URL        string `json:"url"`
-}
-
-// CancelledJob is a completed job whose run was cancelled (no logs drilled).
-type CancelledJob struct {
-	Name         string `json:"name"`
-	Conclusion   string `json:"conclusion"`
-	WorkflowName string `json:"workflow_name"`
 }
 
 // RunningJob is a job not yet in a terminal state.
@@ -165,7 +161,7 @@ func NewDocument(r *model.Report) Document {
 		},
 		// Initialize as empty (not nil) so each list serializes as [] not null.
 		FailedJobs:    make([]Job, 0, len(r.FailedJobs)),
-		CancelledJobs: make([]CancelledJob, 0, len(r.CancelledJobs)),
+		CancelledJobs: make([]Job, 0, len(r.CancelledJobs)),
 		OtherChecks:   make([]OtherCheck, 0, len(r.OtherChecks)),
 		RunningJobs:   make([]RunningJob, 0, len(r.RunningJobs)),
 		Reviews:       make([]Review, 0, len(r.Reviews)),
@@ -185,33 +181,11 @@ func NewDocument(r *model.Report) Document {
 	}
 
 	for _, j := range r.FailedJobs {
-		job := Job{
-			ID:           j.ID,
-			RunID:        j.RunID,
-			Name:         j.Name,
-			Conclusion:   j.Conclusion,
-			WorkflowName: j.WorkflowName,
-			WorkflowPath: j.WorkflowPath,
-			FailedSteps:  make([]FailedStep, 0, len(j.FailedSteps)),
-		}
-		for _, s := range j.FailedSteps {
-			job.FailedSteps = append(job.FailedSteps, FailedStep{
-				Number:  s.Number,
-				Name:    s.Name,
-				Kind:    string(s.Kind),
-				Command: s.Command,
-				Excerpt: s.Excerpt,
-			})
-		}
-		doc.FailedJobs = append(doc.FailedJobs, job)
+		doc.FailedJobs = append(doc.FailedJobs, newJob(j))
 	}
 
 	for _, j := range r.CancelledJobs {
-		doc.CancelledJobs = append(doc.CancelledJobs, CancelledJob{
-			Name:         j.Name,
-			Conclusion:   j.Conclusion,
-			WorkflowName: j.WorkflowName,
-		})
+		doc.CancelledJobs = append(doc.CancelledJobs, newJob(j))
 	}
 
 	for _, c := range r.OtherChecks {
@@ -264,4 +238,27 @@ func NewDocument(r *model.Report) Document {
 	}
 
 	return doc
+}
+
+// newJob projects a model job (failed or cancelled) onto the stable Job view.
+func newJob(j model.JobResult) Job {
+	job := Job{
+		ID:           j.ID,
+		RunID:        j.RunID,
+		Name:         j.Name,
+		Conclusion:   j.Conclusion,
+		WorkflowName: j.WorkflowName,
+		WorkflowPath: j.WorkflowPath,
+		FailedSteps:  make([]FailedStep, 0, len(j.FailedSteps)),
+	}
+	for _, s := range j.FailedSteps {
+		job.FailedSteps = append(job.FailedSteps, FailedStep{
+			Number:  s.Number,
+			Name:    s.Name,
+			Kind:    string(s.Kind),
+			Command: s.Command,
+			Excerpt: s.Excerpt,
+		})
+	}
+	return job
 }

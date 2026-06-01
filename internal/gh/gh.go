@@ -86,9 +86,9 @@ func (c *Client) FindOpenPR(ctx context.Context, owner, repo, headOwner, branch 
 }
 
 // ListJobs returns the failed, cancelled, and still-running Actions jobs for a
-// head commit. Failed jobs come back with their step overview populated but no
-// log detail yet; cancelled jobs are listed without log detail.
-func (c *Client) ListJobs(ctx context.Context, owner, repo, headSHA string) (failed []model.JobResult, cancelled []model.CancelledJob, running []model.RunningJob, err error) {
+// head commit. Failed and cancelled jobs come back with their step overview
+// populated but no log detail yet; the caller drills the logs.
+func (c *Client) ListJobs(ctx context.Context, owner, repo, headSHA string) (failed, cancelled []model.JobResult, running []model.RunningJob, err error) {
 	runs, err := c.listRuns(ctx, owner, repo, headSHA)
 	if err != nil {
 		return nil, nil, nil, err
@@ -111,12 +111,12 @@ func (c *Client) ListJobs(ctx context.Context, owner, repo, headSHA string) (fai
 // classifies every job in the run. It also returns the run's head context for
 // the report header. Non-Actions checks do not apply to a run, so none are
 // returned.
-func (c *Client) RunReport(ctx context.Context, owner, repo string, runID, jobID int64) (model.RunInfo, []model.JobResult, []model.CancelledJob, []model.RunningJob, error) {
+func (c *Client) RunReport(ctx context.Context, owner, repo string, runID, jobID int64) (info model.RunInfo, failed, cancelled []model.JobResult, running []model.RunningJob, err error) {
 	run, _, err := c.gh.Actions.GetWorkflowRunByID(ctx, owner, repo, runID)
 	if err != nil {
 		return model.RunInfo{}, nil, nil, nil, fmt.Errorf("get run %d for %s/%s: %w", runID, owner, repo, err)
 	}
-	info := model.RunInfo{
+	info = model.RunInfo{
 		Owner:        owner,
 		Repo:         repo,
 		RunID:        runID,
@@ -138,13 +138,14 @@ func (c *Client) RunReport(ctx context.Context, owner, repo string, runID, jobID
 		return info, nil, nil, nil, err
 	}
 
-	failed, cancelled, running := classifyJobs(run, jobs)
+	failed, cancelled, running = classifyJobs(run, jobs)
 	return info, failed, cancelled, running, nil
 }
 
-// classifyJobs sorts a run's jobs into the failed (drillable), cancelled, and
-// still-running buckets shuck reports.
-func classifyJobs(run *github.WorkflowRun, jobs []*github.WorkflowJob) (failed []model.JobResult, cancelled []model.CancelledJob, running []model.RunningJob) {
+// classifyJobs sorts a run's jobs into the failed, cancelled, and still-running
+// buckets shuck reports. Failed and cancelled jobs are both drillable: they
+// carry the full step overview and IDs needed to download their logs.
+func classifyJobs(run *github.WorkflowRun, jobs []*github.WorkflowJob) (failed, cancelled []model.JobResult, running []model.RunningJob) {
 	for _, job := range jobs {
 		if job.GetStatus() != "completed" {
 			running = append(running, model.RunningJob{
@@ -158,11 +159,7 @@ func classifyJobs(run *github.WorkflowRun, jobs []*github.WorkflowJob) (failed [
 		case model.IsFailureConclusion(job.GetConclusion()):
 			failed = append(failed, jobResult(run, job))
 		case model.IsCancelledConclusion(job.GetConclusion()):
-			cancelled = append(cancelled, model.CancelledJob{
-				Name:         job.GetName(),
-				Conclusion:   job.GetConclusion(),
-				WorkflowName: job.GetWorkflowName(),
-			})
+			cancelled = append(cancelled, jobResult(run, job))
 		}
 	}
 	return failed, cancelled, running
