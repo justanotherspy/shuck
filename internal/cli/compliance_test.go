@@ -174,6 +174,200 @@ func TestRunComplianceRepoUnreadable(t *testing.T) {
 	}
 }
 
+// discoverStub returns a stub with fully readable live settings, suitable for
+// exercising `shuck compliance discover`.
+func discoverStub() *stubCompliance {
+	return &stubCompliance{
+		settings: model.RepoSettings{
+			Visibility:                   "public",
+			DefaultBranch:                "main",
+			AllowSquashMerge:             true,
+			DeleteBranchOnMerge:          true,
+			SecretScanning:               "enabled",
+			SecretScanningPushProtection: "enabled",
+			DependabotSecurityUpdates:    "enabled",
+			SecuritySource:               model.SettingsSource{Status: model.StatusOK},
+		},
+		vuln:    true,
+		vulnSrc: model.SettingsSource{Status: model.StatusOK},
+		branches: map[string]struct {
+			bp  model.BranchProtection
+			src model.SettingsSource
+		}{
+			"main": {
+				bp: model.BranchProtection{
+					Branch: "main", Protected: true,
+					RequiredPullRequestReviews:   true,
+					RequiredApprovingReviewCount: 1,
+					EnforceAdmins:                true,
+				},
+				src: model.SettingsSource{Status: model.StatusOK},
+			},
+		},
+	}
+}
+
+func TestRunComplianceDiscoverCreates(t *testing.T) {
+	withStubCompliance(t, discoverStub())
+	path := filepath.Join(t.TempDir(), ".github", "compliance.yml")
+
+	var out, errb bytes.Buffer
+	code := runCompliance([]string{"discover", "o/r", "--config", path}, &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr=%s", code, errb.String())
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("config not written: %v", err)
+	}
+	for _, want := range []string{
+		"visibility: public",
+		"allow_squash_merge: true",
+		"secret_scanning: true",
+		"vulnerability_alerts: true",
+		"required_approving_review_count: 1",
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("missing %q in written config:\n%s", want, data)
+		}
+	}
+	got := out.String()
+	for _, want := range []string{"o/r — compliance discover", "Created " + path} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in output:\n%s", want, got)
+		}
+	}
+}
+
+func TestRunComplianceDiscoverDefaultPathInLocalRepo(t *testing.T) {
+	withStubCompliance(t, discoverStub())
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	var out, errb bytes.Buffer
+	// Repo is given explicitly so target resolution does not need a git checkout;
+	// the config is still written to the local default path.
+	code := runCompliance([]string{"discover", "o/r"}, &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr=%s", code, errb.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".github", "compliance.yml")); err != nil {
+		t.Fatalf("default config not created: %v", err)
+	}
+}
+
+func TestRunComplianceDiscoverUpdatesDrift(t *testing.T) {
+	withStubCompliance(t, discoverStub())
+	path := writeConfig(t, "# keep this comment\nrepository:\n  allow_squash_merge: false\n  visibility: public\n")
+
+	var out, errb bytes.Buffer
+	code := runCompliance([]string{"discover", "o/r", "--config", path}, &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr=%s", code, errb.String())
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(data)
+	if !strings.Contains(got, "# keep this comment") {
+		t.Errorf("comment lost on update:\n%s", got)
+	}
+	if !strings.Contains(got, "allow_squash_merge: true") {
+		t.Errorf("drifted value not synced:\n%s", got)
+	}
+	if strings.Contains(got, "secret_scanning") {
+		t.Errorf("update must not add undeclared keys:\n%s", got)
+	}
+	if !strings.Contains(out.String(), "~ repository.allow_squash_merge: false → true") {
+		t.Errorf("missing change line in output:\n%s", out.String())
+	}
+}
+
+func TestRunComplianceDiscoverNoDrift(t *testing.T) {
+	withStubCompliance(t, discoverStub())
+	body := "repository:\n  allow_squash_merge: true\n"
+	path := writeConfig(t, body)
+
+	var out, errb bytes.Buffer
+	code := runCompliance([]string{"discover", "o/r", "--config", path}, &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr=%s", code, errb.String())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != body {
+		t.Errorf("an up-to-date config must not be rewritten:\n%s", data)
+	}
+	if !strings.Contains(out.String(), "already matches the live settings") {
+		t.Errorf("missing up-to-date message:\n%s", out.String())
+	}
+}
+
+func TestRunComplianceDiscoverDryRun(t *testing.T) {
+	withStubCompliance(t, discoverStub())
+	path := filepath.Join(t.TempDir(), "compliance.yml")
+
+	var out, errb bytes.Buffer
+	code := runCompliance([]string{"discover", "o/r", "--config", path, "--dry-run"}, &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr=%s", code, errb.String())
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("--dry-run must not write the config (stat err = %v)", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "Would create") || !strings.Contains(got, "visibility: public") {
+		t.Errorf("dry run should preview the config:\n%s", got)
+	}
+}
+
+func TestRunComplianceDiscoverJSON(t *testing.T) {
+	withStubCompliance(t, discoverStub())
+	path := filepath.Join(t.TempDir(), "compliance.yml")
+
+	var out, errb bytes.Buffer
+	code := runCompliance([]string{"discover", "o/r", "--config", path, "--json"}, &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr=%s", code, errb.String())
+	}
+	got := out.String()
+	for _, want := range []string{`"schema_version": 1`, `"created": true`, `"up_to_date": false`, `"path": `} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in JSON:\n%s", want, got)
+		}
+	}
+}
+
+func TestRunComplianceDiscoverInvalidExisting(t *testing.T) {
+	withStubCompliance(t, discoverStub())
+	path := writeConfig(t, "repository:\n  allow_squash_merg: true\n") // typo'd key
+
+	var out, errb bytes.Buffer
+	code := runCompliance([]string{"discover", "o/r", "--config", path}, &out, &errb)
+	if code != 2 {
+		t.Fatalf("a typo'd existing config should be an operational error (2), got %d", code)
+	}
+}
+
+func TestRunComplianceDiscoverRepoUnreadable(t *testing.T) {
+	withStubCompliance(t, &stubCompliance{settingsErr: context.DeadlineExceeded})
+	path := filepath.Join(t.TempDir(), "compliance.yml")
+
+	var out, errb bytes.Buffer
+	code := runCompliance([]string{"discover", "o/r", "--config", path}, &out, &errb)
+	if code != 2 {
+		t.Fatalf("an unreadable repo should exit 2, got %d", code)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("no config should be written on error")
+	}
+}
+
 func TestRunComplianceSecuritySkipped(t *testing.T) {
 	withStubCompliance(t, &stubCompliance{
 		settings: model.RepoSettings{

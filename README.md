@@ -129,6 +129,7 @@ shuck all [target]          # CI + reviews + security (the default)
 shuck action <owner>/<action>[@<version>]  # (a) resolve an Action to its latest tag + SHA for pinning
 shuck security [owner/repo | url]  # (s) summarize a repo's security alerts (code scanning, secrets, Dependabot)
 shuck compliance [owner/repo | url]  # (c) check a repo's settings against its .github/compliance.yml
+shuck compliance discover [owner/repo]  # snapshot the live settings into .github/compliance.yml
 shuck setup                 # install the shuck skill + CLAUDE.md note for Claude Code
 shuck version [--check]     # print the installed version; --check looks for an update
 shuck upgrade               # download and install the latest release in place
@@ -422,6 +423,32 @@ case); an explicit `owner/repo` fetches `.github/compliance.yml` from the repo
 (use `--ref` for a branch/tag/SHA); `--config` overrides both with a local path.
 The exit code is `0` when compliant, `1` when a setting drifted (for CI gating),
 and `2` on an operational error; `--exit-zero` makes it report-only.
+
+#### Bootstrapping the config: `shuck compliance discover`
+
+Don't write the config by hand — `shuck compliance discover [owner/repo | url]`
+reads the repository's live settings (general, security, and the default
+branch's protection) and writes them to the local `.github/compliance.yml`:
+
+```sh
+shuck compliance discover              # snapshot the local repo's live settings
+shuck compliance discover owner/repo   # snapshot an explicit repo's settings
+shuck compliance discover --dry-run    # preview without writing
+shuck compliance discover --json       # the stable JSON document
+```
+
+- **No config yet** → a complete snapshot of every readable setting is created
+  (commit it, trim it down to what you care about, and gate CI with
+  `shuck compliance`).
+- **Config exists** → its declared keys are kept exactly as-is — partial configs
+  stay partial — but each declared value that drifted from the live settings is
+  updated in place. Comments and key order are preserved.
+- **Config up to date** → nothing is written.
+
+Settings the token cannot read (security and branch protection need
+admin/`repo` access) are omitted from a new config and left untouched in an
+existing one, with a note explaining why. The exit code is `0` on success
+(created, updated, or already up to date) and `2` on an operational error.
 
 ### How log extraction works
 

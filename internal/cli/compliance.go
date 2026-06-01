@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/justanotherspy/shuck/internal/compliance"
 	"github.com/justanotherspy/shuck/internal/gh"
@@ -45,6 +46,7 @@ Usage:
   shuck compliance                 the repo of the local working directory
   shuck compliance <owner>/<repo>  an explicit repository
   shuck compliance <url>           a github.com/<owner>/<repo>[/...] URL
+  shuck compliance discover [...]  snapshot the live settings into .github/compliance.yml
 
 The .github/compliance.yml file is the definitive statement of a repo's intended
 settings (merge options, features, security, branch protection). shuck reads the
@@ -66,8 +68,13 @@ and security settings requires a token with the repo scope and admin access.
 Flags:
 `
 
-// runCompliance implements `shuck compliance [owner/repo | url]`.
+// runCompliance implements `shuck compliance [owner/repo | url]` and dispatches
+// the `discover` sub-subcommand.
 func runCompliance(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "discover" {
+		return runComplianceDiscover(args[1:], stdout, stderr)
+	}
+
 	fs := flag.NewFlagSet("shuck compliance", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
@@ -221,4 +228,180 @@ func refSuffix(ref string) string {
 		return ""
 	}
 	return " @" + ref
+}
+
+const complianceDiscoverUsage = `shuck compliance discover — snapshot a repo's live settings into .github/compliance.yml.
+
+Usage:
+  shuck compliance discover                 the repo of the local working directory
+  shuck compliance discover <owner>/<repo>  an explicit repository
+  shuck compliance discover <url>           a github.com/<owner>/<repo>[/...] URL
+
+Reads the repository's live settings (general, security, and the default
+branch's protection) via the GitHub API and writes them to the local
+.github/compliance.yml so "shuck compliance" can gate on drift from then on:
+
+  - no config yet      a full snapshot of every readable setting is created
+  - config exists      only the keys it already declares are kept; each declared
+                       value that drifted from the live settings is updated in
+                       place (comments and key order are preserved)
+  - config up to date  nothing is written
+
+Settings the token cannot read (security and branch protection need admin
+access) are omitted from a new config and left untouched in an existing one.
+
+Exit: 0 on success (created, updated, or already up to date), 2 on an
+operational error.
+
+Auth: set GITHUB_TOKEN (or GH_TOKEN), or pass --token. Reading branch protection
+and security settings requires a token with the repo scope and admin access.
+
+Flags:
+`
+
+// runComplianceDiscover implements `shuck compliance discover [owner/repo | url]`.
+func runComplianceDiscover(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("shuck compliance discover", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var (
+		jsonOut bool
+		token   string
+		config  string
+		dryRun  bool
+	)
+	fs.BoolVar(&jsonOut, "json", false, "emit machine-readable JSON instead of the text summary")
+	fs.StringVar(&token, "token", "", "GitHub token (overrides GITHUB_TOKEN/GH_TOKEN)")
+	fs.StringVar(&config, "config", "", "path of the compliance config to create or update (default: "+defaultComplianceConfig+")")
+	fs.BoolVar(&dryRun, "dry-run", false, "print the resulting config without writing it")
+	fs.Usage = func() {
+		fmt.Fprint(stderr, complianceDiscoverUsage)
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(permuteArgs(fs, args)); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+
+	owner, repo, err := target.ResolveRepo(fs.Args())
+	if err != nil {
+		fmt.Fprintln(stderr, "shuck:", err)
+		return 2
+	}
+
+	disc, err := ComplianceDiscover(context.Background(), owner, repo, ComplianceDiscoverOptions{
+		ConfigPath: config,
+		Token:      token,
+		DryRun:     dryRun,
+	})
+	if err != nil {
+		fmt.Fprintln(stderr, "shuck:", err)
+		return 2
+	}
+
+	if jsonOut {
+		if err := compliance.EncodeDiscoveryJSON(stdout, disc); err != nil {
+			fmt.Fprintln(stderr, "shuck:", err)
+			return 2
+		}
+		return 0
+	}
+	compliance.RenderDiscovery(stdout, disc, dryRun)
+	return 0
+}
+
+// ComplianceDiscoverOptions tunes a compliance discovery.
+type ComplianceDiscoverOptions struct {
+	ConfigPath string // where to read/write the config (default: .github/compliance.yml)
+	Token      string
+	DryRun     bool // build the config but do not write it
+}
+
+// ComplianceDiscover snapshots a repository's live settings into a local
+// compliance config: it creates a full config when none exists, or syncs the
+// declared keys of an existing one to the live values. It is exported so other
+// front-ends can share the CLI's pipeline. The file is written unless DryRun is
+// set (or the existing config is already up to date).
+func ComplianceDiscover(ctx context.Context, owner, repo string, opts ComplianceDiscoverOptions) (*compliance.Discovery, error) {
+	token := opts.Token
+	if token == "" {
+		token = tokenFromEnv()
+	}
+	lister := newComplianceLister(token)
+
+	path := opts.ConfigPath
+	if path == "" {
+		path = defaultComplianceConfig
+	}
+
+	existing, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("read %s: %w", path, err)
+		}
+		existing = nil
+	}
+	// Validate an existing config up front so a typo'd key fails with a parse
+	// error rather than being silently dropped by the update.
+	var existingCfg compliance.Config
+	if existing != nil {
+		if existingCfg, err = compliance.Parse(existing); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+	}
+
+	settings, err := lister.RepoSettings(ctx, owner, repo)
+	if err != nil {
+		return nil, err
+	}
+	vulnAlerts, vulnSource := lister.VulnerabilityAlertsEnabled(ctx, owner, repo)
+
+	actual := compliance.Actual{
+		Settings:   settings,
+		VulnAlerts: vulnAlerts,
+		VulnSource: vulnSource,
+		Branches:   make(map[string]compliance.Branch),
+	}
+
+	// Discover protection for the default branch plus every branch the existing
+	// config already declares.
+	branches := map[string]bool{}
+	if settings.DefaultBranch != "" {
+		branches[settings.DefaultBranch] = true
+	}
+	for name := range existingCfg.BranchProtection {
+		branches[name] = true
+	}
+	for name := range branches {
+		bp, src := lister.BranchProtectionSettings(ctx, owner, repo, name)
+		actual.Branches[name] = compliance.Branch{Protection: bp, Source: src}
+	}
+
+	disc, err := compliance.Discover(existing, actual)
+	if err != nil {
+		return nil, err
+	}
+	disc.Owner, disc.Repo, disc.Path = owner, repo, path
+
+	if !opts.DryRun && disc.Changed {
+		if err := writeComplianceConfig(path, disc.Data); err != nil {
+			return nil, err
+		}
+	}
+	return &disc, nil
+}
+
+// writeComplianceConfig writes the config, creating its directory (.github)
+// when needed.
+func writeComplianceConfig(path string, data []byte) error {
+	if dir := filepath.Dir(path); dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("create %s: %w", dir, err)
+		}
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil { //nolint:gosec // a committed, world-readable config file
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
 }

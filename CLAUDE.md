@@ -46,12 +46,12 @@ errors → render → update cache.
 | Package | Responsibility |
 | --- | --- |
 | `main.go` | Thin entry; dispatches the `mcp` and `setup` subcommands, else calls `cli.Run`. Holds the `go:embed` of the plugin's `SKILL.md` that `setup` installs. |
-| `internal/cli` | Flag parsing + pipeline orchestration; the `app.drill` / `app.buildFailedSteps` logic that pairs failed API steps with error log sections. Subcommands `logs` (CI only, `--run` for a single run), `reviews` (reviews only), `all` (CI + reviews + security — also the bare-`shuck` default, see `inspectAll`/`emitAll` in `all.go`), plus `action` / `image` / `security` / `compliance` / `version` / `upgrade`. Single-letter aliases (`l`/`r`/`a`/`s`/`c`/`i`) resolve via `subcommandAliases`. The exported `cli.Inspect` / `cli.Security` / `cli.Compliance` / `cli.Action` / `cli.Image` / `cli.Images` cores back both the CLI and the MCP server. |
+| `internal/cli` | Flag parsing + pipeline orchestration; the `app.drill` / `app.buildFailedSteps` logic that pairs failed API steps with error log sections. Subcommands `logs` (CI only, `--run` for a single run), `reviews` (reviews only), `all` (CI + reviews + security — also the bare-`shuck` default, see `inspectAll`/`emitAll` in `all.go`), plus `action` / `image` / `security` / `compliance` (with its `discover` sub-subcommand) / `version` / `upgrade`. Single-letter aliases (`l`/`r`/`a`/`s`/`c`/`i`) resolve via `subcommandAliases`. The exported `cli.Inspect` / `cli.Security` / `cli.Compliance` / `cli.ComplianceDiscover` / `cli.Action` / `cli.Image` / `cli.Images` cores back both the CLI and the MCP server. |
 | `internal/action` | `shuck action`: parse an `owner/action[@version]` ref and pick the latest matching semver tag from a repo's tag list (pure selection in `Select`; stable preferred, prerelease only as a fallback), then render the SHA-pin line / JSON. The stable JSON shape is exported as `action.Document` (`NewDocument` projects it; `EncodeJSON` reuses it) so the MCP `inspect_action` tool returns typed output. The semver parsing/ordering is shared with `internal/semver`. |
 | `internal/image` | `shuck image`: parse an image ref (`[ghcr.io/]owner/name[:tag]`, or a bare `owner` to list all) and pick the latest matching version + manifest digest (pure selection in `Select`, sharing `internal/semver`; non-semver tags fall back to most-recent). Renders the digest-pin line / JSON; the stable shapes `image.Document` (single resolve) and `image.ListDocument` (list-all) back the MCP `inspect_images` tool. |
 | `internal/semver` | Tiny dependency-free semver slice (`Parse` / `Compare` / `Constraint.Matches`) shared by `action` and `image` for "pick the latest matching tag". |
 | `internal/security` | `shuck security`: sort + render a `model.SecurityReport` (code scanning, secret scanning, Dependabot alerts) to text / versioned JSON. Pure presentation; the gh layer fetches, the `cli.Security` core assembles. |
-| `internal/compliance` | `shuck compliance`: parse a `.github/compliance.yml` (`Parse`, strict / unknown-key-rejecting via yaml.v3) into a `Config`, then `Evaluate` it against the live settings the gh layer fetched (`Actual`) into a `model.ComplianceReport` — one pass/fail/skipped check per declared key. Renders text / versioned JSON (`Document`). Pure logic; the `cli.Compliance` core does the I/O. |
+| `internal/compliance` | `shuck compliance`: parse a `.github/compliance.yml` (`Parse`, strict / unknown-key-rejecting via yaml.v3) into a `Config`, then `Evaluate` it against the live settings the gh layer fetched (`Actual`) into a `model.ComplianceReport` — one pass/fail/skipped check per declared key. Renders text / versioned JSON (`Document`). Also the inverse, `shuck compliance discover` (`discover.go`): `Discover` snapshots the live settings into config bytes — a full `FromActual` snapshot when no config exists, or an in-place yaml.Node patch of an existing config's drifted declared keys (comments preserved). Pure logic; the `cli.Compliance` / `cli.ComplianceDiscover` cores do the I/O. |
 | `internal/release` | Self-update: resolve the latest GitHub release, download + checksum-verify the matching archive, and replace the running binary in place. Backs `shuck version --check` / `shuck upgrade`. |
 | `internal/setup` | `shuck setup`: install the embedded skill into `~/.claude/skills/shuck`, add a managed note to the user's `CLAUDE.md`, and optionally register the MCP at user scope (`claude mcp add`). The skill is `go:embed`-ed from the plugin in `main.go`, so the standalone install and the marketplace stay in sync. |
 | `internal/target` | Resolve owner/repo/PR from args or the local repo (via go-git). |
@@ -148,6 +148,19 @@ errors → render → update cache.
   **uncached** (a few cheap reads, and the config is usually local). Exit is `0`
   when compliant, `1` on drift (CI gating, suppress with `--exit-zero`), `2` on an
   operational error.
+- **Compliance discover** (`shuck compliance discover`): the inverse direction —
+  `cli.ComplianceDiscover` snapshots the **live settings into the local config**.
+  No config ⇒ `compliance.FromActual` generates a complete one (every readable
+  setting: repository, security, the default branch's protection); existing
+  config ⇒ `compliance.Discover` keeps **only its declared keys** (partial stays
+  partial) and patches drifted values **in place via the yaml.Node tree**
+  (`patchYAML`), preserving comments and key order. Unreadable settings are
+  omitted (new) / left untouched (existing), reported as `Notes`. An up-to-date
+  config is not rewritten. The pure logic (`Discover`/`FromActual`/`diffConfig`)
+  lives in `internal/compliance/discover.go`; `cli.ComplianceDiscover` does the
+  I/O (read/write the file, fetch live settings via the same `complianceLister`).
+  `--dry-run` previews, `--json` emits `compliance.DiscoveryDocument`. Exit is `0`
+  on success (created / updated / already up to date), `2` on an operational error.
 
 ## Conventions
 

@@ -119,3 +119,112 @@ func TestEncodeJSONEmptyChecksNotNull(t *testing.T) {
 		t.Errorf("checks should serialize as [], got:\n%s", b.String())
 	}
 }
+
+func sampleDiscovery() *Discovery {
+	return &Discovery{
+		Owner: "justanotherspy", Repo: "shuck", Path: ".github/compliance.yml",
+		Data: []byte("repository:\n  has_wiki: false\n"),
+	}
+}
+
+func TestRenderDiscoveryCreated(t *testing.T) {
+	d := sampleDiscovery()
+	d.Created, d.Changed = true, true
+	d.Notes = []string{"security settings omitted: needs admin"}
+
+	var b bytes.Buffer
+	RenderDiscovery(&b, d, false)
+	got := b.String()
+	for _, want := range []string{
+		"justanotherspy/shuck — compliance discover",
+		"Created .github/compliance.yml from the live settings:",
+		"– security settings omitted: needs admin",
+		"has_wiki: false", // the new file is shown
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+func TestRenderDiscoveryUpdated(t *testing.T) {
+	d := sampleDiscovery()
+	d.Changed = true
+	d.Changes = []Change{{Category: "repository", Setting: "has_wiki", From: "true", To: "false"}}
+
+	var b bytes.Buffer
+	RenderDiscovery(&b, d, false)
+	got := b.String()
+	for _, want := range []string{
+		"Updated .github/compliance.yml — 1 declared setting(s) synced to the live values:",
+		"~ repository.has_wiki: true → false",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "has_wiki: false\n") && strings.Contains(got, "repository:\n") {
+		t.Errorf("a non-dry-run update should not dump the file contents:\n%s", got)
+	}
+}
+
+func TestRenderDiscoveryUpToDate(t *testing.T) {
+	var b bytes.Buffer
+	RenderDiscovery(&b, sampleDiscovery(), false)
+	if !strings.Contains(b.String(), "already matches the live settings") {
+		t.Errorf("missing up-to-date message:\n%s", b.String())
+	}
+}
+
+func TestRenderDiscoveryDryRun(t *testing.T) {
+	d := sampleDiscovery()
+	d.Changed = true
+	d.Changes = []Change{{Category: "repository", Setting: "has_wiki", From: "true", To: "false"}}
+
+	var b bytes.Buffer
+	RenderDiscovery(&b, d, true)
+	got := b.String()
+	if !strings.Contains(got, "Would update") {
+		t.Errorf("dry run should use the conditional verb:\n%s", got)
+	}
+	if !strings.Contains(got, "has_wiki: false") {
+		t.Errorf("dry run should preview the file:\n%s", got)
+	}
+}
+
+func TestEncodeDiscoveryJSON(t *testing.T) {
+	d := sampleDiscovery()
+	d.Changed = true
+	d.Changes = []Change{{Category: "repository", Setting: "has_wiki", From: "true", To: "false"}}
+
+	var b bytes.Buffer
+	if err := EncodeDiscoveryJSON(&b, d); err != nil {
+		t.Fatalf("EncodeDiscoveryJSON: %v", err)
+	}
+	var doc DiscoveryDocument
+	if err := json.Unmarshal(b.Bytes(), &doc); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, b.String())
+	}
+	if doc.SchemaVersion != SchemaVersion || doc.Created || !doc.Updated || doc.UpToDate {
+		t.Errorf("doc flags wrong: %+v", doc)
+	}
+	if len(doc.Changes) != 1 || doc.Changes[0].Setting != "has_wiki" {
+		t.Errorf("changes = %+v", doc.Changes)
+	}
+	if doc.Notes == nil {
+		t.Error("notes should serialize as [], not null")
+	}
+	if !strings.Contains(doc.Config, "has_wiki: false") {
+		t.Errorf("config contents missing: %q", doc.Config)
+	}
+}
+
+func TestNewDiscoveryDocumentUpToDate(t *testing.T) {
+	doc := NewDiscoveryDocument(sampleDiscovery())
+	if doc.Created || doc.Updated || !doc.UpToDate {
+		t.Errorf("doc flags wrong: %+v", doc)
+	}
+	if doc.Changes == nil {
+		t.Error("changes should serialize as [], not null")
+	}
+}
