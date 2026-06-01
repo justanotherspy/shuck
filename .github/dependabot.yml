@@ -7,6 +7,8 @@ updates:
     labels:
       - dependencies
       - go
+    assignees:
+      - justanotherspy
     groups:
       go-dependencies:
         patterns:
@@ -19,6 +21,8 @@ updates:
     labels:
       - dependencies
       - github-actions
+    assignees:
+      - justanotherspy
     groups:
       github-actions:
         patterns:
@@ -31,6 +35,8 @@ updates:
     labels:
       - dependencies
       - docker
+    assignees:
+      - justanotherspy
     groups:
       docker:
         patterns:
@@ -45,6 +51,8 @@ updates:
     labels:
       - dependencies
       - github-actions
+    assignees:
+      - justanotherspy
     groups:
       pip:
         patterns:
@@ -58,6 +66,8 @@ updates:
     labels:
       - dependencies
       - github-actions
+    assignees:
+      - justanotherspy
     groups:
       npm:
         patterns:
