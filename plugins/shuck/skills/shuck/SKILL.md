@@ -156,7 +156,9 @@ results programmatically.**
   `{failed, cancelled, running, other_failed}`, `failed_jobs[]`
   `{id, run_id, name, conclusion, workflow_name, workflow_path, failed_steps[]}`
   where each step is `{number, name, kind, command, excerpt}`, plus
-  `cancelled_jobs[]`, `other_checks[]`, `running_jobs[]`, and `reviews[]`.
+  `cancelled_jobs[]` (same shape as `failed_jobs[]`; its `failed_steps[]` hold
+  the step that was interrupted by the cancellation and its last output),
+  `other_checks[]`, `running_jobs[]`, and `reviews[]`.
 - `shuck` / `shuck all --json` (a PR target) wrap that in a **combined envelope**:
   `{schema_version, inspection: <the document above>, security?: <the security
   document>, security_error?}`. The `security` half is omitted (and

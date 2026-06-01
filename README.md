@@ -26,8 +26,10 @@ Given a PR, `shuck`:
 4. Downloads only those jobs' logs and extracts the relevant error lines.
 5. Lists non-Actions failures (external checks / commit statuses) by name — no
    logs are available for those.
-6. Surfaces cancelled jobs and any checks still running, with an upfront
-   `N failed, M cancelled, …` summary so nothing is silently dropped.
+6. Surfaces cancelled jobs — drilling their logs too, so the step that was
+   interrupted (and what it was doing) is visible — and any checks still
+   running, with an upfront `N failed, M cancelled, …` summary so nothing is
+   silently dropped.
 
 A local cache under `~/.cache/shuck` makes repeat runs cheap: it avoids re-downloading
 logs for job attempts it has already inspected on the same commit.
@@ -180,9 +182,10 @@ tolerated too, so a flag mangled by macOS "smart dashes" or a rich-text
 copy-paste (`shuck 42 —full`) still works.
 
 Exit codes: `0` no failing checks · `1` failing checks reported · `2` error.
-Cancelled jobs are reported in the summary but do **not** by themselves set a
-non-zero exit code — cancellation is often deliberate (a superseded run, a
-manual stop), so it stays `0` unless a real failure is also present.
+Cancelled jobs are reported (with the interrupted step's last log output, when
+a log exists) but do **not** by themselves set a non-zero exit code —
+cancellation is often deliberate (a superseded run, a manual stop), so it stays
+`0` unless a real failure is also present.
 
 ### Watching until CI finishes
 

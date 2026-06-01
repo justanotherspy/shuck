@@ -41,7 +41,7 @@ as items land.
 | Exit codes | **Already done** | `Run` returns 0/1/2; `exitFor` keys off `HasFailures()`. Documented in README and the plugin SKILL.md. |
 | `--version` | **Already done** | Added in #13 (`cli.go` defines it). Both `-version` and `--version` work; the agent hit a stale binary. |
 | Multi-job summary | **Done** | `render.writeSummary` prints an upfront `N failed, M cancelled, …` line; `jsonout.Summary` carries the counts. |
-| Cancelled legs | **Done** | `model.IsCancelledConclusion` + a `CancelledJobs` bucket; surfaced in text/JSON, never drilled. Stays exit `0` on its own (cancellation is often deliberate). |
+| Cancelled legs | **Done** | `model.IsCancelledConclusion` + a `CancelledJobs` bucket of full `JobResult`s; drilled best-effort so the interrupted step's last output is shown. Stays exit `0` on its own (cancellation is often deliberate). |
 | In-progress banner | **Done** | `writeSummary` prints a top `⚠ N still running — failures shown may be incomplete` banner when failures coexist with running jobs. |
 | `--watch` | **Done** | `cli.watch` polls `inspectWith` every `--interval` (default 15s) until `Report.IsTerminal()` (no running jobs), then emits with the failure-aware exit code. `--watch-timeout` bounds the wait; Ctrl-C (SIGINT) stops it and prints the latest snapshot. Rejected with `--offline`. |
 | GNU double-dash | **Already works** | Go's `flag` accepts one or two dashes for every flag. No aliases needed. |
@@ -94,8 +94,9 @@ Covered by a flag×target×ordering×dash-style matrix in `cli_test.go`.
    - Ship `excerpt` as a single string first; add `error_blocks[]` (split on
      the omission markers) only if agents ask.
 2. **Cancelled + summary.** — **DONE.**
-   - `model.CancelledJob` + `Report.CancelledJobs`; `gh.ListJobs` now returns a
-     non-drilled cancelled bucket via `model.IsCancelledConclusion`.
+   - `Report.CancelledJobs` is a bucket of full `JobResult`s classified via
+     `model.IsCancelledConclusion`; their logs are drilled best-effort so the
+     interrupted step (and its last output) shows like a failed step.
    - `render.writeSummary` prints an upfront `N failed, M cancelled, …` line; a
      cancelled-only run is no longer mislabelled "all checks passing".
    - JSON gains `summary.cancelled` and a `cancelled_jobs[]` array (additive;

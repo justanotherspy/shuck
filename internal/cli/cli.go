@@ -443,22 +443,11 @@ func (a *app) prReport(ctx context.Context, tgt target.Target, refresh, noCache 
 		// cached raw log and re-parse it under the *current* flags (--full,
 		// --context, --pattern, …) rather than copying stale excerpts. Newly
 		// finished attempts are drilled and their raw log cached for next time.
+		// Cancelled jobs are drilled too: their log shows the step that was
+		// running (and its output) when the job was interrupted.
 		sameCommit := !refresh && !noCache && cached != nil && cached.PR.HeadSHA == pr.HeadSHA
-		for i := range failed {
-			if sameCommit {
-				if raw, ok, _ := cache.LoadJobLog(tgt.Owner, tgt.Repo, number, failed[i].ID, failed[i].RunAttempt); ok {
-					failed[i].FailedSteps = a.buildFailedSteps(failed[i], raw)
-					failed[i].Inspected = true
-					continue
-				}
-			}
-			raw := a.drill(ctx, tgt.Owner, tgt.Repo, &failed[i])
-			if raw != "" && !noCache {
-				if err := cache.SaveJobLog(tgt.Owner, tgt.Repo, number, failed[i].ID, failed[i].RunAttempt, raw); err != nil {
-					fmt.Fprintln(os.Stderr, "shuck: warning: could not cache job log:", err)
-				}
-			}
-		}
+		a.drillJobs(ctx, tgt.Owner, tgt.Repo, number, failed, sameCommit, noCache)
+		a.drillJobs(ctx, tgt.Owner, tgt.Repo, number, cancelled, sameCommit, noCache)
 
 		report.FailedJobs = failed
 		report.CancelledJobs = cancelled
@@ -548,8 +537,8 @@ func loadOffline(tgt target.Target) (*model.Report, error) {
 }
 
 // runReport handles a run/job URL target: it fetches the run's jobs (or a
-// single job) and drills the failed ones for their error logs. Run targets
-// bypass the PR-keyed cache, so logs are always re-downloaded.
+// single job) and drills the failed and cancelled ones for their logs. Run
+// targets bypass the PR-keyed cache, so logs are always re-downloaded.
 func (a *app) runReport(ctx context.Context, tgt target.Target) (*model.Report, error) {
 	info, failed, cancelled, running, err := a.client.RunReport(ctx, tgt.Owner, tgt.Repo, tgt.RunID, tgt.JobID)
 	if err != nil {
@@ -557,6 +546,9 @@ func (a *app) runReport(ctx context.Context, tgt target.Target) (*model.Report, 
 	}
 	for i := range failed {
 		a.drill(ctx, tgt.Owner, tgt.Repo, &failed[i])
+	}
+	for i := range cancelled {
+		a.drill(ctx, tgt.Owner, tgt.Repo, &cancelled[i])
 	}
 	return &model.Report{
 		Run:           &info,
@@ -686,6 +678,27 @@ type app struct {
 	reviewsOnly        bool
 }
 
+// drillJobs fills in each job's log detail: on the same head commit it re-parses
+// the cached raw log under the current extraction flags; otherwise it downloads
+// the log (caching it for next time, unless noCache).
+func (a *app) drillJobs(ctx context.Context, owner, repo string, number int, jobs []model.JobResult, sameCommit, noCache bool) {
+	for i := range jobs {
+		if sameCommit {
+			if raw, ok, _ := cache.LoadJobLog(owner, repo, number, jobs[i].ID, jobs[i].RunAttempt); ok {
+				jobs[i].FailedSteps = a.buildFailedSteps(jobs[i], raw)
+				jobs[i].Inspected = true
+				continue
+			}
+		}
+		raw := a.drill(ctx, owner, repo, &jobs[i])
+		if raw != "" && !noCache {
+			if err := cache.SaveJobLog(owner, repo, number, jobs[i].ID, jobs[i].RunAttempt, raw); err != nil {
+				fmt.Fprintln(os.Stderr, "shuck: warning: could not cache job log:", err)
+			}
+		}
+	}
+}
+
 // drill downloads a failed job's log, extracts its failed steps, and returns the
 // whole raw log so the caller can cache it for local re-parsing. It returns ""
 // when the log could not be downloaded (nothing worth caching).
@@ -693,6 +706,13 @@ func (a *app) drill(ctx context.Context, owner, repo string, job *model.JobResul
 	job.Inspected = true
 	raw, err := a.client.JobLog(ctx, owner, repo, job.ID)
 	if err != nil {
+		// A cancelled job legitimately may have no downloadable log (cancelled
+		// before the runner started, or force-cancelled), so degrade to the
+		// bare listing rather than reporting an error step.
+		if model.IsCancelledConclusion(job.Conclusion) {
+			job.Inspected = false
+			return ""
+		}
 		job.FailedSteps = []model.FailedStep{{
 			Name:    "(logs unavailable)",
 			Excerpt: fmt.Sprintf("could not download logs: %v", err),
@@ -703,15 +723,17 @@ func (a *app) drill(ctx context.Context, owner, repo string, job *model.JobResul
 	return raw
 }
 
-// buildFailedSteps pairs the API's failed steps with the log's error-bearing
-// sections (by order) to recover each failed step's command and error excerpt.
+// buildFailedSteps pairs the API's failed (or interrupted) steps with the log's
+// error-bearing sections (by order) to recover each step's command and error
+// excerpt. For a cancelled job the interrupted step carries an
+// "##[error]The operation was canceled." marker, so the same pairing applies.
 func (a *app) buildFailedSteps(job model.JobResult, raw string) []model.FailedStep {
 	sections := logs.Parse(raw)
 	errSecs := logs.ErrorSections(sections)
 
 	var failedSteps []model.StepOverview
 	for _, s := range job.Steps {
-		if model.IsFailureConclusion(s.Conclusion) {
+		if model.IsDrillableConclusion(s.Conclusion) {
 			failedSteps = append(failedSteps, s)
 		}
 	}
@@ -730,6 +752,13 @@ func (a *app) buildFailedSteps(job model.JobResult, raw string) []model.FailedSt
 	}
 
 	n := max(len(errSecs), len(failedSteps))
+	if model.IsCancelledConclusion(job.Conclusion) {
+		// A cancelled job often marks every not-yet-run step "cancelled", but
+		// only the step that was actually interrupted has an error section.
+		// Cap at the sections found so the queued steps don't each emit a
+		// noisy "(no matching error log section found)" entry.
+		n = len(errSecs)
+	}
 	out := make([]model.FailedStep, 0, n)
 	for i := range n {
 		fs := model.FailedStep{Name: "(unnamed step)"}

@@ -39,8 +39,8 @@ Always run `make test` and `make lint` before pushing; CI runs both.
 ## Architecture
 
 The pipeline is: resolve target → load/validate cache → fetch checks (cheap
-metadata) → drill only new failed jobs for logs → parse → extract errors →
-render → update cache.
+metadata) → drill only new failed/cancelled jobs for logs → parse → extract
+errors → render → update cache.
 
 | Package | Responsibility |
 | --- | --- |
@@ -67,6 +67,12 @@ render → update cache.
   API steps are paired with `##[error]`-bearing log sections by order, with a
   whole-log fallback when no error marker is present. Cover changes here with
   fixtures in `internal/logs/testdata`.
+- **Cancelled jobs are drilled too** (best-effort): GitHub writes
+  `##[error]The operation was canceled.` into the interrupted step's section, so
+  the same pairing recovers what was running when the job was cancelled. The
+  step-count is capped at the error sections found (queued steps are also marked
+  "cancelled" by the API but have no section), a missing log degrades to a bare
+  listing instead of an error step, and cancellation never flips the exit code.
 - **Caching is advisory**: cheap metadata (head SHA, run/job listing, reviews
   fingerprint) is always re-validated. On the same head commit a job's **whole raw
   log is cached** (`cache.SaveJobLog`/`LoadJobLog`, keyed by `(job id, run

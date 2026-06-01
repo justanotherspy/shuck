@@ -22,9 +22,24 @@ func TestReportWithFailure(t *testing.T) {
 				Number: 2, Name: "Run tests", Command: "go test ./...", Kind: model.KindBash, Excerpt: "--- FAIL: TestX",
 			}},
 		}},
-		CancelledJobs: []model.CancelledJob{{Name: "e2e", Conclusion: "cancelled", WorkflowName: "CI"}},
-		OtherChecks:   []model.OtherCheck{{Name: "codecov/project", Conclusion: "failure", URL: "https://codecov.example"}},
-		RunningJobs:   []model.RunningJob{{Name: "integration", Status: "in_progress"}},
+		// One drilled cancelled job (interrupted step recovered from its log) and
+		// one with no log detail (falls back to the bare listing).
+		CancelledJobs: []model.JobResult{
+			{
+				Name: "e2e", Conclusion: "cancelled", WorkflowName: "CI", WorkflowPath: ".github/workflows/ci.yml",
+				Steps: []model.StepOverview{
+					{Number: 1, Name: "Set up job", Conclusion: "success"},
+					{Number: 2, Name: "Run e2e", Conclusion: "cancelled"},
+				},
+				FailedSteps: []model.FailedStep{{
+					Number: 2, Name: "Run e2e", Command: "make e2e", Kind: model.KindBash,
+					Excerpt: "##[error]The operation was canceled.",
+				}},
+			},
+			{Name: "deploy", Conclusion: "cancelled", WorkflowName: "CD"},
+		},
+		OtherChecks: []model.OtherCheck{{Name: "codecov/project", Conclusion: "failure", URL: "https://codecov.example"}},
+		RunningJobs: []model.RunningJob{{Name: "integration", Status: "in_progress"}},
 	}
 
 	var buf bytes.Buffer
@@ -34,7 +49,7 @@ func TestReportWithFailure(t *testing.T) {
 	for _, want := range []string{
 		"justanotherspy/shuck PR #12 — add thing",
 		"commit abcdef1",
-		"Summary: 1 failed, 1 cancelled, 1 other failed, 1 running",
+		"Summary: 1 failed, 2 cancelled, 1 other failed, 1 running",
 		"⚠ 1 still running — failures shown may be incomplete",
 		"Workflow: CI (.github/workflows/ci.yml)",
 		"Job: build  [failure]",
@@ -44,10 +59,20 @@ func TestReportWithFailure(t *testing.T) {
 		"* bash run:",
 		"go test ./...",
 		"--- FAIL: TestX",
+		"error logs:",
 		"Other checks (no logs available):",
 		"codecov/project (failure) — https://codecov.example",
-		"Cancelled (no logs drilled):",
-		"⊘ e2e (CI)",
+		// The drilled cancelled job renders like a failed one, with
+		// cancellation-specific labels.
+		"Job: e2e  [cancelled]",
+		"2. Run e2e (cancelled)",
+		"▸ Step 2 — Run e2e (cancelled)",
+		"make e2e",
+		"logs before cancellation:",
+		"##[error]The operation was canceled.",
+		// The undrilled one stays a one-line listing.
+		"Cancelled (no logs available):",
+		"⊘ deploy (CD)",
 		"Still running:",
 		`⏳ Job "integration" (in_progress)`,
 	} {
@@ -60,7 +85,7 @@ func TestReportWithFailure(t *testing.T) {
 func TestReportCancelledOnly(t *testing.T) {
 	r := &model.Report{
 		PR:            model.PR{Owner: "o", Repo: "r", Number: 5, HeadSHA: "abc1234"},
-		CancelledJobs: []model.CancelledJob{{Name: "deploy", Conclusion: "cancelled"}},
+		CancelledJobs: []model.JobResult{{Name: "deploy", Conclusion: "cancelled"}},
 	}
 	var buf bytes.Buffer
 	Report(&buf, r)
@@ -69,7 +94,7 @@ func TestReportCancelledOnly(t *testing.T) {
 	if strings.Contains(out, "all checks passing") {
 		t.Errorf("a cancelled-only run must not be reported as all green:\n%s", out)
 	}
-	for _, want := range []string{"Summary: 1 cancelled", "Cancelled (no logs drilled):", "⊘ deploy"} {
+	for _, want := range []string{"Summary: 1 cancelled", "Cancelled (no logs available):", "⊘ deploy"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q\n---\n%s", want, out)
 		}
