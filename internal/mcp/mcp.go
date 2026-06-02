@@ -109,18 +109,18 @@ private-repo security data needs the security_events (or repo) scope.`
 const checkComplianceDesc = `Check a repository's settings against its .github/compliance.yml.
 
 The .github/compliance.yml file declares a repo's intended settings (merge
-options, features, security, branch protection). shuck reads the repo's live
-settings via the GitHub API and returns, per declared setting, whether the repo
-matches — pass, fail (drift), or skipped (the setting could not be read with the
-current token). Reach for this to verify a repo is configured the way its policy
-says, or to find what drifted.
+options, features, security, GitHub Actions policies, branch protection). shuck
+reads the repo's live settings via the GitHub API and returns, per declared
+setting, whether the repo matches — pass, fail (drift), or skipped (the setting
+could not be read with the current token). Reach for this to verify a repo is
+configured the way its policy says, or to find what drifted.
 
 Target selection: pass url for a github.com/<owner>/<repo>[/...] URL, or repo as
 owner/repo, or nothing to use the repo of the local working directory. The config
 is fetched from the repo by default (set ref to pick a branch/tag/SHA); set
 config to read a local file path instead. Requires a GitHub token in GITHUB_TOKEN
-or GH_TOKEN; reading branch protection and security settings needs the repo scope
-and admin access.`
+or GH_TOKEN; reading branch protection, security, and Actions settings needs the
+repo scope and admin access.`
 
 // Serve runs the shuck MCP server over stdio until the client disconnects or
 // ctx is cancelled. It takes no positional arguments.

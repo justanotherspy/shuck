@@ -420,8 +420,8 @@ exit `1` for CI gating.
 `shuck compliance [owner/repo | url]` (alias `c`) checks a repository's live
 GitHub settings against a `.github/compliance.yml` committed in the repo. That
 file is the **definitive statement of the repo's intended settings** — merge
-options, features, security, and branch protection — so a CI job can fail when a
-setting drifts from policy:
+options, features, security, GitHub Actions policies, and branch protection — so
+a CI job can fail when a setting drifts from policy:
 
 ```sh
 shuck compliance                       # the local checkout's .github/compliance.yml
@@ -432,10 +432,17 @@ shuck compliance --exit-zero owner/repo  # report-only (never fail the build)
 ```
 
 The config is **partial by design**: only the keys it declares are checked, so a
-repo can assert just what it cares about. A typo'd key is rejected rather than
-silently ignored, and a setting the token cannot read (branch protection and
-security need admin/`repo` access) is reported as **skipped**, never a false
-pass.
+repo can assert just what it cares about. A typo'd key (or an invalid value for a
+closed-vocabulary setting) is rejected rather than silently ignored, and a
+setting the token cannot read (branch protection, security, and Actions policies
+need admin/`repo` access) is reported as **skipped**, never a false pass.
+
+The `actions:` section covers the repository's GitHub Actions hardening: whether
+Actions is enabled and which actions may run (`allowed_actions`,
+`sha_pinning_required`), the default `GITHUB_TOKEN` permissions for workflows
+(`default_workflow_permissions: read` is the supply-chain-safe value), whether
+workflows can approve pull requests, and the fork-PR approval policy
+(`fork_pr_contributor_approval`).
 
 Branch protection covers **both classic protection rules and repository
 rulesets**: shuck reads the rules that effectively apply to the branch and, when
@@ -459,6 +466,12 @@ security:
   secret_scanning: true
   secret_scanning_push_protection: true
   vulnerability_alerts: true
+actions:
+  enabled: true
+  allowed_actions: all                    # all | local_only | selected
+  default_workflow_permissions: read     # the default GITHUB_TOKEN access: read | write
+  can_approve_pull_request_reviews: false
+  fork_pr_contributor_approval: all_external_contributors
 branch_protection:
   main:
     required_approving_review_count: 1
@@ -494,8 +507,9 @@ and `2` on an operational error; `--exit-zero` makes it report-only.
 #### Bootstrapping the config: `shuck compliance discover`
 
 Don't write the config by hand — `shuck compliance discover [owner/repo | url]`
-reads the repository's live settings (general, security, and the default
-branch's protection) and writes them to the local `.github/compliance.yml`:
+reads the repository's live settings (general, security, Actions policies, and
+the default branch's protection) and writes them to the local
+`.github/compliance.yml`:
 
 ```sh
 shuck compliance discover              # snapshot the local repo's live settings
@@ -512,11 +526,11 @@ shuck compliance discover --json       # the stable JSON document
   updated in place. Comments and key order are preserved.
 - **Config up to date** → nothing is written.
 
-Settings the token cannot read (security and branch protection need
-admin/`repo` access; merge settings need a classic token) are omitted from a new
-config and left untouched in an existing one, with a note explaining why. The
-exit code is `0` on success (created, updated, or already up to date) and `2` on
-an operational error.
+Settings the token cannot read (security, Actions policies, and branch
+protection need admin/`repo` access; merge settings need a classic token) are
+omitted from a new config and left untouched in an existing one, with a note
+explaining why. The exit code is `0` on success (created, updated, or already up
+to date) and `2` on an operational error.
 
 ### How log extraction works
 

@@ -43,7 +43,7 @@ type Discovery struct {
 
 // Change records one declared setting whose value was synced to the live value.
 type Change struct {
-	Category string `json:"category"` // repository | security | branch_protection
+	Category string `json:"category"` // repository | security | actions | branch_protection
 	Setting  string `json:"setting"`  // e.g. allow_merge_commit, main.enforce_admins
 	From     string `json:"from"`     // the previously declared value
 	To       string `json:"to"`       // the live value now declared
@@ -99,6 +99,8 @@ func FromActual(actual Actual) (cfg Config, notes []string) {
 		HasWiki:                  new(s.HasWiki),
 		HasProjects:              new(s.HasProjects),
 		HasDiscussions:           new(s.HasDiscussions),
+		IsTemplate:               new(s.IsTemplate),
+		AllowForking:             new(s.AllowForking),
 		WebCommitSignoffRequired: new(s.WebCommitSignoffRequired),
 		Archived:                 new(s.Archived),
 	}}
@@ -111,6 +113,13 @@ func FromActual(actual Actual) (cfg Config, notes []string) {
 		cfg.Repository.AllowAutoMerge = new(s.AllowAutoMerge)
 		cfg.Repository.AllowUpdateBranch = new(s.AllowUpdateBranch)
 		cfg.Repository.DeleteBranchOnMerge = new(s.DeleteBranchOnMerge)
+		// The commit-message format policies travel with the merge group, but
+		// GitHub may omit them individually; only declare what is present so the
+		// snapshot round-trips through the enum validation.
+		setStr(&cfg.Repository.SquashMergeCommitTitle, s.SquashMergeCommitTitle)
+		setStr(&cfg.Repository.SquashMergeCommitMessage, s.SquashMergeCommitMessage)
+		setStr(&cfg.Repository.MergeCommitTitle, s.MergeCommitTitle)
+		setStr(&cfg.Repository.MergeCommitMessage, s.MergeCommitMessage)
 	} else {
 		notes = append(notes, "merge settings omitted: "+sourceReason(s.MergeSettingsSource))
 	}
@@ -135,6 +144,8 @@ func FromActual(actual Actual) (cfg Config, notes []string) {
 		cfg.Security = &sec
 	}
 
+	cfg.Actions, notes = actionsFromActual(actual.Actions, notes)
+
 	for _, name := range sortedActualBranches(actual.Branches) {
 		br := actual.Branches[name]
 		if br.Source.Status != model.StatusOK {
@@ -152,6 +163,50 @@ func FromActual(actual Actual) (cfg Config, notes []string) {
 	}
 
 	return cfg, notes
+}
+
+// actionsFromActual snapshots the readable GitHub Actions policy groups into an
+// ActionsConfig, or nil when none were readable. String policies the API
+// omitted (empty values) are not declared, so the snapshot stays valid.
+func actionsFromActual(a model.ActionsSettings, notes []string) (cfg *ActionsConfig, outNotes []string) {
+	var ac ActionsConfig
+	readable := false
+
+	if a.PermissionsSource.Status == model.StatusOK {
+		ac.Enabled = new(a.Enabled)
+		setStr(&ac.AllowedActions, a.AllowedActions)
+		ac.SHAPinningRequired = new(a.SHAPinningRequired)
+		readable = true
+	} else {
+		notes = append(notes, "actions permissions omitted: "+sourceReason(a.PermissionsSource))
+	}
+
+	if a.WorkflowPermissionsSource.Status == model.StatusOK {
+		setStr(&ac.DefaultWorkflowPermissions, a.DefaultWorkflowPermissions)
+		ac.CanApprovePullRequestReviews = new(a.CanApprovePullRequestReviews)
+		readable = true
+	} else {
+		notes = append(notes, "actions workflow permissions omitted: "+sourceReason(a.WorkflowPermissionsSource))
+	}
+
+	if a.ForkPRApprovalSource.Status == model.StatusOK {
+		setStr(&ac.ForkPRContributorApproval, a.ForkPRContributorApproval)
+		readable = true
+	} else {
+		notes = append(notes, "actions fork_pr_contributor_approval omitted: "+sourceReason(a.ForkPRApprovalSource))
+	}
+
+	if !readable {
+		return nil, notes
+	}
+	return &ac, notes
+}
+
+// setStr declares a string setting only when the live value is present.
+func setStr(dst **string, v string) {
+	if v != "" {
+		*dst = new(v)
+	}
 }
 
 // branchConfigFrom snapshots one protected branch's live rule. Review settings
@@ -205,14 +260,21 @@ func diffConfig(cfg Config, actual Actual) (changes []Change, notes []string) {
 			diffField(d, "repository", "allow_auto_merge", r.AllowAutoMerge, s.AllowAutoMerge)
 			diffField(d, "repository", "allow_update_branch", r.AllowUpdateBranch, s.AllowUpdateBranch)
 			diffField(d, "repository", "delete_branch_on_merge", r.DeleteBranchOnMerge, s.DeleteBranchOnMerge)
+			diffStrField(d, "repository", "squash_merge_commit_title", r.SquashMergeCommitTitle, s.SquashMergeCommitTitle)
+			diffStrField(d, "repository", "squash_merge_commit_message", r.SquashMergeCommitMessage, s.SquashMergeCommitMessage)
+			diffStrField(d, "repository", "merge_commit_title", r.MergeCommitTitle, s.MergeCommitTitle)
+			diffStrField(d, "repository", "merge_commit_message", r.MergeCommitMessage, s.MergeCommitMessage)
 		} else if anyDeclared(r.AllowMergeCommit, r.AllowSquashMerge, r.AllowRebaseMerge,
-			r.AllowAutoMerge, r.AllowUpdateBranch, r.DeleteBranchOnMerge) {
+			r.AllowAutoMerge, r.AllowUpdateBranch, r.DeleteBranchOnMerge) ||
+			anyDeclared(r.SquashMergeCommitTitle, r.SquashMergeCommitMessage, r.MergeCommitTitle, r.MergeCommitMessage) {
 			d.notes = append(d.notes, "merge settings left unchanged: "+sourceReason(s.MergeSettingsSource))
 		}
 		diffField(d, "repository", "has_issues", r.HasIssues, s.HasIssues)
 		diffField(d, "repository", "has_wiki", r.HasWiki, s.HasWiki)
 		diffField(d, "repository", "has_projects", r.HasProjects, s.HasProjects)
 		diffField(d, "repository", "has_discussions", r.HasDiscussions, s.HasDiscussions)
+		diffField(d, "repository", "is_template", r.IsTemplate, s.IsTemplate)
+		diffField(d, "repository", "allow_forking", r.AllowForking, s.AllowForking)
 		diffField(d, "repository", "web_commit_signoff_required", r.WebCommitSignoffRequired, s.WebCommitSignoffRequired)
 		diffField(d, "repository", "archived", r.Archived, s.Archived)
 	}
@@ -235,6 +297,10 @@ func diffConfig(cfg Config, actual Actual) (changes []Change, notes []string) {
 		}
 	}
 
+	if a := cfg.Actions; a != nil {
+		diffActions(d, a, actual.Actions)
+	}
+
 	for _, name := range sortedBranches(cfg.BranchProtection) {
 		bc := cfg.BranchProtection[name]
 		if bc == nil {
@@ -244,6 +310,31 @@ func diffConfig(cfg Config, actual Actual) (changes []Change, notes []string) {
 	}
 
 	return d.changes, d.notes
+}
+
+// diffActions diffs the declared GitHub Actions policies against the live ones,
+// per readable group.
+func diffActions(d *differ, a *ActionsConfig, act model.ActionsSettings) {
+	if act.PermissionsSource.Status == model.StatusOK {
+		diffField(d, "actions", "enabled", a.Enabled, act.Enabled)
+		diffStrField(d, "actions", "allowed_actions", a.AllowedActions, act.AllowedActions)
+		diffField(d, "actions", "sha_pinning_required", a.SHAPinningRequired, act.SHAPinningRequired)
+	} else if anyDeclared(a.Enabled, a.SHAPinningRequired) || anyDeclared(a.AllowedActions) {
+		d.notes = append(d.notes, "actions permissions left unchanged: "+sourceReason(act.PermissionsSource))
+	}
+
+	if act.WorkflowPermissionsSource.Status == model.StatusOK {
+		diffStrField(d, "actions", "default_workflow_permissions", a.DefaultWorkflowPermissions, act.DefaultWorkflowPermissions)
+		diffField(d, "actions", "can_approve_pull_request_reviews", a.CanApprovePullRequestReviews, act.CanApprovePullRequestReviews)
+	} else if anyDeclared(a.CanApprovePullRequestReviews) || anyDeclared(a.DefaultWorkflowPermissions) {
+		d.notes = append(d.notes, "actions workflow permissions left unchanged: "+sourceReason(act.WorkflowPermissionsSource))
+	}
+
+	if act.ForkPRApprovalSource.Status == model.StatusOK {
+		diffStrField(d, "actions", "fork_pr_contributor_approval", a.ForkPRContributorApproval, act.ForkPRContributorApproval)
+	} else if anyDeclared(a.ForkPRContributorApproval) {
+		d.notes = append(d.notes, "actions fork_pr_contributor_approval left unchanged: "+sourceReason(act.ForkPRApprovalSource))
+	}
 }
 
 // diffBranch diffs one declared branch's protections against its live rule.
@@ -305,6 +396,16 @@ func diffField[T comparable](d *differ, category, setting string, want *T, got T
 		From: fmt.Sprint(*want), To: fmt.Sprint(got),
 		path: []string{category, setting}, value: got,
 	})
+}
+
+// diffStrField records a change for a declared string setting. A live value the
+// API omitted (empty) is never synced into the config: it would not survive the
+// enum validation on the next Parse.
+func diffStrField(d *differ, category, setting string, want *string, got string) {
+	if got == "" {
+		return
+	}
+	diffField(d, category, setting, want, got)
 }
 
 // diffBranchField records a change for one branch-protection key. The display
@@ -423,7 +524,7 @@ func equalSets(a, b []string) bool {
 }
 
 // anyDeclared reports whether any of the pointers is non-nil.
-func anyDeclared(ps ...*bool) bool {
+func anyDeclared[T any](ps ...*T) bool {
 	for _, p := range ps {
 		if p != nil {
 			return true

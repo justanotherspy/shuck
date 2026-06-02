@@ -12,6 +12,7 @@ package compliance
 import (
 	"bytes"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,6 +30,7 @@ import (
 type Config struct {
 	Repository       *RepositoryConfig        `yaml:"repository,omitempty"`
 	Security         *SecurityConfig          `yaml:"security,omitempty"`
+	Actions          *ActionsConfig           `yaml:"actions,omitempty"`
 	BranchProtection map[string]*BranchConfig `yaml:"branch_protection,omitempty"`
 }
 
@@ -42,12 +44,30 @@ type RepositoryConfig struct {
 	AllowAutoMerge           *bool   `yaml:"allow_auto_merge,omitempty"`
 	AllowUpdateBranch        *bool   `yaml:"allow_update_branch,omitempty"`
 	DeleteBranchOnMerge      *bool   `yaml:"delete_branch_on_merge,omitempty"`
+	SquashMergeCommitTitle   *string `yaml:"squash_merge_commit_title,omitempty"`
+	SquashMergeCommitMessage *string `yaml:"squash_merge_commit_message,omitempty"`
+	MergeCommitTitle         *string `yaml:"merge_commit_title,omitempty"`
+	MergeCommitMessage       *string `yaml:"merge_commit_message,omitempty"`
 	HasIssues                *bool   `yaml:"has_issues,omitempty"`
 	HasWiki                  *bool   `yaml:"has_wiki,omitempty"`
 	HasProjects              *bool   `yaml:"has_projects,omitempty"`
 	HasDiscussions           *bool   `yaml:"has_discussions,omitempty"`
+	IsTemplate               *bool   `yaml:"is_template,omitempty"`
+	AllowForking             *bool   `yaml:"allow_forking,omitempty"`
 	WebCommitSignoffRequired *bool   `yaml:"web_commit_signoff_required,omitempty"`
 	Archived                 *bool   `yaml:"archived,omitempty"`
+}
+
+// ActionsConfig declares intended GitHub Actions policies: whether Actions is
+// enabled and which actions may run, the default GITHUB_TOKEN permissions for
+// workflows, and the fork-PR approval policy.
+type ActionsConfig struct {
+	Enabled                      *bool   `yaml:"enabled,omitempty"`
+	AllowedActions               *string `yaml:"allowed_actions,omitempty"`
+	SHAPinningRequired           *bool   `yaml:"sha_pinning_required,omitempty"`
+	DefaultWorkflowPermissions   *string `yaml:"default_workflow_permissions,omitempty"`
+	CanApprovePullRequestReviews *bool   `yaml:"can_approve_pull_request_reviews,omitempty"`
+	ForkPRContributorApproval    *string `yaml:"fork_pr_contributor_approval,omitempty"`
 }
 
 // SecurityConfig declares intended security-and-analysis settings. The values
@@ -85,13 +105,51 @@ func Parse(data []byte) (Config, error) {
 	if err := dec.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("parse compliance config: %w", err)
 	}
-	if cfg.Repository == nil && cfg.Security == nil && len(cfg.BranchProtection) == 0 {
-		return Config{}, fmt.Errorf("compliance config is empty: declare at least one of repository, security, or branch_protection")
+	if cfg.Repository == nil && cfg.Security == nil && cfg.Actions == nil && len(cfg.BranchProtection) == 0 {
+		return Config{}, fmt.Errorf("compliance config is empty: declare at least one of repository, security, actions, or branch_protection")
 	}
-	if vis := repoVisibility(cfg); vis != nil && !validVisibility(*vis) {
-		return Config{}, fmt.Errorf("invalid repository.visibility %q (want: public|private|internal)", *vis)
+	if err := validateEnums(cfg); err != nil {
+		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// validateEnums rejects declared string settings whose value is outside the
+// closed vocabulary GitHub accepts, so a typo'd value (which could never match
+// the live setting) surfaces at parse time like a typo'd key.
+func validateEnums(cfg Config) error {
+	type enum struct {
+		key   string
+		value *string
+		valid []string
+	}
+	var checks []enum
+	if r := cfg.Repository; r != nil {
+		checks = append(checks,
+			enum{"repository.visibility", r.Visibility, []string{"public", "private", "internal"}},
+			enum{"repository.squash_merge_commit_title", r.SquashMergeCommitTitle, []string{"PR_TITLE", "COMMIT_OR_PR_TITLE"}},
+			enum{"repository.squash_merge_commit_message", r.SquashMergeCommitMessage, []string{"PR_BODY", "COMMIT_MESSAGES", "BLANK"}},
+			enum{"repository.merge_commit_title", r.MergeCommitTitle, []string{"PR_TITLE", "MERGE_MESSAGE"}},
+			enum{"repository.merge_commit_message", r.MergeCommitMessage, []string{"PR_BODY", "PR_TITLE", "BLANK"}},
+		)
+	}
+	if a := cfg.Actions; a != nil {
+		checks = append(checks,
+			enum{"actions.allowed_actions", a.AllowedActions, []string{"all", "local_only", "selected"}},
+			enum{"actions.default_workflow_permissions", a.DefaultWorkflowPermissions, []string{"read", "write"}},
+			enum{"actions.fork_pr_contributor_approval", a.ForkPRContributorApproval,
+				[]string{"first_time_contributors_new_to_github", "first_time_contributors", "all_external_contributors"}},
+		)
+	}
+	for _, c := range checks {
+		if c.value == nil {
+			continue
+		}
+		if !slices.Contains(c.valid, *c.value) {
+			return fmt.Errorf("invalid %s %q (want: %s)", c.key, *c.value, strings.Join(c.valid, "|"))
+		}
+	}
+	return nil
 }
 
 // Actual bundles the live settings the gh layer fetched, for one repository.
@@ -99,6 +157,7 @@ type Actual struct {
 	Settings   model.RepoSettings
 	VulnAlerts bool
 	VulnSource model.SettingsSource
+	Actions    model.ActionsSettings
 	Branches   map[string]Branch
 }
 
@@ -128,10 +187,18 @@ func Evaluate(owner, repo, configSource string, cfg Config, actual Actual) *mode
 		e.boolSrc("repository", "allow_auto_merge", r.AllowAutoMerge, s.AllowAutoMerge, s.MergeSettingsSource)
 		e.boolSrc("repository", "allow_update_branch", r.AllowUpdateBranch, s.AllowUpdateBranch, s.MergeSettingsSource)
 		e.boolSrc("repository", "delete_branch_on_merge", r.DeleteBranchOnMerge, s.DeleteBranchOnMerge, s.MergeSettingsSource)
+		// The commit-message format policies travel with the merge group, so they
+		// share its source guard.
+		e.strSrc("repository", "squash_merge_commit_title", r.SquashMergeCommitTitle, s.SquashMergeCommitTitle, s.MergeSettingsSource)
+		e.strSrc("repository", "squash_merge_commit_message", r.SquashMergeCommitMessage, s.SquashMergeCommitMessage, s.MergeSettingsSource)
+		e.strSrc("repository", "merge_commit_title", r.MergeCommitTitle, s.MergeCommitTitle, s.MergeSettingsSource)
+		e.strSrc("repository", "merge_commit_message", r.MergeCommitMessage, s.MergeCommitMessage, s.MergeSettingsSource)
 		e.bool("repository", "has_issues", r.HasIssues, s.HasIssues)
 		e.bool("repository", "has_wiki", r.HasWiki, s.HasWiki)
 		e.bool("repository", "has_projects", r.HasProjects, s.HasProjects)
 		e.bool("repository", "has_discussions", r.HasDiscussions, s.HasDiscussions)
+		e.bool("repository", "is_template", r.IsTemplate, s.IsTemplate)
+		e.bool("repository", "allow_forking", r.AllowForking, s.AllowForking)
 		e.bool("repository", "web_commit_signoff_required", r.WebCommitSignoffRequired, s.WebCommitSignoffRequired)
 		e.bool("repository", "archived", r.Archived, s.Archived)
 	}
@@ -142,6 +209,16 @@ func Evaluate(owner, repo, configSource string, cfg Config, actual Actual) *mode
 		e.enabled("security", "secret_scanning_push_protection", sec.SecretScanningPushProtection, s.SecretScanningPushProtection, s.SecuritySource)
 		e.enabled("security", "dependabot_security_updates", sec.DependabotSecurityUpdates, s.DependabotSecurityUpdates, s.SecuritySource)
 		e.boolSrc("security", "vulnerability_alerts", sec.VulnerabilityAlerts, actual.VulnAlerts, actual.VulnSource)
+	}
+
+	if a := cfg.Actions; a != nil {
+		act := actual.Actions
+		e.boolSrc("actions", "enabled", a.Enabled, act.Enabled, act.PermissionsSource)
+		e.strSrc("actions", "allowed_actions", a.AllowedActions, act.AllowedActions, act.PermissionsSource)
+		e.boolSrc("actions", "sha_pinning_required", a.SHAPinningRequired, act.SHAPinningRequired, act.PermissionsSource)
+		e.strSrc("actions", "default_workflow_permissions", a.DefaultWorkflowPermissions, act.DefaultWorkflowPermissions, act.WorkflowPermissionsSource)
+		e.boolSrc("actions", "can_approve_pull_request_reviews", a.CanApprovePullRequestReviews, act.CanApprovePullRequestReviews, act.WorkflowPermissionsSource)
+		e.strSrc("actions", "fork_pr_contributor_approval", a.ForkPRContributorApproval, act.ForkPRContributorApproval, act.ForkPRApprovalSource)
 	}
 
 	for _, name := range sortedBranches(cfg.BranchProtection) {
@@ -191,6 +268,19 @@ func (e *evaluator) boolSrc(category, setting string, want *bool, got bool, src 
 		return
 	}
 	e.add(compare(category, setting, fmtBool(*want), fmtBool(got)))
+}
+
+// strSrc checks a string setting whose live value may be unreadable (src not OK
+// ⇒ skipped).
+func (e *evaluator) strSrc(category, setting string, want *string, got string, src model.SettingsSource) {
+	if want == nil {
+		return
+	}
+	if c, skipped := skip(category, setting, *want, src); skipped {
+		e.add(c)
+		return
+	}
+	e.add(compare(category, setting, *want, got))
 }
 
 // enabled checks a security_and_analysis setting, whose live value is the string
@@ -361,22 +451,6 @@ func sortedBranches(m map[string]*BranchConfig) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-func repoVisibility(cfg Config) *string {
-	if cfg.Repository == nil {
-		return nil
-	}
-	return cfg.Repository.Visibility
-}
-
-func validVisibility(v string) bool {
-	switch v {
-	case "public", "private", "internal":
-		return true
-	default:
-		return false
-	}
 }
 
 func fmtBool(b bool) string {
