@@ -106,6 +106,91 @@ func TestSelectNewestAllUntagged(t *testing.T) {
 	}
 }
 
+// referrerTag is a syntactically valid cosign/OCI referrer tag (sha256- + 64
+// hex chars) used by the referrer-exclusion tests below.
+const referrerTag = "sha256-618acdb4607c26dda5747aaf0ca4ab8b6768621754701e94936288f5a6886739"
+
+func TestSelectNewestSkipsReferrerArtifacts(t *testing.T) {
+	// A cosign signature/attestation artifact is pushed *after* the image it
+	// signs, so it is always the most recently updated version. It must never
+	// be selected as "latest" — the real image (here tagged "edge") must win.
+	versions := []model.ImageVersion{
+		{Tags: []string{"edge", "sha-35b0bc5"}, Digest: "sha256:image", UpdatedAt: time.Unix(10, 0)},
+		{Tags: []string{referrerTag}, Digest: "sha256:signature", UpdatedAt: time.Unix(20, 0)},
+	}
+	v, tag, err := Select(versions, "")
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if v.Digest != "sha256:image" || tag != "edge" {
+		t.Errorf("Select = %q/%q, want sha256:image/edge", v.Digest, tag)
+	}
+}
+
+func TestSelectNewestSkipsReferrerTagWithinVersion(t *testing.T) {
+	// A version carrying both a referrer tag and a real tag is selectable, but
+	// the referrer tag is never the one used to name it.
+	versions := []model.ImageVersion{
+		{Tags: []string{referrerTag, "nightly"}, Digest: "sha256:image", UpdatedAt: time.Unix(10, 0)},
+	}
+	v, tag, err := Select(versions, "")
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if v.Digest != "sha256:image" || tag != "nightly" {
+		t.Errorf("Select = %q/%q, want sha256:image/nightly", v.Digest, tag)
+	}
+}
+
+func TestSelectNewestAllReferrersError(t *testing.T) {
+	// A package holding only referrer artifacts has nothing pinnable.
+	versions := []model.ImageVersion{
+		{Tags: []string{referrerTag}, Digest: "sha256:signature", UpdatedAt: time.Unix(20, 0)},
+	}
+	if _, _, err := Select(versions, ""); err == nil {
+		t.Error("expected error when every version is a referrer artifact")
+	}
+}
+
+func TestSelectExactReferrerTagStillResolves(t *testing.T) {
+	// An explicitly requested referrer tag is honored — exclusion only applies
+	// to the "pick the latest" fallback.
+	versions := []model.ImageVersion{
+		{Tags: []string{referrerTag}, Digest: "sha256:signature", UpdatedAt: time.Unix(20, 0)},
+	}
+	v, tag, err := Select(versions, referrerTag)
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if v.Digest != "sha256:signature" || tag != referrerTag {
+		t.Errorf("Select = %q/%q, want sha256:signature/%s", v.Digest, tag, referrerTag)
+	}
+}
+
+func TestIsReferrerTag(t *testing.T) {
+	for _, tt := range []struct {
+		tag  string
+		want bool
+	}{
+		{referrerTag, true},
+		{referrerTag + ".sig", true},
+		{referrerTag + ".att", true},
+		{referrerTag + ".sbom", true},
+		{"latest", false},
+		{"edge", false},
+		{"v1.2.3", false},
+		{"sha-35b0bc5", false},                       // commit-SHA image tag, not a referrer
+		{"sha256-abc", false},                        // too short
+		{"sha256-" + strings.Repeat("z", 64), false}, // not hex
+		{"sha256:" + strings.Repeat("a", 64), false}, // digest, not a tag
+		{"", false},
+	} {
+		if got := IsReferrerTag(tt.tag); got != tt.want {
+			t.Errorf("IsReferrerTag(%q) = %v, want %v", tt.tag, got, tt.want)
+		}
+	}
+}
+
 func TestLatestVersionFalseOnEmpty(t *testing.T) {
 	if _, _, ok := LatestVersion(nil); ok {
 		t.Error("LatestVersion(nil) ok=true, want false")

@@ -181,6 +181,16 @@ func Security(ctx context.Context, owner, repo string, opts SecurityOptions) (*m
 		return nil, fmt.Errorf("could not fetch security alerts for %s/%s: %s", owner, repo, report.Dependabot.Message)
 	}
 
+	// A repository that doesn't exist (or isn't visible to this token) 404s on
+	// every source, which reads as "disabled" — and would render as a false
+	// all-clear. When nothing was readable, confirm the repository itself
+	// exists before reporting that.
+	if !anySourceOK(report) {
+		if _, shaErr := lister.DefaultBranchSHA(ctx, owner, repo); gh.IsNotFound(shaErr) {
+			return nil, fmt.Errorf("repository %s/%s not found (or not visible to this token)", owner, repo)
+		}
+	}
+
 	// Don't cache a result that includes a transient error; --refresh aside, a
 	// later run within the TTL should retry the failed source.
 	if !anySourceError(report) {

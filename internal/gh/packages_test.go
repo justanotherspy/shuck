@@ -12,16 +12,16 @@ import (
 )
 
 func TestIsNotFound(t *testing.T) {
-	if !isNotFound(&github.ErrorResponse{Response: &http.Response{StatusCode: http.StatusNotFound}}) {
+	if !IsNotFound(&github.ErrorResponse{Response: &http.Response{StatusCode: http.StatusNotFound}}) {
 		t.Error("404 should be reported as not found")
 	}
-	if isNotFound(&github.ErrorResponse{Response: &http.Response{StatusCode: http.StatusForbidden}}) {
+	if IsNotFound(&github.ErrorResponse{Response: &http.Response{StatusCode: http.StatusForbidden}}) {
 		t.Error("403 is not a not-found")
 	}
-	if isNotFound(errors.New("plain")) {
+	if IsNotFound(errors.New("plain")) {
 		t.Error("plain error is not a not-found")
 	}
-	if isNotFound(nil) {
+	if IsNotFound(nil) {
 		t.Error("nil is not a not-found")
 	}
 }

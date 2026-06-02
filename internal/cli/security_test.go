@@ -3,8 +3,12 @@ package cli
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/google/go-github/v88/github"
 
 	"github.com/justanotherspy/shuck/internal/model"
 )
@@ -159,6 +163,41 @@ func TestRunSecurityForbiddenAndError(t *testing.T) {
 	// No token set and nothing OK -> the hint is printed on stderr.
 	if !strings.Contains(errb.String(), "no GitHub token set") {
 		t.Errorf("expected no-token hint, got %q", errb.String())
+	}
+}
+
+func TestRunSecurityNonexistentRepoIsOperationalError(t *testing.T) {
+	// A repository that doesn't exist 404s on every alert source, which each
+	// classify as "disabled". Instead of rendering a false "no open alerts",
+	// the repo-existence check (DefaultBranchSHA → 404) must make it fatal.
+	notFound := &github.ErrorResponse{Response: &http.Response{StatusCode: http.StatusNotFound}}
+	withStubSecurity(t, &stubSecurity{
+		csSrc:     model.SecuritySource{Status: model.StatusDisabled, Message: "not enabled or no access"},
+		secretSrc: model.SecuritySource{Status: model.StatusDisabled, Message: "not enabled or no access"},
+		depSrc:    model.SecuritySource{Status: model.StatusDisabled, Message: "not enabled or no access"},
+		shaErr:    fmt.Errorf("get default branch SHA o/r: %w", notFound),
+	})
+	var out, errb bytes.Buffer
+	if code := runSecurity([]string{"o/does-not-exist"}, &out, &errb); code != 2 {
+		t.Errorf("nonexistent repo: exit = %d, want 2", code)
+	}
+	if !strings.Contains(errb.String(), "not found") {
+		t.Errorf("expected not-found error, got %q", errb.String())
+	}
+}
+
+func TestRunSecurityAllDisabledButRepoExists(t *testing.T) {
+	// All sources disabled on a repo that *does* exist (DefaultBranchSHA
+	// succeeds) is still a successful, skipped-everything report.
+	withStubSecurity(t, &stubSecurity{
+		csSrc:     model.SecuritySource{Status: model.StatusDisabled, Message: "not enabled or no access"},
+		secretSrc: model.SecuritySource{Status: model.StatusDisabled, Message: "not enabled or no access"},
+		depSrc:    model.SecuritySource{Status: model.StatusDisabled, Message: "not enabled or no access"},
+		sha:       "deadbeef",
+	})
+	var out, errb bytes.Buffer
+	if code := runSecurity([]string{"o/r"}, &out, &errb); code != 0 {
+		t.Errorf("all-disabled but existing repo: exit = %d, want 0 (stderr=%s)", code, errb.String())
 	}
 }
 

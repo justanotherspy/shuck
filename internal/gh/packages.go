@@ -47,7 +47,7 @@ func (c *Client) ListContainerPackages(ctx context.Context, owner string) ([]str
 // endpoint when the owner is not an organization (404).
 func (c *Client) listPackages(ctx context.Context, owner string, opts *github.PackageListOptions) ([]*github.Package, *github.Response, error) {
 	pkgs, resp, err := c.gh.Organizations.ListPackages(ctx, owner, opts)
-	if isNotFound(err) {
+	if IsNotFound(err) {
 		uPkgs, uResp, uErr := c.gh.Users.ListPackages(ctx, owner, opts)
 		if uErr != nil {
 			return nil, uResp, fmt.Errorf("list container packages for %s: %w", owner, uErr)
@@ -94,7 +94,7 @@ func (c *Client) listVersions(ctx context.Context, owner, name string) ([]*githu
 	for {
 		opts := &github.PackageListOptions{ListOptions: github.ListOptions{PerPage: 100, Page: page}}
 		versions, resp, err := c.gh.Organizations.PackageGetAllVersions(ctx, owner, "container", name, opts)
-		if isNotFound(err) {
+		if IsNotFound(err) {
 			uVers, _, uErr := c.gh.Users.ListUserPackageVersions(ctx, owner, "container", name)
 			if uErr != nil {
 				return nil, fmt.Errorf("list versions for %s/%s: %w", owner, name, uErr)
@@ -130,9 +130,11 @@ func containerTags(v *github.PackageVersion) []string {
 	return meta.Container.Tags
 }
 
-// isNotFound reports whether err is a GitHub 404, used to fall back from the org
-// packages endpoint to the user endpoint.
-func isNotFound(err error) bool {
+// IsNotFound reports whether err is a GitHub 404 — a missing repository,
+// package, or endpoint. The packages layer uses it to fall back from the org
+// endpoint to the user endpoint; callers use it to tell "does not exist" apart
+// from other failures.
+func IsNotFound(err error) bool {
 	var ghErr *github.ErrorResponse
 	return errors.As(err, &ghErr) && ghErr.Response != nil && ghErr.Response.StatusCode == http.StatusNotFound
 }

@@ -110,7 +110,9 @@ errors → render → update cache.
   `Docker-Content-Digest` header — for multi-arch images that is the image-index
   digest, the correct pin target). Selection (`image.Select`) shares
   `internal/semver`; non-semver tags fall back to the most recently updated
-  version. Listings cache for `imageCacheTTL` (1h) under `~/.cache/shuck/images/<owner>`,
+  version, excluding cosign/OCI **referrer tags** (`sha256-<digest>[.sig|.att|…]`,
+  see `image.IsReferrerTag`) so a signature artifact pushed after the image never
+  wins the fallback. Listings cache for `imageCacheTTL` (1h) under `~/.cache/shuck/images/<owner>`,
   keyed on the owner's default-branch SHA with the same cheap reuse logic as
   `shuck action`. The fetch client is the exported `NewImageLister` package var
   (interface `ImageLister`) so embedders and tests stub the network.
@@ -128,7 +130,10 @@ errors → render → update cache.
   `newSecurityLister` package var (stubbed in tests). Each source **degrades
   independently** — a 404 ⇒ `disabled`, 403 ⇒ `forbidden` (see
   `classifySecurityErr`) — so a missing feature never fails the command; only an
-  all-sources error is fatal. The `--state` value maps per source (vocabularies
+  all-sources error is fatal. When **no source is readable**, a cheap
+  `DefaultBranchSHA` probe distinguishes a nonexistent/invisible repo (fatal,
+  exit 2) from a repo that genuinely has everything disabled (still a valid,
+  all-skipped report). The `--state` value maps per source (vocabularies
   differ; a source without an equivalent is reported `disabled`). **The raw
   secret value is never read** from the API, so it cannot leak — `model` has no
   field for it. Reports cache for `securityCacheTTL` (1h), keyed by state and the
