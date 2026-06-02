@@ -1,7 +1,13 @@
 name: Release Drafter
 
+# Draft only after CI has passed on main, so the release draft never gets
+# ahead of a broken main. workflow_run is safe here: this workflow never
+# checks out or executes code from the triggering run, it only calls the
+# release-drafter action against the repo metadata.
 on:
-  push:
+  workflow_run: # zizmor: ignore[dangerous-triggers] no checkout/execution of triggering-run code; read-only consumer of the CI conclusion
+    workflows: [CI]
+    types: [completed]
     branches: [main]
 
 permissions:
@@ -9,6 +15,12 @@ permissions:
 
 jobs:
   update_release_draft:
+    # Gate on the CI run's outcome: only a successful `push` run on main
+    # updates the draft. (The event guard keeps fork PRs from a branch that
+    # happens to be named `main` from sneaking past the branch filter.)
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
     permissions:
       contents: write
       pull-requests: read
