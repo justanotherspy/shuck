@@ -19,6 +19,7 @@ type stubCompliance struct {
 	settingsErr error
 	vuln        bool
 	vulnSrc     model.SettingsSource
+	actions     model.ActionsSettings
 	branches    map[string]struct {
 		bp  model.BranchProtection
 		src model.SettingsSource
@@ -33,6 +34,10 @@ func (s *stubCompliance) RepoSettings(_ context.Context, _, _ string) (model.Rep
 
 func (s *stubCompliance) VulnerabilityAlertsEnabled(_ context.Context, _, _ string) (bool, model.SettingsSource) {
 	return s.vuln, s.vulnSrc
+}
+
+func (s *stubCompliance) ActionsSettings(_ context.Context, _, _ string) model.ActionsSettings {
+	return s.actions
 }
 
 func (s *stubCompliance) BranchProtectionSettings(_ context.Context, _, _, branch string) (model.BranchProtection, model.SettingsSource) {
@@ -191,6 +196,16 @@ func discoverStub() *stubCompliance {
 		},
 		vuln:    true,
 		vulnSrc: model.SettingsSource{Status: model.StatusOK},
+		actions: model.ActionsSettings{
+			Enabled:                      true,
+			AllowedActions:               "all",
+			PermissionsSource:            model.SettingsSource{Status: model.StatusOK},
+			DefaultWorkflowPermissions:   "read",
+			CanApprovePullRequestReviews: false,
+			WorkflowPermissionsSource:    model.SettingsSource{Status: model.StatusOK},
+			ForkPRContributorApproval:    "first_time_contributors",
+			ForkPRApprovalSource:         model.SettingsSource{Status: model.StatusOK},
+		},
 		branches: map[string]struct {
 			bp  model.BranchProtection
 			src model.SettingsSource
@@ -366,6 +381,44 @@ func TestRunComplianceDiscoverRepoUnreadable(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatal("no config should be written on error")
+	}
+}
+
+func TestRunComplianceActions(t *testing.T) {
+	withStubCompliance(t, &stubCompliance{
+		actions: model.ActionsSettings{
+			Enabled:                      true,
+			AllowedActions:               "all",
+			PermissionsSource:            model.SettingsSource{Status: model.StatusOK},
+			DefaultWorkflowPermissions:   "write", // drift from the declared "read"
+			CanApprovePullRequestReviews: false,
+			WorkflowPermissionsSource:    model.SettingsSource{Status: model.StatusOK},
+			// Fork approval not readable: skipped, not failed.
+			ForkPRApprovalSource: model.SettingsSource{Status: model.StatusForbidden, Message: "needs admin"},
+		},
+	})
+	cfg := writeConfig(t, `actions:
+  enabled: true
+  default_workflow_permissions: read
+  can_approve_pull_request_reviews: false
+  fork_pr_contributor_approval: first_time_contributors
+`)
+	var out, errb bytes.Buffer
+	code := runCompliance([]string{"o/r", "--config", cfg}, &out, &errb)
+	if code != 1 {
+		t.Fatalf("actions drift should exit 1, got %d, stderr=%s", code, errb.String())
+	}
+	got := out.String()
+	for _, want := range []string{
+		"Actions:",
+		"✓ enabled = true",
+		"✗ default_workflow_permissions: want read, got write",
+		"✓ can_approve_pull_request_reviews = false",
+		"– fork_pr_contributor_approval: want first_time_contributors — skipped (needs admin)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
 	}
 }
 

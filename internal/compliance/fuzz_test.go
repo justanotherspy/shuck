@@ -27,6 +27,20 @@ branch_protection:
 	f.Add([]byte(`repository:
   visibility: bogus
 `))
+	f.Add([]byte(`actions:
+  enabled: true
+  allowed_actions: all
+  default_workflow_permissions: read
+  can_approve_pull_request_reviews: false
+  fork_pr_contributor_approval: first_time_contributors
+`))
+	f.Add([]byte(`actions:
+  allowed_actions: everything
+`))
+	f.Add([]byte(`repository:
+  squash_merge_commit_title: PR_TITLE
+  merge_commit_message: BLANK
+`))
 	f.Add([]byte(`unknown_key: true`))
 	f.Add([]byte(`branch_protection:
   main: ~
@@ -47,7 +61,7 @@ branch_protection:
 		}
 
 		// Parse rejects configs that declare nothing.
-		if cfg.Repository == nil && cfg.Security == nil && len(cfg.BranchProtection) == 0 {
+		if cfg.Repository == nil && cfg.Security == nil && cfg.Actions == nil && len(cfg.BranchProtection) == 0 {
 			t.Fatalf("Parse accepted an empty config: %q", data)
 		}
 		// Parse rejects invalid visibility values.
@@ -56,6 +70,15 @@ branch_protection:
 			case "public", "private", "internal":
 			default:
 				t.Fatalf("Parse accepted invalid visibility %q", *cfg.Repository.Visibility)
+			}
+		}
+		// Parse rejects invalid closed-vocabulary actions values.
+		if cfg.Actions != nil {
+			if p := cfg.Actions.DefaultWorkflowPermissions; p != nil && *p != "read" && *p != "write" {
+				t.Fatalf("Parse accepted invalid default_workflow_permissions %q", *p)
+			}
+			if a := cfg.Actions.AllowedActions; a != nil && *a != "all" && *a != "local_only" && *a != "selected" {
+				t.Fatalf("Parse accepted invalid allowed_actions %q", *a)
 			}
 		}
 

@@ -13,11 +13,12 @@ import (
 const SchemaVersion = 1
 
 // categoryOrder fixes the section order in the text output.
-var categoryOrder = []string{"repository", "security", "branch_protection"}
+var categoryOrder = []string{"repository", "security", "actions", "branch_protection"}
 
 var categoryTitle = map[string]string{
 	"repository":        "Repository",
 	"security":          "Security",
+	"actions":           "Actions",
 	"branch_protection": "Branch protection",
 }
 

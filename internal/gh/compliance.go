@@ -31,10 +31,16 @@ func (c *Client) RepoSettings(ctx context.Context, owner, repo string) (model.Re
 		AllowAutoMerge:           r.GetAllowAutoMerge(),
 		AllowUpdateBranch:        r.GetAllowUpdateBranch(),
 		DeleteBranchOnMerge:      r.GetDeleteBranchOnMerge(),
+		SquashMergeCommitTitle:   r.GetSquashMergeCommitTitle(),
+		SquashMergeCommitMessage: r.GetSquashMergeCommitMessage(),
+		MergeCommitTitle:         r.GetMergeCommitTitle(),
+		MergeCommitMessage:       r.GetMergeCommitMessage(),
 		HasIssues:                r.GetHasIssues(),
 		HasWiki:                  r.GetHasWiki(),
 		HasProjects:              r.GetHasProjects(),
 		HasDiscussions:           r.GetHasDiscussions(),
+		IsTemplate:               r.GetIsTemplate(),
+		AllowForking:             r.GetAllowForking(),
 		WebCommitSignoffRequired: r.GetWebCommitSignoffRequired(),
 		Archived:                 r.GetArchived(),
 		MergeSettingsSource:      mergeSettingsSource(r),
@@ -83,6 +89,54 @@ func (c *Client) VulnerabilityAlertsEnabled(ctx context.Context, owner, repo str
 		return false, model.SettingsSource{Status: model.StatusError, Message: err.Error()}
 	}
 	return on, model.SettingsSource{Status: model.StatusOK}
+}
+
+// ActionsSettings reads the repository's GitHub Actions policies: whether
+// Actions is enabled and which actions may run, the default workflow token
+// permissions, and the fork-PR contributor approval policy. The three endpoints
+// are admin-only and degrade independently (403/404 ⇒ a non-OK source), so a
+// token that cannot read a group skips its checks instead of failing the run.
+func (c *Client) ActionsSettings(ctx context.Context, owner, repo string) model.ActionsSettings {
+	var s model.ActionsSettings
+
+	perms, _, err := c.gh.Repositories.GetActionsPermissions(ctx, owner, repo)
+	if err != nil {
+		s.PermissionsSource = settingsSourceFromErr(err)
+	} else {
+		s.Enabled = perms.GetEnabled()
+		s.AllowedActions = perms.GetAllowedActions()
+		s.SHAPinningRequired = perms.GetSHAPinningRequired()
+		s.PermissionsSource = model.SettingsSource{Status: model.StatusOK}
+	}
+
+	wf, _, err := c.gh.Repositories.GetDefaultWorkflowPermissions(ctx, owner, repo)
+	if err != nil {
+		s.WorkflowPermissionsSource = settingsSourceFromErr(err)
+	} else {
+		s.DefaultWorkflowPermissions = wf.GetDefaultWorkflowPermissions()
+		s.CanApprovePullRequestReviews = wf.GetCanApprovePullRequestReviews()
+		s.WorkflowPermissionsSource = model.SettingsSource{Status: model.StatusOK}
+	}
+
+	fork, _, err := c.gh.Actions.GetForkPRContributorApprovalPermissions(ctx, owner, repo)
+	if err != nil {
+		s.ForkPRApprovalSource = settingsSourceFromErr(err)
+	} else {
+		s.ForkPRContributorApproval = fork.ApprovalPolicy
+		s.ForkPRApprovalSource = model.SettingsSource{Status: model.StatusOK}
+	}
+
+	return s
+}
+
+// settingsSourceFromErr maps an error reading an optional settings endpoint to a
+// soft source: 403/404 keep their specific classification, anything else becomes
+// an error source. All of them skip the dependent checks rather than fail.
+func settingsSourceFromErr(err error) model.SettingsSource {
+	if src, soft := classifySettingsErr(err); soft {
+		return src
+	}
+	return model.SettingsSource{Status: model.StatusError, Message: err.Error()}
 }
 
 // BranchProtectionSettings reads a branch's effective protection: the classic

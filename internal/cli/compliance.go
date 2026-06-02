@@ -24,6 +24,7 @@ const defaultComplianceConfig = ".github/compliance.yml"
 type complianceLister interface {
 	RepoSettings(ctx context.Context, owner, repo string) (model.RepoSettings, error)
 	VulnerabilityAlertsEnabled(ctx context.Context, owner, repo string) (bool, model.SettingsSource)
+	ActionsSettings(ctx context.Context, owner, repo string) model.ActionsSettings
 	BranchProtectionSettings(ctx context.Context, owner, repo, branch string) (model.BranchProtection, model.SettingsSource)
 	FileContent(ctx context.Context, owner, repo, path, ref string) ([]byte, error)
 }
@@ -49,9 +50,9 @@ Usage:
   shuck compliance discover [...]  snapshot the live settings into .github/compliance.yml
 
 The .github/compliance.yml file is the definitive statement of a repo's intended
-settings (merge options, features, security, branch protection). shuck reads the
-repo's live settings via the GitHub API and reports, per setting, whether they
-match — so a CI job can gate on drift.
+settings (merge options, features, security, Actions policies, branch
+protection). shuck reads the repo's live settings via the GitHub API and
+reports, per setting, whether they match — so a CI job can gate on drift.
 
 Config discovery (override with --config): for the local repo, the checked-out
 .github/compliance.yml is used; for an explicit repo, it is fetched from that
@@ -67,10 +68,10 @@ protected only by rulesets.
 Exit: 0 when compliant, 1 when a setting drifted, 2 on an operational error.
 --exit-zero always exits 0 (report-only).
 
-Auth: set GITHUB_TOKEN (or GH_TOKEN), or pass --token. Reading branch protection
-and security settings requires a token with the repo scope and admin access.
-Note: GitHub only returns the merge settings (allow_squash_merge & co.) to
-classic tokens — with a fine-grained PAT or app token they are skipped.
+Auth: set GITHUB_TOKEN (or GH_TOKEN), or pass --token. Reading branch protection,
+security, and Actions settings requires a token with the repo scope and admin
+access. Note: GitHub only returns the merge settings (allow_squash_merge & co.)
+to classic tokens — with a fine-grained PAT or app token they are skipped.
 
 Flags:
 `
@@ -179,6 +180,10 @@ func Compliance(ctx context.Context, owner, repo string, opts ComplianceOptions)
 	if cfg.Security != nil && cfg.Security.VulnerabilityAlerts != nil {
 		actual.VulnAlerts, actual.VulnSource = lister.VulnerabilityAlertsEnabled(ctx, owner, repo)
 	}
+	// Likewise the Actions policies: three extra reads, only when declared.
+	if cfg.Actions != nil {
+		actual.Actions = lister.ActionsSettings(ctx, owner, repo)
+	}
 	for name := range cfg.BranchProtection {
 		bp, src := lister.BranchProtectionSettings(ctx, owner, repo, name)
 		actual.Branches[name] = compliance.Branch{Protection: bp, Source: src}
@@ -244,8 +249,8 @@ Usage:
   shuck compliance discover <owner>/<repo>  an explicit repository
   shuck compliance discover <url>           a github.com/<owner>/<repo>[/...] URL
 
-Reads the repository's live settings (general, security, and the default
-branch's protection) via the GitHub API and writes them to the local
+Reads the repository's live settings (general, security, Actions policies, and
+the default branch's protection) via the GitHub API and writes them to the local
 .github/compliance.yml so "shuck compliance" can gate on drift from then on:
 
   - no config yet      a full snapshot of every readable setting is created
@@ -254,16 +259,17 @@ branch's protection) via the GitHub API and writes them to the local
                        place (comments and key order are preserved)
   - config up to date  nothing is written
 
-Settings the token cannot read (security and branch protection need admin
-access; merge settings need a classic token) are omitted from a new config and
-left untouched in an existing one. Branch protection is discovered from both
-classic protection rules and repository rulesets.
+Settings the token cannot read (security, Actions policies, and branch
+protection need admin access; merge settings need a classic token) are omitted
+from a new config and left untouched in an existing one. Branch protection is
+discovered from both classic protection rules and repository rulesets.
 
 Exit: 0 on success (created, updated, or already up to date), 2 on an
 operational error.
 
-Auth: set GITHUB_TOKEN (or GH_TOKEN), or pass --token. Reading branch protection
-and security settings requires a token with the repo scope and admin access.
+Auth: set GITHUB_TOKEN (or GH_TOKEN), or pass --token. Reading branch protection,
+security, and Actions settings requires a token with the repo scope and admin
+access.
 
 Flags:
 `
@@ -370,6 +376,7 @@ func ComplianceDiscover(ctx context.Context, owner, repo string, opts Compliance
 		Settings:   settings,
 		VulnAlerts: vulnAlerts,
 		VulnSource: vulnSource,
+		Actions:    lister.ActionsSettings(ctx, owner, repo),
 		Branches:   make(map[string]compliance.Branch),
 	}
 

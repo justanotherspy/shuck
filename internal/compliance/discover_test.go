@@ -17,6 +17,8 @@ func fullActual() Actual {
 			AllowMergeCommit:             false,
 			AllowSquashMerge:             true,
 			DeleteBranchOnMerge:          true,
+			SquashMergeCommitTitle:       "PR_TITLE",
+			SquashMergeCommitMessage:     "PR_BODY",
 			HasIssues:                    true,
 			SecretScanning:               "enabled",
 			SecretScanningPushProtection: "enabled",
@@ -26,6 +28,16 @@ func fullActual() Actual {
 		},
 		VulnAlerts: true,
 		VulnSource: model.SettingsSource{Status: model.StatusOK},
+		Actions: model.ActionsSettings{
+			Enabled:                      true,
+			AllowedActions:               "all",
+			PermissionsSource:            model.SettingsSource{Status: model.StatusOK},
+			DefaultWorkflowPermissions:   "read",
+			CanApprovePullRequestReviews: false,
+			WorkflowPermissionsSource:    model.SettingsSource{Status: model.StatusOK},
+			ForkPRContributorApproval:    "first_time_contributors",
+			ForkPRApprovalSource:         model.SettingsSource{Status: model.StatusOK},
+		},
 		Branches: map[string]Branch{
 			"main": {
 				Protection: model.BranchProtection{
@@ -77,6 +89,26 @@ func TestDiscoverCreatesFullSnapshot(t *testing.T) {
 	}
 	if sec.VulnerabilityAlerts == nil || !*sec.VulnerabilityAlerts {
 		t.Errorf("vulnerability_alerts not snapshotted: %+v", sec)
+	}
+	a := cfg.Actions
+	if a == nil {
+		t.Fatalf("actions policies not snapshotted:\n%s", disc.Data)
+	}
+	if a.Enabled == nil || !*a.Enabled || a.AllowedActions == nil || *a.AllowedActions != "all" {
+		t.Errorf("actions permissions not snapshotted: %+v", a)
+	}
+	if a.DefaultWorkflowPermissions == nil || *a.DefaultWorkflowPermissions != "read" {
+		t.Errorf("default_workflow_permissions not snapshotted: %+v", a)
+	}
+	if a.CanApprovePullRequestReviews == nil || *a.CanApprovePullRequestReviews {
+		t.Errorf("can_approve_pull_request_reviews not snapshotted: %+v", a)
+	}
+	if a.ForkPRContributorApproval == nil || *a.ForkPRContributorApproval != "first_time_contributors" {
+		t.Errorf("fork_pr_contributor_approval not snapshotted: %+v", a)
+	}
+	r2 := cfg.Repository
+	if r2.SquashMergeCommitTitle == nil || *r2.SquashMergeCommitTitle != "PR_TITLE" {
+		t.Errorf("squash_merge_commit_title not snapshotted: %+v", r2)
 	}
 	bc := cfg.BranchProtection["main"]
 	if bc == nil {
@@ -219,6 +251,103 @@ func TestDiscoverUpdateSyncsDrift(t *testing.T) {
 				t.Errorf("updated config check not passing: %+v", c)
 			}
 		}
+	}
+}
+
+func TestDiscoverCreateOmitsUnreadableActions(t *testing.T) {
+	actual := fullActual()
+	actual.Actions = model.ActionsSettings{
+		PermissionsSource:         model.SettingsSource{Status: model.StatusForbidden, Message: "needs admin"},
+		WorkflowPermissionsSource: model.SettingsSource{Status: model.StatusForbidden, Message: "needs admin"},
+		ForkPRApprovalSource:      model.SettingsSource{Status: model.StatusDisabled, Message: "not available"},
+	}
+	disc, err := Discover(nil, actual)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	cfg, err := Parse(disc.Data)
+	if err != nil {
+		t.Fatalf("generated config does not parse: %v\n%s", err, disc.Data)
+	}
+	if cfg.Actions != nil {
+		t.Errorf("unreadable actions policies should be omitted: %+v", cfg.Actions)
+	}
+	if len(disc.Notes) != 3 {
+		t.Errorf("want 3 actions omission notes, got %v", disc.Notes)
+	}
+}
+
+func TestDiscoverCreateOmitsEmptyActionsStrings(t *testing.T) {
+	// Actions disabled: the API returns enabled=false and omits allowed_actions.
+	// The snapshot must not declare an empty enum that would fail Parse.
+	actual := fullActual()
+	actual.Actions.Enabled = false
+	actual.Actions.AllowedActions = ""
+	actual.Actions.ForkPRContributorApproval = ""
+	disc, err := Discover(nil, actual)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	cfg, err := Parse(disc.Data)
+	if err != nil {
+		t.Fatalf("generated config does not parse: %v\n%s", err, disc.Data)
+	}
+	if cfg.Actions == nil || cfg.Actions.Enabled == nil || *cfg.Actions.Enabled {
+		t.Fatalf("enabled=false should still be snapshotted: %+v", cfg.Actions)
+	}
+	if cfg.Actions.AllowedActions != nil {
+		t.Errorf("an empty allowed_actions must not be declared: %+v", cfg.Actions)
+	}
+	if cfg.Actions.ForkPRContributorApproval != nil {
+		t.Errorf("an empty fork_pr_contributor_approval must not be declared: %+v", cfg.Actions)
+	}
+}
+
+func TestDiscoverUpdateSyncsActionsDrift(t *testing.T) {
+	existing := `actions:
+  default_workflow_permissions: write
+  can_approve_pull_request_reviews: true
+`
+	disc, err := Discover([]byte(existing), fullActual())
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(disc.Changes) != 2 {
+		t.Fatalf("want 2 changes, got %+v", disc.Changes)
+	}
+	cfg, err := Parse(disc.Data)
+	if err != nil {
+		t.Fatalf("updated config does not parse: %v\n%s", err, disc.Data)
+	}
+	if *cfg.Actions.DefaultWorkflowPermissions != "read" || *cfg.Actions.CanApprovePullRequestReviews {
+		t.Errorf("actions drift not synced: %+v", cfg.Actions)
+	}
+	// Undeclared actions keys stay undeclared.
+	if cfg.Actions.Enabled != nil || cfg.Actions.AllowedActions != nil {
+		t.Errorf("update must not add undeclared actions keys: %+v", cfg.Actions)
+	}
+}
+
+func TestDiscoverUpdateLeavesUnreadableActionsAlone(t *testing.T) {
+	existing := `actions:
+  default_workflow_permissions: read
+  enabled: true
+`
+	actual := fullActual()
+	actual.Actions = model.ActionsSettings{
+		PermissionsSource:         model.SettingsSource{Status: model.StatusForbidden, Message: "needs admin"},
+		WorkflowPermissionsSource: model.SettingsSource{Status: model.StatusForbidden, Message: "needs admin"},
+		ForkPRApprovalSource:      model.SettingsSource{Status: model.StatusForbidden, Message: "needs admin"},
+	}
+	disc, err := Discover([]byte(existing), actual)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if disc.Changed {
+		t.Errorf("unreadable actions settings must not be synced: %+v", disc.Changes)
+	}
+	if len(disc.Notes) != 2 {
+		t.Errorf("want 2 left-unchanged notes (permissions + workflow permissions), got %v", disc.Notes)
 	}
 }
 

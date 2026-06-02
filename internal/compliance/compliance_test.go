@@ -58,6 +58,53 @@ branch_protection:
 			t.Fatal("expected an error for an invalid visibility")
 		}
 	})
+
+	t.Run("actions section", func(t *testing.T) {
+		cfg, err := Parse([]byte(`
+actions:
+  enabled: true
+  allowed_actions: selected
+  sha_pinning_required: true
+  default_workflow_permissions: read
+  can_approve_pull_request_reviews: false
+  fork_pr_contributor_approval: all_external_contributors
+`))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		a := cfg.Actions
+		if a == nil || a.Enabled == nil || !*a.Enabled {
+			t.Fatalf("actions.enabled not parsed: %+v", a)
+		}
+		if a.AllowedActions == nil || *a.AllowedActions != "selected" {
+			t.Errorf("allowed_actions not parsed: %+v", a)
+		}
+		if a.DefaultWorkflowPermissions == nil || *a.DefaultWorkflowPermissions != "read" {
+			t.Errorf("default_workflow_permissions not parsed: %+v", a)
+		}
+	})
+
+	t.Run("actions-only config is not empty", func(t *testing.T) {
+		if _, err := Parse([]byte("actions:\n  default_workflow_permissions: read\n")); err != nil {
+			t.Fatalf("an actions-only config should be valid: %v", err)
+		}
+	})
+
+	t.Run("invalid enums rejected", func(t *testing.T) {
+		for _, body := range []string{
+			"actions:\n  allowed_actions: everything\n",
+			"actions:\n  default_workflow_permissions: admin\n",
+			"actions:\n  fork_pr_contributor_approval: nobody\n",
+			"repository:\n  squash_merge_commit_title: TITLE\n",
+			"repository:\n  squash_merge_commit_message: BODY\n",
+			"repository:\n  merge_commit_title: TITLE\n",
+			"repository:\n  merge_commit_message: BODY\n",
+		} {
+			if _, err := Parse([]byte(body)); err == nil {
+				t.Errorf("expected an enum error for:\n%s", body)
+			}
+		}
+	})
 }
 
 func TestEvaluateRepository(t *testing.T) {
@@ -149,6 +196,99 @@ func TestEvaluateRulesetOnlyBranch(t *testing.T) {
 	}
 	if rep.HasFailures() {
 		t.Errorf("report should have no failures: %+v", rep.Checks)
+	}
+}
+
+func TestEvaluateActions(t *testing.T) {
+	cfg := Config{Actions: &ActionsConfig{
+		Enabled:                      new(true),
+		AllowedActions:               new("all"),
+		SHAPinningRequired:           new(true),
+		DefaultWorkflowPermissions:   new("read"),
+		CanApprovePullRequestReviews: new(false),
+		ForkPRContributorApproval:    new("first_time_contributors"),
+	}}
+
+	t.Run("readable with drift", func(t *testing.T) {
+		actual := Actual{Actions: model.ActionsSettings{
+			Enabled:                      true,
+			AllowedActions:               "all",
+			SHAPinningRequired:           false, // drift
+			PermissionsSource:            model.SettingsSource{Status: model.StatusOK},
+			DefaultWorkflowPermissions:   "write", // drift
+			CanApprovePullRequestReviews: false,
+			WorkflowPermissionsSource:    model.SettingsSource{Status: model.StatusOK},
+			ForkPRContributorApproval:    "first_time_contributors",
+			ForkPRApprovalSource:         model.SettingsSource{Status: model.StatusOK},
+		}}
+		rep := Evaluate("o", "r", "cfg", cfg, actual)
+		if len(rep.Checks) != 6 {
+			t.Fatalf("want 6 actions checks, got %d: %+v", len(rep.Checks), rep.Checks)
+		}
+		if got := rep.Count(model.ComplianceFail); got != 2 {
+			t.Errorf("want 2 fails (sha pinning + workflow permissions), got %d: %+v", got, rep.Checks)
+		}
+		for _, c := range rep.Checks {
+			if c.Category != "actions" {
+				t.Errorf("check should be in the actions category: %+v", c)
+			}
+		}
+	})
+
+	t.Run("groups skip independently", func(t *testing.T) {
+		actual := Actual{Actions: model.ActionsSettings{
+			Enabled:            true,
+			AllowedActions:     "all",
+			SHAPinningRequired: true,
+			PermissionsSource:  model.SettingsSource{Status: model.StatusOK},
+			// Workflow permissions and fork approval unreadable.
+			WorkflowPermissionsSource: model.SettingsSource{Status: model.StatusForbidden, Message: "needs admin"},
+			ForkPRApprovalSource:      model.SettingsSource{Status: model.StatusDisabled, Message: "not enabled or no access"},
+		}}
+		rep := Evaluate("o", "r", "cfg", cfg, actual)
+		if got := rep.Count(model.CompliancePass); got != 3 {
+			t.Errorf("the readable permissions group should pass, got %d pass: %+v", got, rep.Checks)
+		}
+		if got := rep.Count(model.ComplianceSkipped); got != 3 {
+			t.Errorf("unreadable groups should be skipped, got %d skipped: %+v", got, rep.Checks)
+		}
+		if rep.HasFailures() {
+			t.Error("unreadable actions settings must not be a failure")
+		}
+	})
+}
+
+func TestEvaluateRepositoryMergeMessagePolicies(t *testing.T) {
+	cfg := Config{Repository: &RepositoryConfig{
+		SquashMergeCommitTitle:   new("PR_TITLE"),
+		SquashMergeCommitMessage: new("PR_BODY"),
+		IsTemplate:               new(false),
+		AllowForking:             new(true),
+	}}
+	actual := Actual{Settings: model.RepoSettings{
+		SquashMergeCommitTitle:   "COMMIT_OR_PR_TITLE", // drift
+		SquashMergeCommitMessage: "PR_BODY",
+		IsTemplate:               false,
+		AllowForking:             true,
+		MergeSettingsSource:      model.SettingsSource{Status: model.StatusOK},
+	}}
+	rep := Evaluate("o", "r", "cfg", cfg, actual)
+	if got := rep.Count(model.ComplianceFail); got != 1 {
+		t.Errorf("want 1 fail (squash title), got %d: %+v", got, rep.Checks)
+	}
+	if got := rep.Count(model.CompliancePass); got != 3 {
+		t.Errorf("want 3 passes, got %d: %+v", got, rep.Checks)
+	}
+
+	// With the merge group unreadable, the format policies are skipped too but
+	// is_template / allow_forking still compare.
+	actual.Settings.MergeSettingsSource = model.SettingsSource{Status: model.StatusForbidden, Message: "needs a classic PAT"}
+	rep = Evaluate("o", "r", "cfg", cfg, actual)
+	if got := rep.Count(model.ComplianceSkipped); got != 2 {
+		t.Errorf("format policies should be skipped with the merge group, got %d skipped: %+v", got, rep.Checks)
+	}
+	if got := rep.Count(model.CompliancePass); got != 2 {
+		t.Errorf("is_template/allow_forking should still pass, got %d: %+v", got, rep.Checks)
 	}
 }
 

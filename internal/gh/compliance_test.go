@@ -69,6 +69,67 @@ func TestRepoSettingsMergeFieldsAbsent(t *testing.T) {
 	}
 }
 
+func TestActionsSettingsAllReadable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/o/r/actions/permissions":
+			_, _ = w.Write([]byte(`{"enabled": true, "allowed_actions": "selected", "sha_pinning_required": true}`))
+		case "/repos/o/r/actions/permissions/workflow":
+			_, _ = w.Write([]byte(`{"default_workflow_permissions": "read", "can_approve_pull_request_reviews": false}`))
+		case "/repos/o/r/actions/permissions/fork-pr-contributor-approval":
+			_, _ = w.Write([]byte(`{"approval_policy": "first_time_contributors"}`))
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	s := testClient(t, srv).ActionsSettings(context.Background(), "o", "r")
+	if s.PermissionsSource.Status != model.StatusOK || s.WorkflowPermissionsSource.Status != model.StatusOK || s.ForkPRApprovalSource.Status != model.StatusOK {
+		t.Fatalf("all sources should be ok: %+v", s)
+	}
+	if !s.Enabled || s.AllowedActions != "selected" || !s.SHAPinningRequired {
+		t.Errorf("permissions not mapped: %+v", s)
+	}
+	if s.DefaultWorkflowPermissions != "read" || s.CanApprovePullRequestReviews {
+		t.Errorf("workflow permissions not mapped: %+v", s)
+	}
+	if s.ForkPRContributorApproval != "first_time_contributors" {
+		t.Errorf("fork approval policy not mapped: %+v", s)
+	}
+}
+
+func TestActionsSettingsDegradesPerGroup(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/o/r/actions/permissions":
+			_, _ = w.Write([]byte(`{"enabled": true, "allowed_actions": "all"}`))
+		case "/repos/o/r/actions/permissions/workflow":
+			http.Error(w, `{"message":"Must have admin rights"}`, http.StatusForbidden)
+		case "/repos/o/r/actions/permissions/fork-pr-contributor-approval":
+			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	s := testClient(t, srv).ActionsSettings(context.Background(), "o", "r")
+	if s.PermissionsSource.Status != model.StatusOK || !s.Enabled || s.AllowedActions != "all" {
+		t.Errorf("readable permissions group should map: %+v", s)
+	}
+	if s.WorkflowPermissionsSource.Status != model.StatusForbidden {
+		t.Errorf("403 should be a forbidden source, got %+v", s.WorkflowPermissionsSource)
+	}
+	if s.ForkPRApprovalSource.Status != model.StatusDisabled {
+		t.Errorf("404 should be a disabled source, got %+v", s.ForkPRApprovalSource)
+	}
+	// Unreadable groups keep their zero values: the evaluator skips them.
+	if s.DefaultWorkflowPermissions != "" || s.CanApprovePullRequestReviews {
+		t.Errorf("unreadable group must stay zero: %+v", s)
+	}
+}
+
 // branchRulesJSON is the /rules/branches/<branch> response of a branch governed
 // by a squash-only ruleset (modeled on a real GitHub response).
 const branchRulesJSON = `[

@@ -51,11 +51,11 @@ errors → render → update cache.
 | `internal/image` | `shuck image`: parse an image ref (`[ghcr.io/]owner/name[:tag]`, or a bare `owner` to list all) and pick the latest matching version + manifest digest (pure selection in `Select`, sharing `internal/semver`; non-semver tags fall back to most-recent). Renders the digest-pin line / JSON; the stable shapes `image.Document` (single resolve) and `image.ListDocument` (list-all) back the MCP `inspect_images` tool. |
 | `internal/semver` | Tiny dependency-free semver slice (`Parse` / `Compare` / `Constraint.Matches`) shared by `action` and `image` for "pick the latest matching tag". |
 | `internal/security` | `shuck security`: sort + render a `model.SecurityReport` (code scanning, secret scanning, Dependabot alerts) to text / versioned JSON. Pure presentation; the gh layer fetches, the `cli.Security` core assembles. |
-| `internal/compliance` | `shuck compliance`: parse a `.github/compliance.yml` (`Parse`, strict / unknown-key-rejecting via yaml.v3) into a `Config`, then `Evaluate` it against the live settings the gh layer fetched (`Actual`) into a `model.ComplianceReport` — one pass/fail/skipped check per declared key. Renders text / versioned JSON (`Document`). Also the inverse, `shuck compliance discover` (`discover.go`): `Discover` snapshots the live settings into config bytes — a full `FromActual` snapshot when no config exists, or an in-place yaml.Node patch of an existing config's drifted declared keys (comments preserved). Pure logic; the `cli.Compliance` / `cli.ComplianceDiscover` cores do the I/O. |
+| `internal/compliance` | `shuck compliance`: parse a `.github/compliance.yml` (`Parse`, strict / unknown-key-rejecting and enum-validating via yaml.v3) into a `Config` (sections: `repository`, `security`, `actions`, `branch_protection`), then `Evaluate` it against the live settings the gh layer fetched (`Actual`) into a `model.ComplianceReport` — one pass/fail/skipped check per declared key. Renders text / versioned JSON (`Document`). Also the inverse, `shuck compliance discover` (`discover.go`): `Discover` snapshots the live settings into config bytes — a full `FromActual` snapshot when no config exists, or an in-place yaml.Node patch of an existing config's drifted declared keys (comments preserved). Pure logic; the `cli.Compliance` / `cli.ComplianceDiscover` cores do the I/O. |
 | `internal/release` | Self-update: resolve the latest GitHub release, download + checksum-verify the matching archive, and replace the running binary in place. Backs `shuck version --check` / `shuck upgrade`. |
 | `internal/setup` | `shuck setup`: install the embedded skill into `~/.claude/skills/shuck`, add a managed note to the user's `CLAUDE.md`, and optionally register the MCP at user scope (`claude mcp add`). The skill is `go:embed`-ed from the plugin in `main.go`, so the standalone install and the marketplace stay in sync. |
 | `internal/target` | Resolve owner/repo/PR from args or the local repo (via go-git). |
-| `internal/gh` | go-github (v88) wrappers: PR head, Actions runs/jobs, job-log download, non-Actions checks, the security-alert lists (`security.go`), the repo-settings / branch-protection (classic + rulesets via `ListRulesForBranch`) / vulnerability-alerts / file-content reads for compliance (`compliance.go`, same soft 403/404 degradation as security), and the GHCR Packages API (`packages.go`: `ListContainerPackages` / `ListImageVersions`, org-then-user 404 fallback). Also two small hand-rolled HTTP clients over `c.http`/`c.token`: a GraphQL client (`reviews.go`) for PR reviews + comment threads (`isResolved`/`resolvedBy` are GraphQL-only), and an OCI registry-v2 client (`registry.go`: `RegistryTags` / `RegistryDigest`) for resolving a public image's digest anonymously. |
+| `internal/gh` | go-github (v88) wrappers: PR head, Actions runs/jobs, job-log download, non-Actions checks, the security-alert lists (`security.go`), the repo-settings / branch-protection (classic + rulesets via `ListRulesForBranch`) / vulnerability-alerts / Actions-policy (`ActionsSettings`: repo permissions, default workflow token permissions, fork-PR approval) / file-content reads for compliance (`compliance.go`, same soft 403/404 degradation as security), and the GHCR Packages API (`packages.go`: `ListContainerPackages` / `ListImageVersions`, org-then-user 404 fallback). Also two small hand-rolled HTTP clients over `c.http`/`c.token`: a GraphQL client (`reviews.go`) for PR reviews + comment threads (`isResolved`/`resolvedBy` are GraphQL-only), and an OCI registry-v2 client (`registry.go`: `RegistryTags` / `RegistryDigest`) for resolving a public image's digest anonymously. |
 | `internal/cache` | `~/.cache/shuck/cache/<owner>/<repo>/<pr>/cache.json` load/save plus whole raw job logs under that PR's `logs/<jobID>-<attempt>.log` (re-parsed locally on re-run). Also `~/.cache/shuck/actions/<owner>/<repo>/tags.json` for `shuck action`, `~/.cache/shuck/security/<owner>/<repo>/alerts.json` for `shuck security`, and `~/.cache/shuck/images/<owner>/images.json` for `shuck image` (all keyed on the default-branch SHA + TTL by the CLI). `Purge(ttl, keep)` sweeps stale entries (by record mtime) off disk; every command calls it, exempting the active target. |
 | `internal/logs` | Parse a job log into `##[group]`-delimited sections; extract the high-signal error excerpt. |
 | `internal/render` | Format a `model.Report` to text. |
@@ -142,18 +142,25 @@ errors → render → update cache.
   success, `2` on an operational error; `--exit-code` makes open findings exit `1`.
 - **Compliance** (`shuck compliance`): `cli.Compliance` loads the intended
   settings from a `.github/compliance.yml` and compares them against the repo's
-  live settings. **The config is the source of truth** and is **partial** — only
-  declared keys are checked, and `compliance.Parse` rejects unknown keys (a typo
-  must not silently skip a check). Config discovery: `--config <path>` wins; else a
+  live settings. Four sections: `repository` (incl. the merge-commit-format
+  policies and `is_template`/`allow_forking`), `security`, `actions` (Actions
+  enabled/allowed, `sha_pinning_required`, `default_workflow_permissions`,
+  `can_approve_pull_request_reviews`, `fork_pr_contributor_approval`), and
+  `branch_protection`. **The config is the source of truth** and is **partial** —
+  only declared keys are checked, and `compliance.Parse` rejects unknown keys (a
+  typo must not silently skip a check) and invalid values for closed-vocabulary
+  settings (`validateEnums`). Config discovery: `--config <path>` wins; else a
   bare `shuck compliance` reads the **local checkout** (`PreferLocal`), falling
   back to fetching it from the repo, while an explicit `owner/repo` fetches it from
   the repo (`gh.FileContent`, `--ref` for a branch/tag/SHA). The gh reads
-  **degrade like security**: branch protection / `security_and_analysis` need
-  admin, so an unreadable setting is a **skipped** check (via `model.SettingsSource`),
-  never a false pass; a 404 on branch protection means "not protected" ⇒ each
-  declared protection **fails**. Two more unreadable-not-false guards: the
-  **merge settings** (`allow_squash_merge` & co.) are only returned to classic
-  tokens — fine-grained PATs / app tokens get them omitted, so
+  **degrade like security**: branch protection / `security_and_analysis` / the
+  three Actions-policy endpoints (`gh.ActionsSettings`, each group with its own
+  source) need admin, so an unreadable setting is a **skipped** check (via
+  `model.SettingsSource`), never a false pass; a 404 on branch protection means
+  "not protected" ⇒ each declared protection **fails**. Two more
+  unreadable-not-false guards: the **merge settings** (`allow_squash_merge` & co.,
+  including the squash/merge commit title/message formats) are only returned to
+  classic tokens — fine-grained PATs / app tokens get them omitted, so
   `model.RepoSettings.MergeSettingsSource` gates those checks (skipped, not
   all-false) — and **branch protection unions classic rules with repository
   rulesets** (`gh.BranchProtectionSettings` = `classicBranchProtection` merged
@@ -162,19 +169,25 @@ errors → render → update cache.
   `ViaRulesetsOnly`: `enforce_admins` (whose ruleset equivalent, bypass actors,
   is invisible via the rules API) is then skipped. The fetch client is the
   `newComplianceLister` package var (interface `complianceLister`), stubbed in
-  tests. Compliance is **uncached** (a few cheap reads, and the config is usually
-  local). Exit is `0` when compliant, `1` on drift (CI gating, suppress with
-  `--exit-zero`), `2` on an operational error.
+  tests. The Actions reads are only paid for when the config declares an
+  `actions:` section. Compliance is **uncached** (a few cheap reads, and the
+  config is usually local). Exit is `0` when compliant, `1` on drift (CI gating,
+  suppress with `--exit-zero`), `2` on an operational error. The repo's own
+  `.github/compliance.yml` is a **full snapshot** — every readable setting is
+  declared (only `enforce_admins` is absent, since main is ruleset-protected).
 - **Compliance discover** (`shuck compliance discover`): the inverse direction —
   `cli.ComplianceDiscover` snapshots the **live settings into the local config**.
   No config ⇒ `compliance.FromActual` generates a complete one (every readable
-  setting: repository, security, the default branch's protection); existing
-  config ⇒ `compliance.Discover` keeps **only its declared keys** (partial stays
-  partial) and patches drifted values **in place via the yaml.Node tree**
-  (`patchYAML`), preserving comments and key order. Unreadable settings are
-  omitted (new) / left untouched (existing), reported as `Notes` — this includes
-  the merge settings under a fine-grained/app token, and `enforce_admins` for a
+  setting: repository, security, Actions policies, the default branch's
+  protection); existing config ⇒ `compliance.Discover` keeps **only its declared
+  keys** (partial stays partial) and patches drifted values **in place via the
+  yaml.Node tree** (`patchYAML`), preserving comments and key order. Unreadable
+  settings are omitted (new) / left untouched (existing), reported as `Notes` —
+  this includes the merge settings under a fine-grained/app token, each
+  unreadable Actions-policy group, and `enforce_admins` for a
   ruleset-only-protected branch (never synced from a value that cannot be read).
+  String policies the API omitted (e.g. `allowed_actions` when Actions is
+  disabled) are never declared/synced, so a snapshot always re-parses.
   An up-to-date config is not rewritten. The pure logic (`Discover`/`FromActual`/`diffConfig`)
   lives in `internal/compliance/discover.go`; `cli.ComplianceDiscover` does the
   I/O (read/write the file, fetch live settings via the same `complianceLister`).

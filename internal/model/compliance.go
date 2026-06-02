@@ -17,7 +17,7 @@ const (
 // ComplianceCheck records one asserted setting: what the config wanted, what the
 // repository actually has, and whether they agree.
 type ComplianceCheck struct {
-	Category string           `json:"category"` // repository | security | branch_protection
+	Category string           `json:"category"` // repository | security | actions | branch_protection
 	Setting  string           `json:"setting"`  // e.g. allow_merge_commit, main.required_approving_review_count
 	Expected string           `json:"expected"`
 	Actual   string           `json:"actual,omitempty"`
@@ -80,6 +80,14 @@ type RepoSettings struct {
 	AllowUpdateBranch   bool `json:"allow_update_branch"`
 	DeleteBranchOnMerge bool `json:"delete_branch_on_merge"`
 
+	// Commit-message format policies for squash and merge commits. They belong
+	// to the same classic-token-only group as the allow_* merge settings; empty
+	// when not returned.
+	SquashMergeCommitTitle   string `json:"squash_merge_commit_title,omitempty"`   // PR_TITLE | COMMIT_OR_PR_TITLE
+	SquashMergeCommitMessage string `json:"squash_merge_commit_message,omitempty"` // PR_BODY | COMMIT_MESSAGES | BLANK
+	MergeCommitTitle         string `json:"merge_commit_title,omitempty"`          // PR_TITLE | MERGE_MESSAGE
+	MergeCommitMessage       string `json:"merge_commit_message,omitempty"`        // PR_BODY | PR_TITLE | BLANK
+
 	// MergeSettingsSource reports whether the merge-policy fields above could be
 	// read at all. GitHub returns them only to classic tokens with push access —
 	// fine-grained PATs and app installation tokens never receive them — so an
@@ -91,6 +99,9 @@ type RepoSettings struct {
 	HasProjects    bool `json:"has_projects"`
 	HasDiscussions bool `json:"has_discussions"`
 
+	IsTemplate   bool `json:"is_template"`
+	AllowForking bool `json:"allow_forking"`
+
 	WebCommitSignoffRequired bool `json:"web_commit_signoff_required"`
 	Archived                 bool `json:"archived"`
 
@@ -101,6 +112,27 @@ type RepoSettings struct {
 	DependabotSecurityUpdates    string `json:"dependabot_security_updates,omitempty"`
 
 	SecuritySource SettingsSource `json:"security_source"`
+}
+
+// ActionsSettings is the normalized GitHub Actions policy state shuck checks
+// for compliance. The values come from three separate admin-only endpoints, so
+// each group carries its own source: an unreadable group is skipped, never
+// reported as its zero value.
+type ActionsSettings struct {
+	// GET /repos/{owner}/{repo}/actions/permissions
+	Enabled            bool           `json:"enabled"`
+	AllowedActions     string         `json:"allowed_actions,omitempty"` // all | local_only | selected
+	SHAPinningRequired bool           `json:"sha_pinning_required"`
+	PermissionsSource  SettingsSource `json:"permissions_source"`
+
+	// GET /repos/{owner}/{repo}/actions/permissions/workflow
+	DefaultWorkflowPermissions   string         `json:"default_workflow_permissions,omitempty"` // read | write
+	CanApprovePullRequestReviews bool           `json:"can_approve_pull_request_reviews"`
+	WorkflowPermissionsSource    SettingsSource `json:"workflow_permissions_source"`
+
+	// GET /repos/{owner}/{repo}/actions/permissions/fork-pr-contributor-approval
+	ForkPRContributorApproval string         `json:"fork_pr_contributor_approval,omitempty"` // first_time_contributors_new_to_github | first_time_contributors | all_external_contributors
+	ForkPRApprovalSource      SettingsSource `json:"fork_pr_approval_source"`
 }
 
 // BranchProtection is the normalized branch-protection state shuck checks. When
