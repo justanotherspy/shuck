@@ -61,9 +61,9 @@ func TestRunLogsOfflineJSON(t *testing.T) {
 	}
 
 	var out, errb strings.Builder
-	code := runLogs([]string{"o/r", "42", "--offline", "--json"}, &out, &errb)
+	code := runLogs([]string{"o/r", "42", "--offline", "--json", "--exit-code"}, &out, &errb)
 	if code != 1 {
-		t.Fatalf("exit = %d, want 1; stderr=%q", code, errb.String())
+		t.Fatalf("exit = %d, want 1 (--exit-code with failures); stderr=%q", code, errb.String())
 	}
 	var doc jsonout.Document
 	if err := json.Unmarshal([]byte(out.String()), &doc); err != nil {
@@ -98,9 +98,9 @@ func TestOfflineFocusMatchesOnline(t *testing.T) {
 
 	t.Run("logs drops reviews", func(t *testing.T) {
 		var out, errb strings.Builder
-		code := runLogs([]string{"o/r", "42", "--offline"}, &out, &errb)
+		code := runLogs([]string{"o/r", "42", "--offline", "--exit-code"}, &out, &errb)
 		if code != 1 {
-			t.Fatalf("exit = %d, want 1 (CI failed); stderr=%q", code, errb.String())
+			t.Fatalf("exit = %d, want 1 (--exit-code, CI failed); stderr=%q", code, errb.String())
 		}
 		if strings.Contains(out.String(), "Reviews:") || strings.Contains(out.String(), "alice") {
 			t.Errorf("logs --offline leaked the cached reviews:\n%s", out.String())

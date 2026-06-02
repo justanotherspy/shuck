@@ -56,7 +56,7 @@ func runReviews(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "shuck:", err)
 		return 2
 	}
-	code, err := emit(stdout, report, o.json)
+	code, err := emit(stdout, report, o)
 	if err != nil {
 		fmt.Fprintln(stderr, "shuck:", err)
 		return 2

@@ -90,6 +90,7 @@ type options struct {
 	noCache            bool
 	offline            bool
 	json               bool
+	exitCode           bool
 	version            bool
 	watch              bool
 	interval           time.Duration
@@ -108,7 +109,8 @@ var subcommandAliases = map[string]string{
 }
 
 // Run executes shuck and returns the process exit code:
-// 0 = no failing checks, 1 = failing checks reported, 2 = operational error.
+// 0 = report produced, 2 = operational error. With --exit-code, failing
+// checks exit 1 (for CI gating).
 func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 {
 		cmd := args[0]
@@ -212,6 +214,7 @@ func registerInspectFlags(fs *flag.FlagSet, o *options) {
 	fs.BoolVar(&o.noCache, "no-cache", false, "do not read or write the cache")
 	fs.BoolVar(&o.offline, "offline", false, "render only from cache, without network access")
 	fs.BoolVar(&o.json, "json", false, "emit machine-readable JSON (stable schema) instead of text")
+	fs.BoolVar(&o.exitCode, "exit-code", false, "exit 1 when failing checks are found (for CI gating)")
 }
 
 func run(ctx context.Context, args []string, o options, stdout, stderr io.Writer) (int, error) {
@@ -226,7 +229,7 @@ func run(ctx context.Context, args []string, o options, stdout, stderr io.Writer
 	if err != nil {
 		return 0, err
 	}
-	return emitAll(stdout, res, o.json)
+	return emitAll(stdout, res, o)
 }
 
 // runWatch validates the watch knobs and drives the poll loop for tgt, wiring
@@ -246,7 +249,7 @@ func runWatch(ctx context.Context, tgt target.Target, o options, stdout, stderr 
 		return inspectWith(ctx, tgt, o)
 	}
 	emitFn := func(report *model.Report) (int, error) {
-		return emitAll(stdout, withSecurity(ctx, tgt, o, report), o.json)
+		return emitAll(stdout, withSecurity(ctx, tgt, o, report), o)
 	}
 	return watch(ctx, o, inspect, sleepCtx, emitFn, stdout, stderr)
 }
@@ -565,16 +568,16 @@ func (a *app) runReport(ctx context.Context, tgt target.Target) (*model.Report, 
 }
 
 // emit renders the report as JSON or human-readable text and returns the
-// process exit code for its failure state.
-func emit(stdout io.Writer, report *model.Report, jsonOut bool) (int, error) {
-	if jsonOut {
+// process exit code: 0 unless --exit-code is set and failing checks exist.
+func emit(stdout io.Writer, report *model.Report, o options) (int, error) {
+	if o.json {
 		if err := jsonout.Encode(stdout, report); err != nil {
 			return 0, err
 		}
-		return exitFor(report), nil
+		return exitFor(report, o.exitCode), nil
 	}
 	render.Report(stdout, report)
-	return exitFor(report), nil
+	return exitFor(report, o.exitCode), nil
 }
 
 // permuteArgs reorders args so flags may appear after positional arguments. Go's
@@ -846,8 +849,11 @@ func resolveToken(flagVal string) (string, error) {
 	return "", fmt.Errorf("no GitHub token found: set GITHUB_TOKEN (or GH_TOKEN), or pass --token")
 }
 
-func exitFor(r *model.Report) int {
-	if r.HasFailures() {
+// exitFor maps a report to a process exit code. Producing a report is success
+// (exit 0); only with --exit-code (gate) do failing checks flip the exit to 1,
+// so scripts and CI can opt in to gating without breaking plain consumers.
+func exitFor(r *model.Report, gate bool) int {
+	if gate && r.HasFailures() {
 		return 1
 	}
 	return 0

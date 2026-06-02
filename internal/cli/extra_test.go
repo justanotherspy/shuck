@@ -127,9 +127,9 @@ func TestRunDefaultWatch(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "test-token")
 
 	var out, errb strings.Builder
-	code := Run([]string{"--watch", "o/r", "42"}, &out, &errb)
+	code := Run([]string{"--watch", "o/r", "42", "--exit-code"}, &out, &errb)
 	if code != 1 {
-		t.Fatalf("exit = %d, want 1; stderr=%q", code, errb.String())
+		t.Fatalf("exit = %d, want 1 (--exit-code with failures); stderr=%q", code, errb.String())
 	}
 	if !strings.Contains(out.String(), "build") {
 		t.Errorf("watch should print the terminal report:\n%s", out.String())
@@ -179,9 +179,9 @@ func TestRunDefaultSecurityErrorDegrades(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "test-token")
 
 	var out, errb strings.Builder
-	code := Run([]string{"o/r", "42"}, &out, &errb)
+	code := Run([]string{"o/r", "42", "--exit-code"}, &out, &errb)
 	if code != 1 {
-		t.Fatalf("exit = %d, want 1 (CI verdict); stderr=%q", code, errb.String())
+		t.Fatalf("exit = %d, want 1 (--exit-code on the CI verdict); stderr=%q", code, errb.String())
 	}
 	if !strings.Contains(out.String(), "security alerts: unavailable") {
 		t.Errorf("expected the degraded security note:\n%s", out.String())

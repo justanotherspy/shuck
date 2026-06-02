@@ -65,13 +65,14 @@ func withSecurity(ctx context.Context, tgt target.Target, o options, report *mod
 // emitAll renders a combined result. Run/job and offline targets carry no
 // security half and fall back to the plain single-document output; otherwise
 // the text output appends a security section (or a one-line note) and --json
-// emits the combined envelope. The exit code reflects the CI/PR verdict only —
-// security findings do not flip it (use `shuck security --exit-code` for that).
-func emitAll(stdout io.Writer, res *combinedResult, jsonOut bool) (int, error) {
+// emits the combined envelope. With --exit-code, the exit reflects the CI/PR
+// verdict only — security findings never flip it (use `shuck security
+// --exit-code` for that).
+func emitAll(stdout io.Writer, res *combinedResult, o options) (int, error) {
 	if res.sec == nil && res.secErr == nil {
-		return emit(stdout, res.report, jsonOut)
+		return emit(stdout, res.report, o)
 	}
-	if jsonOut {
+	if o.json {
 		doc := combinedDocument{
 			SchemaVersion: combinedSchemaVersion,
 			Inspection:    jsonout.NewDocument(res.report),
@@ -87,7 +88,7 @@ func emitAll(stdout io.Writer, res *combinedResult, jsonOut bool) (int, error) {
 		if err := enc.Encode(doc); err != nil {
 			return 0, err
 		}
-		return exitFor(res.report), nil
+		return exitFor(res.report, o.exitCode), nil
 	}
 	render.Report(stdout, res.report)
 	fmt.Fprintln(stdout)
@@ -96,5 +97,5 @@ func emitAll(stdout io.Writer, res *combinedResult, jsonOut bool) (int, error) {
 	} else {
 		security.Render(stdout, res.sec)
 	}
-	return exitFor(res.report), nil
+	return exitFor(res.report, o.exitCode), nil
 }

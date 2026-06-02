@@ -352,9 +352,9 @@ func TestRunJSONOfflineFlagsAfterTarget(t *testing.T) {
 	}
 
 	var stdout, stderr strings.Builder
-	code := Run([]string{"--offline", "o/r", "42", "--json"}, &stdout, &stderr)
+	code := Run([]string{"--offline", "o/r", "42", "--json", "--exit-code"}, &stdout, &stderr)
 	if code != 1 {
-		t.Fatalf("exit = %d, want 1 (failures present); stderr=%q", code, stderr.String())
+		t.Fatalf("exit = %d, want 1 (--exit-code with failures); stderr=%q", code, stderr.String())
 	}
 
 	var doc jsonout.Document
@@ -374,12 +374,18 @@ func TestRunJSONOfflineFlagsAfterTarget(t *testing.T) {
 }
 
 func TestExitFor(t *testing.T) {
-	if exitFor(&model.Report{}) != 0 {
+	if exitFor(&model.Report{}, false) != 0 {
 		t.Errorf("clean report should exit 0")
 	}
 	withFail := &model.Report{FailedJobs: []model.JobResult{{ID: 1}}}
-	if exitFor(withFail) != 1 {
-		t.Errorf("report with failures should exit 1")
+	if exitFor(withFail, false) != 0 {
+		t.Errorf("report with failures should exit 0 by default (gating is opt-in)")
+	}
+	if exitFor(withFail, true) != 1 {
+		t.Errorf("report with failures should exit 1 with --exit-code")
+	}
+	if exitFor(&model.Report{}, true) != 0 {
+		t.Errorf("clean report should exit 0 even with --exit-code")
 	}
 }
 
@@ -405,20 +411,20 @@ func running(n int) *model.Report {
 }
 
 // TestWatchStopsWhenTerminal: the loop ends as soon as a report has no running
-// jobs, drives emit once, and reports the failure-aware exit code.
+// jobs, drives emit once, and reports the failure-aware exit code (--exit-code).
 func TestWatchStopsWhenTerminal(t *testing.T) {
 	terminal := &model.Report{FailedJobs: []model.JobResult{{ID: 1, Name: "build", Conclusion: "failure"}}}
 	var calls, sleeps int
 	sleep := func(context.Context, time.Duration) bool { sleeps++; return true }
 
 	var stdout, stderr strings.Builder
-	emitFn := func(r *model.Report) (int, error) { return emit(&stdout, r, false) }
+	emitFn := func(r *model.Report) (int, error) { return emit(&stdout, r, options{exitCode: true}) }
 	code, err := watch(context.Background(), options{interval: time.Second}, reportSeq(&calls, terminal), sleep, emitFn, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("watch: %v", err)
 	}
 	if code != 1 {
-		t.Errorf("exit = %d, want 1 (failures present)", code)
+		t.Errorf("exit = %d, want 1 (--exit-code with failures present)", code)
 	}
 	if calls != 1 {
 		t.Errorf("inspect calls = %d, want 1", calls)
@@ -436,7 +442,7 @@ func TestWatchPollsUntilTerminal(t *testing.T) {
 	sleep := func(context.Context, time.Duration) bool { sleeps++; return true }
 
 	var stdout, stderr strings.Builder
-	emitFn := func(r *model.Report) (int, error) { return emit(&stdout, r, false) }
+	emitFn := func(r *model.Report) (int, error) { return emit(&stdout, r, options{}) }
 	code, err := watch(context.Background(), options{interval: time.Second},
 		reportSeq(&calls, running(2), running(1), terminal), sleep, emitFn, &stdout, &stderr)
 	if err != nil {
@@ -460,7 +466,7 @@ func TestWatchStopsOnCancel(t *testing.T) {
 	sleep := func(context.Context, time.Duration) bool { return false } // cancelled
 
 	var stdout, stderr strings.Builder
-	emitFn := func(r *model.Report) (int, error) { return emit(&stdout, r, false) }
+	emitFn := func(r *model.Report) (int, error) { return emit(&stdout, r, options{}) }
 	code, err := watch(context.Background(), options{interval: time.Second},
 		reportSeq(&calls, running(1)), sleep, emitFn, &stdout, &stderr)
 	if err != nil {
@@ -484,7 +490,7 @@ func TestWatchTimesOut(t *testing.T) {
 	sleep := func(context.Context, time.Duration) bool { sleeps++; return true }
 
 	var stdout, stderr strings.Builder
-	emitFn := func(r *model.Report) (int, error) { return emit(&stdout, r, false) }
+	emitFn := func(r *model.Report) (int, error) { return emit(&stdout, r, options{}) }
 	code, err := watch(context.Background(), options{interval: time.Minute, watchTimeout: time.Nanosecond},
 		reportSeq(&calls, running(1)), sleep, emitFn, &stdout, &stderr)
 	if err != nil {
@@ -688,9 +694,9 @@ func TestRunUnicodeDashFlagsEndToEnd(t *testing.T) {
 	}
 
 	var stdout, stderr strings.Builder
-	code := Run([]string{"o/r", "42", "—offline", "—json"}, &stdout, &stderr)
+	code := Run([]string{"o/r", "42", "—offline", "—json", "—exit-code"}, &stdout, &stderr)
 	if code != 1 {
-		t.Fatalf("exit = %d, want 1 (failures present); stderr=%q", code, stderr.String())
+		t.Fatalf("exit = %d, want 1 (--exit-code with failures); stderr=%q", code, stderr.String())
 	}
 
 	var doc jsonout.Document

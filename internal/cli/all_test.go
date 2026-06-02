@@ -35,12 +35,12 @@ func okSecurityReport() *model.SecurityReport {
 func TestEmitAllCombinedText(t *testing.T) {
 	res := &combinedResult{report: failingReport(), sec: okSecurityReport()}
 	var out strings.Builder
-	code, err := emitAll(&out, res, false)
+	code, err := emitAll(&out, res, options{})
 	if err != nil {
 		t.Fatalf("emitAll: %v", err)
 	}
-	if code != 1 {
-		t.Errorf("exit = %d, want 1 (CI failures present)", code)
+	if code != 0 {
+		t.Errorf("exit = %d, want 0 (report produced; gating is opt-in)", code)
 	}
 	got := out.String()
 	for _, want := range []string{"build", "fix parser", "security alerts (open)", "lodash"} {
@@ -48,12 +48,22 @@ func TestEmitAllCombinedText(t *testing.T) {
 			t.Errorf("missing %q in combined output:\n%s", want, got)
 		}
 	}
+
+	// --exit-code opts in to gating on the CI verdict.
+	out.Reset()
+	code, err = emitAll(&out, res, options{exitCode: true})
+	if err != nil {
+		t.Fatalf("emitAll --exit-code: %v", err)
+	}
+	if code != 1 {
+		t.Errorf("exit = %d, want 1 (--exit-code with CI failures present)", code)
+	}
 }
 
 func TestEmitAllCombinedJSON(t *testing.T) {
 	res := &combinedResult{report: failingReport(), sec: okSecurityReport()}
 	var out strings.Builder
-	if _, err := emitAll(&out, res, true); err != nil {
+	if _, err := emitAll(&out, res, options{json: true}); err != nil {
 		t.Fatalf("emitAll: %v", err)
 	}
 	var doc struct {
@@ -82,19 +92,19 @@ func TestEmitAllCombinedJSON(t *testing.T) {
 func TestEmitAllSecurityError(t *testing.T) {
 	res := &combinedResult{report: failingReport(), secErr: errors.New("forbidden")}
 	var out strings.Builder
-	code, err := emitAll(&out, res, false)
+	code, err := emitAll(&out, res, options{exitCode: true})
 	if err != nil {
 		t.Fatalf("emitAll: %v", err)
 	}
 	if code != 1 {
-		t.Errorf("exit = %d, want 1 (CI verdict, not security)", code)
+		t.Errorf("exit = %d, want 1 (--exit-code on the CI verdict, not security)", code)
 	}
 	if !strings.Contains(out.String(), "security alerts: unavailable (forbidden)") {
 		t.Errorf("missing degraded note:\n%s", out.String())
 	}
 
 	out.Reset()
-	if _, err := emitAll(&out, res, true); err != nil {
+	if _, err := emitAll(&out, res, options{json: true}); err != nil {
 		t.Fatalf("emitAll json: %v", err)
 	}
 	var doc struct {
@@ -114,7 +124,7 @@ func TestEmitAllSecurityError(t *testing.T) {
 func TestEmitAllNoSecurityHalfPlain(t *testing.T) {
 	res := &combinedResult{report: failingReport()}
 	var out strings.Builder
-	if _, err := emitAll(&out, res, true); err != nil {
+	if _, err := emitAll(&out, res, options{json: true}); err != nil {
 		t.Fatalf("emitAll: %v", err)
 	}
 	if strings.Contains(out.String(), "\"inspection\"") {

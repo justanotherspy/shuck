@@ -51,12 +51,12 @@ func TestRunWatchHappyPath(t *testing.T) {
 	tgt := target.Target{Owner: "o", Repo: "r", Number: 42}
 	code, err := runWatch(context.Background(), tgt,
 		options{watch: true, interval: time.Second, reviewCommentLimit: 5,
-			context: 10, shortThreshold: 100, tail: 100, state: "open"}, &out, &errb)
+			context: 10, shortThreshold: 100, tail: 100, state: "open", exitCode: true}, &out, &errb)
 	if err != nil {
 		t.Fatalf("runWatch: %v", err)
 	}
 	if code != 1 {
-		t.Errorf("exit = %d, want 1 (failures present)", code)
+		t.Errorf("exit = %d, want 1 (--exit-code with failures present)", code)
 	}
 	if !strings.Contains(out.String(), "build") {
 		t.Errorf("expected the report on stdout, got %q", out.String())
@@ -132,7 +132,8 @@ func TestInspectWithOfflineFocus(t *testing.T) {
 func TestRunDefaultEndToEnd(t *testing.T) {
 	for _, jsonOut := range []bool{false, true} {
 		name := "text"
-		args := []string{"o/r", "42"}
+		// --exit-code opts in to the failing-checks verdict (exit 1).
+		args := []string{"o/r", "42", "--exit-code"}
 		if jsonOut {
 			name = "json"
 			args = append(args, "--json")
@@ -167,9 +168,10 @@ func TestRunLogsSubcommandEndToEnd(t *testing.T) {
 	withStubInspect(t, s)
 
 	var out, errb strings.Builder
+	// Default (no --exit-code): producing the report is success, even with CI failures.
 	code := Run([]string{"logs", "o/r", "42"}, &out, &errb)
-	if code != 1 {
-		t.Fatalf("exit = %d, want 1; stderr=%q", code, errb.String())
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (report produced; gating is opt-in); stderr=%q", code, errb.String())
 	}
 	if !strings.Contains(out.String(), "build") {
 		t.Errorf("missing CI output:\n%s", out.String())
@@ -189,9 +191,9 @@ func TestRunLogsSingleRun(t *testing.T) {
 	withStubInspect(t, s)
 
 	var out, errb strings.Builder
-	code := Run([]string{"logs", "--run", "123", "o/r"}, &out, &errb)
+	code := Run([]string{"logs", "--run", "123", "o/r", "--exit-code"}, &out, &errb)
 	if code != 1 {
-		t.Fatalf("exit = %d, want 1; stderr=%q", code, errb.String())
+		t.Fatalf("exit = %d, want 1 (--exit-code with failures); stderr=%q", code, errb.String())
 	}
 	if s.runCalls != 1 {
 		t.Errorf("RunReport calls = %d, want 1", s.runCalls)

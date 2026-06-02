@@ -159,8 +159,27 @@ jobs:
           node-version: "22"
       # `npm ci` installs from the committed lockfile (integrity-hash pinned;
       # kept current by the npm Dependabot ecosystem).
+      #
+      # The claude native binary ships in a platform-specific optionalDependency
+      # (@anthropic-ai/claude-code-linux-x64), and npm swallows optional-dep
+      # install failures silently — `npm ci` can exit 0 with the binary missing.
+      # Verify it actually runs; if not, retry once from a clean slate and fail
+      # loudly with the real install error instead of the wrapper's hint.
       - name: Install Claude Code CLI
         working-directory: .github/plugin-validate
-        run: npm ci
+        run: |
+          for attempt in 1 2; do
+            npm ci
+            if ./node_modules/.bin/claude --version; then
+              exit 0
+            fi
+            echo "::warning::claude native binary missing after npm ci (attempt ${attempt}): the platform optionalDependency was silently skipped; retrying with a clean cache"
+            rm -rf node_modules
+            npm cache clean --force
+          done
+          echo "::error::claude native binary still missing after 2 install attempts; running the postinstall manually to surface the real error"
+          npm ci
+          node ./node_modules/@anthropic-ai/claude-code/install.cjs
+          exit 1
       - name: Validate shuck plugin manifest
         run: ./.github/plugin-validate/node_modules/.bin/claude plugin validate --strict ./plugins/shuck
