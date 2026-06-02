@@ -334,9 +334,12 @@ only when nothing stable matches, and an image with no semver tags falls back
 to its most recently pushed version (preferring a `latest` tag).
 
 Listing every image under an owner uses the GitHub Packages API and **needs a
-token** with the `read:packages` scope (the API has no anonymous enumeration).
-Resolving a single **public** `ghcr.io/owner/name` image works without a token
-via the anonymous registry API; private images need the token. Listings are
+classic token** with the `read:packages` scope (the API has no anonymous
+enumeration, and fine-grained tokens are not supported by the Packages API at
+all). Resolving a single **public** `ghcr.io/owner/name` image works without a
+token via the anonymous registry API — which is also used as a fallback when
+the configured token cannot read packages; private images need the classic
+token. Listings are
 cached under `~/.cache/shuck/images/<owner>` for an hour; `--refresh`
 re-fetches. Add `--json` for a machine-readable document:
 

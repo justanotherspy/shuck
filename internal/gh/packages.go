@@ -136,3 +136,15 @@ func isNotFound(err error) bool {
 	var ghErr *github.ErrorResponse
 	return errors.As(err, &ghErr) && ghErr.Response != nil && ghErr.Response.StatusCode == http.StatusNotFound
 }
+
+// IsAuthError reports whether err is a GitHub API authentication/authorization
+// failure (401 or 403) — e.g. a token without the read:packages scope, or a
+// fine-grained token (which the Packages API does not support at all). Callers
+// use it to fall back to the anonymous registry API for public images.
+func IsAuthError(err error) bool {
+	var ghErr *github.ErrorResponse
+	if !errors.As(err, &ghErr) || ghErr.Response == nil {
+		return false
+	}
+	return ghErr.Response.StatusCode == http.StatusUnauthorized || ghErr.Response.StatusCode == http.StatusForbidden
+}

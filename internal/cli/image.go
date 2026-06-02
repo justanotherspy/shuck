@@ -49,9 +49,11 @@ Usage:
   shuck image ghcr.io/<owner>/<name>        resolve one image to its latest digest
   shuck image ghcr.io/<owner>/<name>:<tag>  resolve a version (e.g. :v3, :1.2) or exact tag (:latest)
 
-Listing every image uses the GitHub Packages API and needs a token with the
-read:packages scope. Resolving a single public ghcr.io image works without a
-token via the anonymous registry API; private images need a token.
+Listing every image uses the GitHub Packages API and needs a classic token with
+the read:packages scope (fine-grained tokens are not supported by the Packages
+API). Resolving a single public ghcr.io image works without a token via the
+anonymous registry API — also used as a fallback when the token cannot read
+packages; private images need the classic token.
 
 The digest is the immutable manifest digest (sha256:…). For a multi-arch image
 it is the image-index digest, which is the correct value to pin.
@@ -161,6 +163,13 @@ func Image(ctx context.Context, ref image.Ref, opts ImageOptions) (image.Resolve
 
 	pkgs, err := loadOrFetchImages(ctx, lister, ref.Owner, opts.Refresh)
 	if err != nil {
+		// The token cannot use the Packages API (no read:packages scope, or a
+		// fine-grained token — the Packages API only accepts classic tokens).
+		// The image may still be public, so degrade to the anonymous registry
+		// path instead of failing.
+		if gh.IsAuthError(err) {
+			return resolveImageAnonymous(ctx, lister, ref)
+		}
 		return image.Resolved{}, err
 	}
 	versions, ok := findPackage(pkgs, ref.Name)
@@ -169,6 +178,9 @@ func Image(ctx context.Context, ref image.Ref, opts ImageOptions) (image.Resolve
 		// fetch just this image's versions directly.
 		versions, err = lister.ListImageVersions(ctx, ref.Owner, ref.Name)
 		if err != nil {
+			if gh.IsAuthError(err) {
+				return resolveImageAnonymous(ctx, lister, ref)
+			}
 			return image.Resolved{}, err
 		}
 	}
@@ -219,7 +231,13 @@ func Images(ctx context.Context, owner string, opts ImageOptions) ([]model.Image
 		return nil, fmt.Errorf("listing images needs a token with the read:packages scope (set GITHUB_TOKEN/GH_TOKEN or pass --token); a single public image (ghcr.io/owner/name) resolves without one")
 	}
 	lister := NewImageLister(token)
-	return loadOrFetchImages(ctx, lister, owner, opts.Refresh)
+	pkgs, err := loadOrFetchImages(ctx, lister, owner, opts.Refresh)
+	if err != nil && gh.IsAuthError(err) {
+		// The Packages API only accepts classic tokens with the read:packages
+		// scope; fine-grained tokens cannot be granted that scope at all.
+		return nil, fmt.Errorf("%w\n\nthe token cannot use the GitHub Packages API: listing images needs a *classic* token with the read:packages scope (fine-grained tokens are not supported by the Packages API); a single public image (ghcr.io/owner/name) resolves without a token", err)
+	}
+	return pkgs, err
 }
 
 // loadOrFetchImages returns an owner's image packages from the cache when a
