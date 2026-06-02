@@ -160,8 +160,33 @@ func Select(versions []model.ImageVersion, constraint string) (model.ImageVersio
 	}
 
 	// No semver-tagged version and no constraint: fall back to the most recently
-	// updated version that carries a tag, preferring a "latest" tag.
+	// updated version that carries a real (non-referrer) tag, preferring a
+	// "latest" tag.
 	return selectNewest(versions)
+}
+
+// IsReferrerTag reports whether tag follows the OCI referrer-tag convention —
+// "sha256-<digest>" with an optional artifact suffix (".sig", ".att",
+// ".sbom", …) — that cosign and other signers use to attach signatures,
+// attestations, and SBOMs to an image. These artifacts are pushed alongside
+// (and after) the image they describe, so they are never a valid pin target.
+func IsReferrerTag(tag string) bool {
+	hex, ok := strings.CutPrefix(tag, "sha256-")
+	if !ok {
+		return false
+	}
+	if i := strings.IndexByte(hex, '.'); i >= 0 {
+		hex = hex[:i]
+	}
+	if len(hex) != 64 {
+		return false
+	}
+	for _, c := range hex {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // selectExactTag returns the version whose tag list contains tag exactly.
@@ -175,28 +200,41 @@ func selectExactTag(versions []model.ImageVersion, tag string) (model.ImageVersi
 }
 
 // selectNewest returns the most recently updated version that has at least one
-// tag, choosing a "latest" tag when present, else the first tag.
+// non-referrer tag, choosing a "latest" tag when present, else the first such
+// tag. Versions named only by referrer tags (cosign signatures, attestations,
+// SBOMs — see IsReferrerTag) describe another image and are skipped, so a
+// signature artifact pushed after the image it signs never wins the fallback.
 func selectNewest(versions []model.ImageVersion) (model.ImageVersion, string, error) {
 	var best *model.ImageVersion
+	var bestTag string
 	for i := range versions {
-		if len(versions[i].Tags) == 0 {
+		tag, ok := displayTag(versions[i].Tags)
+		if !ok {
 			continue
 		}
 		if best == nil || versions[i].UpdatedAt.After(best.UpdatedAt) {
-			best = &versions[i]
+			best, bestTag = &versions[i], tag
 		}
 	}
 	if best == nil {
 		return model.ImageVersion{}, "", fmt.Errorf("no tagged versions found")
 	}
-	tag := best.Tags[0]
-	for _, t := range best.Tags {
-		if t == "latest" {
-			tag = t
-			break
+	return *best, bestTag, nil
+}
+
+// displayTag picks the tag that names a version: "latest" when present, else
+// the first non-referrer tag. ok is false when every tag is a referrer tag (or
+// the version has none), meaning the version is not a pinnable image.
+func displayTag(tags []string) (string, bool) {
+	if slices.Contains(tags, "latest") {
+		return "latest", true
+	}
+	for _, t := range tags {
+		if !IsReferrerTag(t) {
+			return t, true
 		}
 	}
-	return *best, tag, nil
+	return "", false
 }
 
 // LatestVersion returns the package's newest version and the tag that names it,

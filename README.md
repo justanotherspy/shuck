@@ -331,7 +331,9 @@ For a multi-arch image the digest is the **image-index** digest — the correct
 value to pin, since it covers every platform. Tag selection mirrors
 `shuck action`: the latest **stable** semver tag wins, a prerelease is chosen
 only when nothing stable matches, and an image with no semver tags falls back
-to its most recently pushed version (preferring a `latest` tag).
+to its most recently pushed version (preferring a `latest` tag). Cosign
+signature / attestation artifacts (their `sha256-<digest>` referrer tags) are
+never selected — the pin always points at a runnable image.
 
 Listing every image under an owner uses the GitHub Packages API and **needs a
 classic token** with the `read:packages` scope (the API has no anonymous
@@ -381,8 +383,10 @@ It covers three sources:
 
 Each source degrades independently: one that is not enabled (or not visible to
 your token) is reported and skipped rather than failing the command, so a repo
-with only some features enabled still produces output. By default only **open**
-alerts are shown; widen with `--state open|all|dismissed|fixed|resolved`.
+with only some features enabled still produces output. A repository that does
+not exist (or is invisible to the token) is an error, not an empty report. By
+default only **open** alerts are shown; widen with
+`--state open|all|dismissed|fixed|resolved`.
 
 ```
 justanotherspy/shuck — security alerts (open)

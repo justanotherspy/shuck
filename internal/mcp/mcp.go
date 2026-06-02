@@ -72,7 +72,7 @@ this to pin a workflow's actions to immutable SHAs.
 
 Pass action as owner/action[/subpath][@version]. Auth is optional for public
 repos; a GitHub token in GITHUB_TOKEN or GH_TOKEN lifts the unauthenticated
-rate limit. Tags are cached for a day; set refresh to re-fetch.`
+rate limit. Tags are cached for an hour; set refresh to re-fetch.`
 
 const inspectImagesDesc = `List GHCR container images for an owner, or resolve one image to its digest.
 
@@ -409,7 +409,7 @@ func (in checkComplianceInput) targetArgs() []string {
 
 type inspectActionInput struct {
 	Action  string `json:"action" jsonschema:"GitHub Action as owner/action[/subpath][@version], e.g. actions/checkout@v4. Omit the version for the latest stable release."`
-	Refresh bool   `json:"refresh,omitempty" jsonschema:"Ignore the cached tag list and re-fetch (tags are cached for a day)."`
+	Refresh bool   `json:"refresh,omitempty" jsonschema:"Ignore the cached tag list and re-fetch (tags are cached for an hour)."`
 }
 
 func inspectAction(ctx context.Context, _ *mcp.CallToolRequest, in inspectActionInput) (*mcp.CallToolResult, action.Document, error) {
