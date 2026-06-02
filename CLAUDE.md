@@ -75,6 +75,11 @@ errors → render → update cache.
   step-count is capped at the error sections found (queued steps are also marked
   "cancelled" by the API but have no section), a missing log degrades to a bare
   listing instead of an error step, and cancellation never flips the exit code.
+- **Exit codes are operational, gating is opt-in**: `shuck` / `shuck logs` /
+  `shuck all` exit `0` whenever the report is produced (even when it shows
+  failing checks) and `2` on an operational error; `--exit-code` makes failing
+  checks exit `1` for CI gating, matching `shuck security --exit-code`. See
+  `cli.exitFor`.
 - **Caching is advisory**: cheap metadata (head SHA, run/job listing, reviews
   fingerprint) is always re-validated. On the same head commit a job's **whole raw
   log is cached** (`cache.SaveJobLog`/`LoadJobLog`, keyed by `(job id, run

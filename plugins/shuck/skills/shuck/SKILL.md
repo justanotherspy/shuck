@@ -114,6 +114,8 @@ Focusing and selection:
 Output, cache, auth (default path and the focus subcommands):
 
 - `--json` — emit the stable JSON document instead of text.
+- `--exit-code` — exit `1` when failing checks are found (for CI gating; the
+  default is exit `0` whenever the report is produced).
 - `--refresh` — ignore and rebuild the cache (use when a job was re-run).
 - `--no-cache` — do not read or write the cache.
 - `--offline` — render only from cache, no network (requires an explicit PR;
@@ -129,13 +131,15 @@ Watch-only (default/`all` path):
 
 ### Exit codes
 
-The exit code is the verdict — use it to branch without parsing output:
+Producing a report is success — read the output (or `--json`) for the verdict:
 
-- `0` — checks finished, none failed.
-- `1` — checks finished and some failed (read the output / JSON for the steps).
-  Security findings do **not** flip the exit code on the default/`all` path; use
-  `shuck security --exit-code` to gate on open alerts.
+- `0` — the report was produced (it may well show failing checks).
 - `2` — operational error (bad/missing auth, target not found, network).
+
+To branch on the verdict without parsing output, pass `--exit-code`: failing
+checks then exit `1`. Security findings do **not** flip the exit code on the
+default/`all` path even with `--exit-code`; use `shuck security --exit-code`
+to gate on open alerts.
 
 ### Examples
 
@@ -356,8 +360,8 @@ shuck --watch <target>
 It re-checks every `--interval` and returns **only when no jobs are still
 running** — every check has reached a terminal state (success, failure,
 cancelled, timed out, …). Then it prints the final report (CI + reviews +
-security) and exits with the verdict code above (`0` clean, `1` failures, `2`
-error).
+security); add `--exit-code` to exit with the verdict (`0` clean, `1` failures,
+`2` error).
 
 How to run it well:
 
@@ -367,7 +371,8 @@ How to run it well:
 - **Bound the wait** with `--watch-timeout <dur>` (e.g. `--watch-timeout 30m`);
   on timeout shuck prints the latest snapshot instead of waiting forever.
 - **Want structured final output?** Add `--json`, or once watch reports failures
-  (exit `1`) call `inspect_logs` for the typed failing-step detail.
+  (exit `1` with `--exit-code`) call `inspect_logs` for the typed failing-step
+  detail.
 - Progress lines ("N running, M failed so far …") go to **stderr**; the final
   report (text or `--json`) is the only thing on **stdout**.
 

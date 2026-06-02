@@ -173,6 +173,7 @@ shuck justanotherspy/shuck 42
 | `--no-cache` | false | Do not read or write the cache. |
 | `--offline` | false | Render only from cache, without network access. |
 | `--json` | false | Emit machine-readable JSON (stable schema) instead of text. |
+| `--exit-code` | false | Exit `1` when failing checks are found (for CI gating). |
 | `--version` | false | Print the shuck version and exit. |
 | `--watch` | false | Poll until every check reaches a terminal state, then print the report. |
 | `--interval D` | 15s | Poll interval for `--watch`. |
@@ -184,20 +185,22 @@ or two dashes (`-json` and `--json` are equivalent). A leading Unicode dash is
 tolerated too, so a flag mangled by macOS "smart dashes" or a rich-text
 copy-paste (`shuck 42 —full`) still works.
 
-Exit codes: `0` no failing checks · `1` failing checks reported · `2` error.
+Exit codes: `0` report produced (even when it shows failing checks) · `2` error.
+Producing the report you asked for is success; pass `--exit-code` to make
+failing checks exit `1` for CI gating (matching `shuck security --exit-code`).
 Cancelled jobs are reported (with the interrupted step's last log output, when
-a log exists) but do **not** by themselves set a non-zero exit code —
-cancellation is often deliberate (a superseded run, a manual stop), so it stays
-`0` unless a real failure is also present.
+a log exists) but do **not** by themselves flip the `--exit-code` verdict —
+cancellation is often deliberate (a superseded run, a manual stop), so it counts
+as clean unless a real failure is also present.
 
 ### Watching until CI finishes
 
 `--watch` turns shuck into a poll-until-complete loop: it re-checks the target
 every `--interval` (default 15s) and returns **only when no jobs are still
 running** — every check has reached a terminal state (success, failure,
-cancelled, timed out, …) — then prints the final report. The exit code is the
-verdict (`0` clean, `1` failures, `2` error), so it composes in scripts and
-gives an agent a clear "watching is done" signal.
+cancelled, timed out, …) — then prints the final report. Add `--exit-code` to
+make the exit code the verdict (`0` clean, `1` failures, `2` error), so it
+composes in scripts and gives an agent a clear "watching is done" signal.
 
 ```sh
 shuck --watch justanotherspy/shuck 42                 # wait, then print
