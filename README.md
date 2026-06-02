@@ -127,6 +127,7 @@ shuck logs [target] [--run <id|url>]  # (l) failing CI step logs for a PR or a s
 shuck reviews [target]      # (r) a PR's reviews and review-comment threads
 shuck all [target]          # CI + reviews + security (the default)
 shuck action <owner>/<action>[@<version>]  # (a) resolve an Action to its latest tag + SHA for pinning
+shuck image [owner | ghcr.io/owner/name[:tag]]  # (i) list GHCR images, or resolve one to its latest digest
 shuck security [owner/repo | url]  # (s) summarize a repo's security alerts (code scanning, secrets, Dependabot)
 shuck compliance [owner/repo | url]  # (c) check a repo's settings against its .github/compliance.yml
 shuck compliance discover [owner/repo]  # snapshot the live settings into .github/compliance.yml
@@ -297,10 +298,59 @@ stable matches. Add `--json` for a machine-readable document:
 }
 ```
 
-Resolved tags are cached under `~/.cache/shuck/actions/<owner>/<repo>` for a day to
-avoid re-listing; `--refresh` re-fetches immediately. Authentication is optional
+Resolved tags are cached under `~/.cache/shuck/actions/<owner>/<repo>` for an hour
+to avoid re-listing; `--refresh` re-fetches immediately. Authentication is optional
 for public repos — set `GITHUB_TOKEN`/`GH_TOKEN` (or `--token`) to lift the
 unauthenticated rate limit.
+
+### Pinning container images to a digest
+
+`shuck image` does for GHCR container images what `shuck action` does for
+Actions: it resolves an image to its latest matching tag and the immutable
+manifest digest (`sha256:…`) it points to, so a `FROM` line or a workflow's
+`container:` reference can be pinned to a digest:
+
+```sh
+shuck image                                      # list every image under the local repo's owner
+shuck image chainguard                           # list every image under an owner
+shuck image ghcr.io/justanotherspy/shuck         # resolve one image to its latest digest
+shuck image ghcr.io/justanotherspy/shuck:v1      # latest v1.x.x
+shuck image ghcr.io/justanotherspy/shuck:latest  # an exact (non-semver) tag, e.g. latest
+```
+
+Resolving one image prints the tag, the digest, and a ready-to-paste pin line:
+
+```
+ghcr.io/justanotherspy/shuck
+  tag:    v1.2.3
+  digest: sha256:8f4e0ab2…
+  pin:    ghcr.io/justanotherspy/shuck@sha256:8f4e0ab2… # v1.2.3
+```
+
+For a multi-arch image the digest is the **image-index** digest — the correct
+value to pin, since it covers every platform. Tag selection mirrors
+`shuck action`: the latest **stable** semver tag wins, a prerelease is chosen
+only when nothing stable matches, and an image with no semver tags falls back
+to its most recently pushed version (preferring a `latest` tag).
+
+Listing every image under an owner uses the GitHub Packages API and **needs a
+token** with the `read:packages` scope (the API has no anonymous enumeration).
+Resolving a single **public** `ghcr.io/owner/name` image works without a token
+via the anonymous registry API; private images need the token. Listings are
+cached under `~/.cache/shuck/images/<owner>` for an hour; `--refresh`
+re-fetches. Add `--json` for a machine-readable document:
+
+```jsonc
+{
+  "schema_version": 1,
+  "image": "ghcr.io/justanotherspy/shuck",
+  "registry": "ghcr.io", "owner": "justanotherspy", "name": "shuck",
+  "requested": "", "tag": "v1.2.3",
+  "digest": "sha256:8f4e0ab2…",
+  "ref": "ghcr.io/justanotherspy/shuck@sha256:8f4e0ab2…",
+  "pin": "ghcr.io/justanotherspy/shuck@sha256:8f4e0ab2… # v1.2.3"
+}
+```
 
 ### Security alerts
 
