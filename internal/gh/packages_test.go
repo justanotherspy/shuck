@@ -3,6 +3,7 @@ package gh
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -22,6 +23,30 @@ func TestIsNotFound(t *testing.T) {
 	}
 	if isNotFound(nil) {
 		t.Error("nil is not a not-found")
+	}
+}
+
+func TestIsAuthError(t *testing.T) {
+	if !IsAuthError(&github.ErrorResponse{Response: &http.Response{StatusCode: http.StatusForbidden}}) {
+		t.Error("403 should be reported as an auth error")
+	}
+	if !IsAuthError(&github.ErrorResponse{Response: &http.Response{StatusCode: http.StatusUnauthorized}}) {
+		t.Error("401 should be reported as an auth error")
+	}
+	// Wrapped errors (the gh layer wraps with fmt.Errorf %w) are still detected.
+	wrapped := fmt.Errorf("list container packages for x: %w",
+		&github.ErrorResponse{Response: &http.Response{StatusCode: http.StatusForbidden}})
+	if !IsAuthError(wrapped) {
+		t.Error("wrapped 403 should be reported as an auth error")
+	}
+	if IsAuthError(&github.ErrorResponse{Response: &http.Response{StatusCode: http.StatusNotFound}}) {
+		t.Error("404 is not an auth error")
+	}
+	if IsAuthError(errors.New("plain")) {
+		t.Error("plain error is not an auth error")
+	}
+	if IsAuthError(nil) {
+		t.Error("nil is not an auth error")
 	}
 }
 

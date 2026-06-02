@@ -100,9 +100,12 @@ errors → render → update cache.
   (or `owner/repo` / URL) **lists** every container package via the GitHub
   Packages API (`gh.ListContainerPackages` + `gh.ListImageVersions`, where the
   version `Name` is the `sha256:` digest and `metadata.container.tags` the tags) —
-  this **requires a token** with `read:packages` (no anonymous enumeration), so a
-  tokenless list errors with guidance. A full `ghcr.io/owner/name[:tag]` **resolves**
-  one image: authed it reuses the Packages data; tokenless it falls back to the
+  this **requires a classic token** with `read:packages` (no anonymous enumeration,
+  and the Packages API rejects fine-grained tokens), so a tokenless list errors
+  with guidance and an auth-rejected one (`gh.IsAuthError`: 401/403) errors with
+  classic-token guidance. A full `ghcr.io/owner/name[:tag]` **resolves**
+  one image: authed it reuses the Packages data; tokenless — or when the token is
+  rejected by the Packages API (`gh.IsAuthError`) — it falls back to the
   anonymous OCI **registry v2** API (`gh.RegistryTags` + `gh.RegistryDigest`, the
   `Docker-Content-Digest` header — for multi-arch images that is the image-index
   digest, the correct pin target). Selection (`image.Select`) shares
@@ -219,7 +222,11 @@ errors → render → update cache.
   keyless signature over `checksums.txt`, an SPDX SBOM per archive (syft), an
   SLSA build-provenance attestation, and the Homebrew cask push to
   `justanotherspy/homebrew-tap`. `docker.yml` builds/pushes a multi-arch image to
-  GHCR (cosign-signed + provenance). Versioning stays `git describe`-derived
+  GHCR (cosign-signed + provenance): `:edge` + `:sha-*` on pushes to main, and the
+  semver tags + `:latest` via a `workflow_call` from `release.yml` after the
+  approved goreleaser job (a `release:` trigger would never fire — GoReleaser
+  creates the release with `GITHUB_TOKEN`, and token-created events don't trigger
+  workflows). Versioning stays `git describe`-derived
   (injected into `internal/cli.version`); there is no `VERSION` file.
 - `ghcr-cleanup.yml` prunes the GHCR package weekly (also `workflow_dispatch`,
   with a dry-run input): only `sha-*` tags are deletion candidates — the 2 newest

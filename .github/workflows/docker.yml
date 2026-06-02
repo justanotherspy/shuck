@@ -3,15 +3,19 @@ name: Docker
 # Build a multi-arch image and publish it to GHCR.
 #   - pull_request: build only (validates the Dockerfile; nothing is pushed).
 #   - push to main: build + push :edge and :sha-<short>.
-#   - release prereleased: build + push the semver tags and :latest.
+#   - workflow_call (from release.yml, on a v* tag): build + push the semver
+#     tags and :latest. Called rather than triggered on `release:` because
+#     GoReleaser creates the release with the workflow's GITHUB_TOKEN, and
+#     token-created events never trigger other workflows; calling it from
+#     release.yml also gates the image publish behind the same "release"
+#     environment approval as goreleaser.
 # Pushed images are cosign-signed (keyless) and get an SLSA build-provenance
 # attestation.
 on:
   push:
     branches: [main]
   pull_request:
-  release:
-    types: [prereleased]
+  workflow_call:
 
 permissions:
   contents: read

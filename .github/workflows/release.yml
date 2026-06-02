@@ -65,3 +65,18 @@ jobs:
             --draft=false \
             --prerelease=false \
             --latest
+
+  # Build & push the release container image to GHCR (the semver tags and
+  # :latest). This calls docker.yml rather than relying on a `release:` trigger
+  # there: GoReleaser creates the release with the workflow's GITHUB_TOKEN, and
+  # token-created events never trigger other workflows. `needs: goreleaser`
+  # keeps the image publish behind the same "release" environment approval that
+  # gates goreleaser.
+  docker:
+    needs: goreleaser
+    permissions:
+      contents: read
+      packages: write # push to GHCR
+      id-token: write # cosign keyless signing + provenance OIDC
+      attestations: write # actions/attest-build-provenance
+    uses: ./.github/workflows/docker.yml

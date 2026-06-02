@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/google/go-github/v88/github"
 
 	"github.com/justanotherspy/shuck/internal/image"
 	"github.com/justanotherspy/shuck/internal/model"
@@ -26,6 +29,7 @@ type stubImageLister struct {
 	shaErr       error
 	shaCalls     int
 	packagesErr  error
+	versionsErr  error
 }
 
 func (s *stubImageLister) ListContainerPackages(_ context.Context, _ string) ([]string, error) {
@@ -35,7 +39,7 @@ func (s *stubImageLister) ListContainerPackages(_ context.Context, _ string) ([]
 
 func (s *stubImageLister) ListImageVersions(_ context.Context, _, name string) ([]model.ImageVersion, error) {
 	s.versionCalls++
-	return s.versions[name], nil
+	return s.versions[name], s.versionsErr
 }
 
 func (s *stubImageLister) RegistryTags(_ context.Context, _, _ string) ([]string, error) {
@@ -112,6 +116,98 @@ func TestRunImageResolveAnonymous(t *testing.T) {
 	}
 	if s.regTagCalls == 0 || s.regDigCalls == 0 {
 		t.Errorf("expected registry tag+digest calls, got %d/%d", s.regTagCalls, s.regDigCalls)
+	}
+}
+
+// forbiddenErr mimics the Packages API rejecting a token that lacks the
+// read:packages scope (or any fine-grained token, which the API never accepts).
+func forbiddenErr() error {
+	return &github.ErrorResponse{Response: &http.Response{StatusCode: http.StatusForbidden}}
+}
+
+func TestRunImageResolveScopelessTokenFallsBackToRegistry(t *testing.T) {
+	// A token without read:packages 403s on the Packages API; a public image
+	// must still resolve via the anonymous registry path.
+	s := &stubImageLister{
+		packagesErr:  forbiddenErr(),
+		registryTags: []string{"v1.0.0", "edge"},
+		registryDig:  "sha256:fff",
+	}
+	withStubImageLister(t, s)
+	t.Setenv("GITHUB_TOKEN", "x") // authed, but the token cannot read packages
+
+	var out, errOut bytes.Buffer
+	code := runImage([]string{"ghcr.io/acme/api"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "sha256:fff") || !strings.Contains(out.String(), "v1.0.0") {
+		t.Errorf("output = %q", out.String())
+	}
+	if s.regTagCalls == 0 || s.regDigCalls == 0 {
+		t.Errorf("expected anonymous registry fallback, got tag/digest calls %d/%d", s.regTagCalls, s.regDigCalls)
+	}
+}
+
+func TestRunImageResolveVersionsAuthErrFallsBackToRegistry(t *testing.T) {
+	// The owner listing succeeds but the per-image versions read is forbidden
+	// (e.g. a package the token cannot see); fall back to the registry.
+	s := &stubImageLister{
+		packages:     []string{"other"},
+		versionsErr:  forbiddenErr(),
+		registryTags: []string{"v3.0.0"},
+		registryDig:  "sha256:ddd",
+	}
+	withStubImageLister(t, s)
+	t.Setenv("GITHUB_TOKEN", "x")
+
+	var out, errOut bytes.Buffer
+	code := runImage([]string{"ghcr.io/acme/api"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "sha256:ddd") {
+		t.Errorf("output = %q", out.String())
+	}
+	if s.regTagCalls == 0 || s.regDigCalls == 0 {
+		t.Errorf("expected anonymous registry fallback, got tag/digest calls %d/%d", s.regTagCalls, s.regDigCalls)
+	}
+}
+
+func TestRunImageResolveNonAuthErrIsFatal(t *testing.T) {
+	// A non-auth Packages API failure (e.g. 500) is an operational error, not a
+	// cue to silently fall back to the registry.
+	s := &stubImageLister{
+		packagesErr: &github.ErrorResponse{Response: &http.Response{StatusCode: http.StatusInternalServerError}},
+	}
+	withStubImageLister(t, s)
+	t.Setenv("GITHUB_TOKEN", "x")
+
+	var out, errOut bytes.Buffer
+	code := runImage([]string{"ghcr.io/acme/api"}, &out, &errOut)
+	if code != 2 {
+		t.Fatalf("exit=%d, want 2 (stderr=%s)", code, errOut.String())
+	}
+	if s.regTagCalls != 0 {
+		t.Errorf("registry should not be consulted on a non-auth error")
+	}
+}
+
+func TestRunImageListScopelessTokenGuidance(t *testing.T) {
+	// Listing has no anonymous fallback; a 403 must explain that the Packages
+	// API needs a classic read:packages token (fine-grained tokens never work).
+	s := &stubImageLister{packagesErr: forbiddenErr()}
+	withStubImageLister(t, s)
+	t.Setenv("GITHUB_TOKEN", "x")
+
+	var out, errOut bytes.Buffer
+	code := runImage([]string{"acme"}, &out, &errOut)
+	if code != 2 {
+		t.Fatalf("exit=%d, want 2", code)
+	}
+	errText := errOut.String()
+	if !strings.Contains(errText, "classic") || !strings.Contains(errText, "read:packages") || !strings.Contains(errText, "fine-grained") {
+		t.Errorf("stderr = %q, want classic/read:packages/fine-grained guidance", errText)
 	}
 }
 
