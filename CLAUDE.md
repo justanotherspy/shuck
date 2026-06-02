@@ -210,3 +210,8 @@ errors → render → update cache.
   `justanotherspy/homebrew-tap`. `docker.yml` builds/pushes a multi-arch image to
   GHCR (cosign-signed + provenance). Versioning stays `git describe`-derived
   (injected into `internal/cli.version`); there is no `VERSION` file.
+- `ghcr-cleanup.yml` prunes the GHCR package weekly (also `workflow_dispatch`,
+  with a dry-run input): only `sha-*` tags are deletion candidates — the 2 newest
+  are kept, `edge`/`latest`/semver tags are never touched — plus untagged
+  orphans and stranded referrers. Multi-arch children and cosign/provenance
+  referrers follow their parent image automatically.
