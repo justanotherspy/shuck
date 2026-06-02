@@ -95,12 +95,6 @@ func FromActual(actual Actual) (cfg Config, notes []string) {
 	cfg = Config{Repository: &RepositoryConfig{
 		Visibility:               new(s.Visibility),
 		DefaultBranch:            new(s.DefaultBranch),
-		AllowMergeCommit:         new(s.AllowMergeCommit),
-		AllowSquashMerge:         new(s.AllowSquashMerge),
-		AllowRebaseMerge:         new(s.AllowRebaseMerge),
-		AllowAutoMerge:           new(s.AllowAutoMerge),
-		AllowUpdateBranch:        new(s.AllowUpdateBranch),
-		DeleteBranchOnMerge:      new(s.DeleteBranchOnMerge),
 		HasIssues:                new(s.HasIssues),
 		HasWiki:                  new(s.HasWiki),
 		HasProjects:              new(s.HasProjects),
@@ -108,6 +102,18 @@ func FromActual(actual Actual) (cfg Config, notes []string) {
 		WebCommitSignoffRequired: new(s.WebCommitSignoffRequired),
 		Archived:                 new(s.Archived),
 	}}
+	// The merge-policy fields are invisible to fine-grained / app tokens; only
+	// snapshot them when they were actually readable.
+	if s.MergeSettingsSource.Status == model.StatusOK {
+		cfg.Repository.AllowMergeCommit = new(s.AllowMergeCommit)
+		cfg.Repository.AllowSquashMerge = new(s.AllowSquashMerge)
+		cfg.Repository.AllowRebaseMerge = new(s.AllowRebaseMerge)
+		cfg.Repository.AllowAutoMerge = new(s.AllowAutoMerge)
+		cfg.Repository.AllowUpdateBranch = new(s.AllowUpdateBranch)
+		cfg.Repository.DeleteBranchOnMerge = new(s.DeleteBranchOnMerge)
+	} else {
+		notes = append(notes, "merge settings omitted: "+sourceReason(s.MergeSettingsSource))
+	}
 
 	var sec SecurityConfig
 	hasSecurity := false
@@ -154,12 +160,16 @@ func FromActual(actual Actual) (cfg Config, notes []string) {
 // assert the zero values of absent sub-rules.
 func branchConfigFrom(bp model.BranchProtection) *BranchConfig {
 	bc := &BranchConfig{
-		EnforceAdmins:                 new(bp.EnforceAdmins),
 		RequireLinearHistory:          new(bp.RequireLinearHistory),
 		AllowForcePushes:              new(bp.AllowForcePushes),
 		AllowDeletions:                new(bp.AllowDeletions),
 		RequireConversationResolution: new(bp.RequireConversationResolution),
 		RequiredSignatures:            new(bp.RequiredSignatures),
+	}
+	// enforce_admins is a classic-protection concept; for a branch protected only
+	// by rulesets its value is not knowable, so it is not declared.
+	if !bp.ViaRulesetsOnly {
+		bc.EnforceAdmins = new(bp.EnforceAdmins)
 	}
 	if bp.RequiredPullRequestReviews {
 		bc.RequiredApprovingReviewCount = new(bp.RequiredApprovingReviewCount)
@@ -186,12 +196,19 @@ func diffConfig(cfg Config, actual Actual) (changes []Change, notes []string) {
 		s := actual.Settings
 		diffField(d, "repository", "visibility", r.Visibility, s.Visibility)
 		diffField(d, "repository", "default_branch", r.DefaultBranch, s.DefaultBranch)
-		diffField(d, "repository", "allow_merge_commit", r.AllowMergeCommit, s.AllowMergeCommit)
-		diffField(d, "repository", "allow_squash_merge", r.AllowSquashMerge, s.AllowSquashMerge)
-		diffField(d, "repository", "allow_rebase_merge", r.AllowRebaseMerge, s.AllowRebaseMerge)
-		diffField(d, "repository", "allow_auto_merge", r.AllowAutoMerge, s.AllowAutoMerge)
-		diffField(d, "repository", "allow_update_branch", r.AllowUpdateBranch, s.AllowUpdateBranch)
-		diffField(d, "repository", "delete_branch_on_merge", r.DeleteBranchOnMerge, s.DeleteBranchOnMerge)
+		// Merge-policy fields can only be synced when they were readable; syncing
+		// an invisible (all-false) group would corrupt the declared intent.
+		if s.MergeSettingsSource.Status == model.StatusOK {
+			diffField(d, "repository", "allow_merge_commit", r.AllowMergeCommit, s.AllowMergeCommit)
+			diffField(d, "repository", "allow_squash_merge", r.AllowSquashMerge, s.AllowSquashMerge)
+			diffField(d, "repository", "allow_rebase_merge", r.AllowRebaseMerge, s.AllowRebaseMerge)
+			diffField(d, "repository", "allow_auto_merge", r.AllowAutoMerge, s.AllowAutoMerge)
+			diffField(d, "repository", "allow_update_branch", r.AllowUpdateBranch, s.AllowUpdateBranch)
+			diffField(d, "repository", "delete_branch_on_merge", r.DeleteBranchOnMerge, s.DeleteBranchOnMerge)
+		} else if anyDeclared(r.AllowMergeCommit, r.AllowSquashMerge, r.AllowRebaseMerge,
+			r.AllowAutoMerge, r.AllowUpdateBranch, r.DeleteBranchOnMerge) {
+			d.notes = append(d.notes, "merge settings left unchanged: "+sourceReason(s.MergeSettingsSource))
+		}
 		diffField(d, "repository", "has_issues", r.HasIssues, s.HasIssues)
 		diffField(d, "repository", "has_wiki", r.HasWiki, s.HasWiki)
 		diffField(d, "repository", "has_projects", r.HasProjects, s.HasProjects)
@@ -246,7 +263,14 @@ func diffBranch(d *differ, name string, bc *BranchConfig, br Branch) {
 	diffBranchField(d, name, "require_code_owner_reviews", bc.RequireCodeOwnerReviews, bp.RequireCodeOwnerReviews)
 	diffBranchField(d, name, "require_last_push_approval", bc.RequireLastPushApproval, bp.RequireLastPushApproval)
 	diffBranchField(d, name, "strict_status_checks", bc.StrictStatusChecks, bp.StrictStatusChecks)
-	diffBranchField(d, name, "enforce_admins", bc.EnforceAdmins, bp.EnforceAdmins)
+	// enforce_admins has no readable ruleset equivalent (bypass actors are not
+	// visible via the rules API), so it is never synced from ruleset-only
+	// protection — the declared intent stays.
+	if bc.EnforceAdmins != nil && bp.ViaRulesetsOnly {
+		d.notes = append(d.notes, fmt.Sprintf("branch %s enforce_admins left unchanged: branch is protected by rulesets (admin bypass is not visible via the rules API)", name))
+	} else {
+		diffBranchField(d, name, "enforce_admins", bc.EnforceAdmins, bp.EnforceAdmins)
+	}
 	diffBranchField(d, name, "required_linear_history", bc.RequireLinearHistory, bp.RequireLinearHistory)
 	diffBranchField(d, name, "allow_force_pushes", bc.AllowForcePushes, bp.AllowForcePushes)
 	diffBranchField(d, name, "allow_deletions", bc.AllowDeletions, bp.AllowDeletions)

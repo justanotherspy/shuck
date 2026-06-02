@@ -77,7 +77,7 @@ const okConfig = `repository:
 
 func TestRunComplianceTextPass(t *testing.T) {
 	withStubCompliance(t, &stubCompliance{
-		settings: model.RepoSettings{AllowMergeCommit: false, DeleteBranchOnMerge: true},
+		settings: model.RepoSettings{AllowMergeCommit: false, DeleteBranchOnMerge: true, MergeSettingsSource: model.SettingsSource{Status: model.StatusOK}},
 	})
 	cfg := writeConfig(t, okConfig)
 	var out, errb bytes.Buffer
@@ -99,7 +99,7 @@ func TestRunComplianceTextPass(t *testing.T) {
 
 func TestRunComplianceDriftExits1(t *testing.T) {
 	withStubCompliance(t, &stubCompliance{
-		settings: model.RepoSettings{AllowMergeCommit: true, DeleteBranchOnMerge: true},
+		settings: model.RepoSettings{AllowMergeCommit: true, DeleteBranchOnMerge: true, MergeSettingsSource: model.SettingsSource{Status: model.StatusOK}},
 	})
 	cfg := writeConfig(t, okConfig)
 	var out, errb bytes.Buffer
@@ -117,7 +117,7 @@ func TestRunComplianceDriftExits1(t *testing.T) {
 
 func TestRunComplianceExitZero(t *testing.T) {
 	withStubCompliance(t, &stubCompliance{
-		settings: model.RepoSettings{AllowMergeCommit: true},
+		settings: model.RepoSettings{AllowMergeCommit: true, MergeSettingsSource: model.SettingsSource{Status: model.StatusOK}},
 	})
 	cfg := writeConfig(t, "repository:\n  allow_merge_commit: false\n")
 	var out, errb bytes.Buffer
@@ -129,7 +129,7 @@ func TestRunComplianceExitZero(t *testing.T) {
 
 func TestRunComplianceJSON(t *testing.T) {
 	withStubCompliance(t, &stubCompliance{
-		settings: model.RepoSettings{AllowMergeCommit: false, DeleteBranchOnMerge: true},
+		settings: model.RepoSettings{AllowMergeCommit: false, DeleteBranchOnMerge: true, MergeSettingsSource: model.SettingsSource{Status: model.StatusOK}},
 	})
 	cfg := writeConfig(t, okConfig)
 	var out, errb bytes.Buffer
@@ -187,6 +187,7 @@ func discoverStub() *stubCompliance {
 			SecretScanningPushProtection: "enabled",
 			DependabotSecurityUpdates:    "enabled",
 			SecuritySource:               model.SettingsSource{Status: model.StatusOK},
+			MergeSettingsSource:          model.SettingsSource{Status: model.StatusOK},
 		},
 		vuln:    true,
 		vulnSrc: model.SettingsSource{Status: model.StatusOK},
