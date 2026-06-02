@@ -80,6 +80,12 @@ type RepoSettings struct {
 	AllowUpdateBranch   bool `json:"allow_update_branch"`
 	DeleteBranchOnMerge bool `json:"delete_branch_on_merge"`
 
+	// MergeSettingsSource reports whether the merge-policy fields above could be
+	// read at all. GitHub returns them only to classic tokens with push access —
+	// fine-grained PATs and app installation tokens never receive them — so an
+	// absent group must be skipped, not read as all-false.
+	MergeSettingsSource SettingsSource `json:"merge_settings_source"`
+
 	HasIssues      bool `json:"has_issues"`
 	HasWiki        bool `json:"has_wiki"`
 	HasProjects    bool `json:"has_projects"`
@@ -99,10 +105,18 @@ type RepoSettings struct {
 
 // BranchProtection is the normalized branch-protection state shuck checks. When
 // Protected is false the branch has no protection rule (or does not exist), so
-// every asserted protection is reported as not satisfied.
+// every asserted protection is reported as not satisfied. The state is the
+// union of a classic branch-protection rule and the repository rulesets that
+// apply to the branch, whichever is stricter.
 type BranchProtection struct {
 	Branch    string `json:"branch"`
 	Protected bool   `json:"protected"`
+
+	// ViaRulesetsOnly is true when the protection comes solely from repository
+	// rulesets (no classic branch-protection rule). Classic-only concepts —
+	// enforce_admins, whose ruleset equivalent (bypass actors) is not visible via
+	// the rules API — are then skipped rather than reported as false.
+	ViaRulesetsOnly bool `json:"via_rulesets_only,omitempty"`
 
 	RequiredPullRequestReviews   bool `json:"required_pull_request_reviews"`
 	RequiredApprovingReviewCount int  `json:"required_approving_review_count"`

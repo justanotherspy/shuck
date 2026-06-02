@@ -430,6 +430,16 @@ silently ignored, and a setting the token cannot read (branch protection and
 security need admin/`repo` access) is reported as **skipped**, never a false
 pass.
 
+Branch protection covers **both classic protection rules and repository
+rulesets**: shuck reads the rules that effectively apply to the branch and, when
+both mechanisms are configured, the stricter source wins per setting. Two
+caveats stem from GitHub API limitations: `enforce_admins` is a classic-only
+concept (a ruleset's bypass actors are not visible via the rules API), so it is
+skipped for branches protected only by rulesets; and the repository **merge
+settings** (`allow_squash_merge` & co.) are only returned to **classic tokens**
+with push access — with a fine-grained PAT or app installation token they are
+skipped rather than misreported as `false`.
+
 ```yaml
 # .github/compliance.yml — the intended settings for this repo.
 repository:
@@ -496,9 +506,10 @@ shuck compliance discover --json       # the stable JSON document
 - **Config up to date** → nothing is written.
 
 Settings the token cannot read (security and branch protection need
-admin/`repo` access) are omitted from a new config and left untouched in an
-existing one, with a note explaining why. The exit code is `0` on success
-(created, updated, or already up to date) and `2` on an operational error.
+admin/`repo` access; merge settings need a classic token) are omitted from a new
+config and left untouched in an existing one, with a note explaining why. The
+exit code is `0` on success (created, updated, or already up to date) and `2` on
+an operational error.
 
 ### How log extraction works
 

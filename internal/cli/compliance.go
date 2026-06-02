@@ -59,11 +59,18 @@ repo (use --ref to pick a branch/tag/SHA). Only the keys the file declares are
 checked. A setting the token cannot read (branch protection and security need
 admin/repo access) is reported as skipped, never a silent pass.
 
+Branch protection covers both classic protection rules and repository rulesets:
+the stricter source wins per setting. enforce_admins is classic-only (ruleset
+bypass actors are not visible via the rules API), so it is skipped for branches
+protected only by rulesets.
+
 Exit: 0 when compliant, 1 when a setting drifted, 2 on an operational error.
 --exit-zero always exits 0 (report-only).
 
 Auth: set GITHUB_TOKEN (or GH_TOKEN), or pass --token. Reading branch protection
 and security settings requires a token with the repo scope and admin access.
+Note: GitHub only returns the merge settings (allow_squash_merge & co.) to
+classic tokens — with a fine-grained PAT or app token they are skipped.
 
 Flags:
 `
@@ -248,7 +255,9 @@ branch's protection) via the GitHub API and writes them to the local
   - config up to date  nothing is written
 
 Settings the token cannot read (security and branch protection need admin
-access) are omitted from a new config and left untouched in an existing one.
+access; merge settings need a classic token) are omitted from a new config and
+left untouched in an existing one. Branch protection is discovered from both
+classic protection rules and repository rulesets.
 
 Exit: 0 on success (created, updated, or already up to date), 2 on an
 operational error.

@@ -120,12 +120,14 @@ func Evaluate(owner, repo, configSource string, cfg Config, actual Actual) *mode
 		s := actual.Settings
 		e.str("repository", "visibility", r.Visibility, s.Visibility)
 		e.str("repository", "default_branch", r.DefaultBranch, s.DefaultBranch)
-		e.bool("repository", "allow_merge_commit", r.AllowMergeCommit, s.AllowMergeCommit)
-		e.bool("repository", "allow_squash_merge", r.AllowSquashMerge, s.AllowSquashMerge)
-		e.bool("repository", "allow_rebase_merge", r.AllowRebaseMerge, s.AllowRebaseMerge)
-		e.bool("repository", "allow_auto_merge", r.AllowAutoMerge, s.AllowAutoMerge)
-		e.bool("repository", "allow_update_branch", r.AllowUpdateBranch, s.AllowUpdateBranch)
-		e.bool("repository", "delete_branch_on_merge", r.DeleteBranchOnMerge, s.DeleteBranchOnMerge)
+		// The merge-policy fields are invisible to fine-grained / app tokens, so
+		// they are guarded by their own source: unreadable ⇒ skipped, not false.
+		e.boolSrc("repository", "allow_merge_commit", r.AllowMergeCommit, s.AllowMergeCommit, s.MergeSettingsSource)
+		e.boolSrc("repository", "allow_squash_merge", r.AllowSquashMerge, s.AllowSquashMerge, s.MergeSettingsSource)
+		e.boolSrc("repository", "allow_rebase_merge", r.AllowRebaseMerge, s.AllowRebaseMerge, s.MergeSettingsSource)
+		e.boolSrc("repository", "allow_auto_merge", r.AllowAutoMerge, s.AllowAutoMerge, s.MergeSettingsSource)
+		e.boolSrc("repository", "allow_update_branch", r.AllowUpdateBranch, s.AllowUpdateBranch, s.MergeSettingsSource)
+		e.boolSrc("repository", "delete_branch_on_merge", r.DeleteBranchOnMerge, s.DeleteBranchOnMerge, s.MergeSettingsSource)
 		e.bool("repository", "has_issues", r.HasIssues, s.HasIssues)
 		e.bool("repository", "has_wiki", r.HasWiki, s.HasWiki)
 		e.bool("repository", "has_projects", r.HasProjects, s.HasProjects)
@@ -244,7 +246,15 @@ func (e *evaluator) branch(name string, bc *BranchConfig, br Branch) {
 	e.bool(category, name+".require_code_owner_reviews", bc.RequireCodeOwnerReviews, bp.RequireCodeOwnerReviews)
 	e.bool(category, name+".require_last_push_approval", bc.RequireLastPushApproval, bp.RequireLastPushApproval)
 	e.bool(category, name+".strict_status_checks", bc.StrictStatusChecks, bp.StrictStatusChecks)
-	e.bool(category, name+".enforce_admins", bc.EnforceAdmins, bp.EnforceAdmins)
+	// enforce_admins is a classic-protection concept: its ruleset equivalent
+	// (bypass actors) is not visible via the rules API, so a branch protected
+	// only by rulesets skips the check instead of reporting false.
+	if bc.EnforceAdmins != nil && bp.ViaRulesetsOnly {
+		e.add(skipped(category, name+".enforce_admins", fmtBool(*bc.EnforceAdmins),
+			"branch is protected by rulesets; admin bypass is not visible via the rules API"))
+	} else {
+		e.bool(category, name+".enforce_admins", bc.EnforceAdmins, bp.EnforceAdmins)
+	}
 	e.bool(category, name+".required_linear_history", bc.RequireLinearHistory, bp.RequireLinearHistory)
 	e.bool(category, name+".allow_force_pushes", bc.AllowForcePushes, bp.AllowForcePushes)
 	e.bool(category, name+".allow_deletions", bc.AllowDeletions, bp.AllowDeletions)

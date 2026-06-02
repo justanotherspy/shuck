@@ -22,6 +22,7 @@ func fullActual() Actual {
 			SecretScanningPushProtection: "enabled",
 			DependabotSecurityUpdates:    "disabled",
 			SecuritySource:               model.SettingsSource{Status: model.StatusOK},
+			MergeSettingsSource:          model.SettingsSource{Status: model.StatusOK},
 		},
 		VulnAlerts: true,
 		VulnSource: model.SettingsSource{Status: model.StatusOK},
@@ -289,6 +290,127 @@ branch_protection:
 	if len(disc.Notes) != 3 {
 		t.Errorf("want 3 left-unchanged notes, got %v", disc.Notes)
 	}
+}
+
+func TestDiscoverCreateOmitsMergeSettingsWhenUnreadable(t *testing.T) {
+	actual := fullActual()
+	actual.Settings.MergeSettingsSource = model.SettingsSource{Status: model.StatusForbidden, Message: "needs a classic PAT"}
+
+	disc, err := Discover(nil, actual)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	cfg, err := Parse(disc.Data)
+	if err != nil {
+		t.Fatalf("generated config does not parse: %v\n%s", err, disc.Data)
+	}
+	r := cfg.Repository
+	if r.AllowSquashMerge != nil || r.AllowMergeCommit != nil || r.DeleteBranchOnMerge != nil {
+		t.Errorf("unreadable merge settings must be omitted: %+v", r)
+	}
+	if r.Visibility == nil || r.HasWiki == nil {
+		t.Errorf("readable settings must still be snapshotted: %+v", r)
+	}
+	found := false
+	for _, n := range disc.Notes {
+		if strings.Contains(n, "merge settings omitted") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a merge-settings omission note, got %v", disc.Notes)
+	}
+}
+
+func TestDiscoverUpdateLeavesMergeSettingsAloneWhenUnreadable(t *testing.T) {
+	existing := "repository:\n  allow_squash_merge: true\n  delete_branch_on_merge: true\n  has_wiki: true\n"
+	actual := fullActual()
+	actual.Settings.HasWiki = false // readable drift: synced
+	actual.Settings.AllowSquashMerge = false
+	actual.Settings.DeleteBranchOnMerge = false
+	actual.Settings.MergeSettingsSource = model.SettingsSource{Status: model.StatusForbidden, Message: "needs a classic PAT"}
+
+	disc, err := Discover([]byte(existing), actual)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	got := string(disc.Data)
+	// The invisible all-false merge values must not overwrite the declared intent.
+	if !strings.Contains(got, "allow_squash_merge: true") || !strings.Contains(got, "delete_branch_on_merge: true") {
+		t.Errorf("unreadable merge settings must not be synced:\n%s", got)
+	}
+	if !strings.Contains(got, "has_wiki: false") {
+		t.Errorf("readable drift should still be synced:\n%s", got)
+	}
+	if len(disc.Changes) != 1 {
+		t.Errorf("want only the has_wiki change, got %+v", disc.Changes)
+	}
+	found := false
+	for _, n := range disc.Notes {
+		if strings.Contains(n, "merge settings left unchanged") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a merge-settings note, got %v", disc.Notes)
+	}
+}
+
+func TestDiscoverRulesetOnlyBranch(t *testing.T) {
+	rulesetBranch := Branch{
+		Protection: model.BranchProtection{
+			Branch: "main", Protected: true, ViaRulesetsOnly: true,
+			RequiredPullRequestReviews:   true,
+			RequiredApprovingReviewCount: 1,
+			RequiredSignatures:           true,
+			AllowForcePushes:             false,
+			AllowDeletions:               false,
+		},
+		Source: model.SettingsSource{Status: model.StatusOK},
+	}
+
+	t.Run("create omits enforce_admins", func(t *testing.T) {
+		actual := fullActual()
+		actual.Branches["main"] = rulesetBranch
+		cfg, _ := FromActual(actual)
+		bc := cfg.BranchProtection["main"]
+		if bc == nil {
+			t.Fatal("ruleset-protected branch should be declared")
+		}
+		if bc.EnforceAdmins != nil {
+			t.Errorf("enforce_admins is unknowable for ruleset-only protection: %+v", bc)
+		}
+		if bc.RequiredSignatures == nil || !*bc.RequiredSignatures {
+			t.Errorf("ruleset protections should be snapshotted: %+v", bc)
+		}
+	})
+
+	t.Run("update keeps declared enforce_admins", func(t *testing.T) {
+		existing := "branch_protection:\n  main:\n    enforce_admins: true\n    required_approving_review_count: 2\n"
+		actual := fullActual()
+		actual.Branches["main"] = rulesetBranch
+
+		disc, err := Discover([]byte(existing), actual)
+		if err != nil {
+			t.Fatalf("Discover: %v", err)
+		}
+		got := string(disc.Data)
+		if !strings.Contains(got, "enforce_admins: true") {
+			t.Errorf("declared enforce_admins must not be synced from ruleset-only protection:\n%s", got)
+		}
+		if !strings.Contains(got, "required_approving_review_count: 1") {
+			t.Errorf("ruleset review count should be synced:\n%s", got)
+		}
+		found := false
+		for _, n := range disc.Notes {
+			if strings.Contains(n, "enforce_admins left unchanged") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("want an enforce_admins note, got %v", disc.Notes)
+		}
+	})
 }
 
 func TestDiscoverUpdateUnprotectedBranchKept(t *testing.T) {

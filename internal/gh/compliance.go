@@ -37,6 +37,7 @@ func (c *Client) RepoSettings(ctx context.Context, owner, repo string) (model.Re
 		HasDiscussions:           r.GetHasDiscussions(),
 		WebCommitSignoffRequired: r.GetWebCommitSignoffRequired(),
 		Archived:                 r.GetArchived(),
+		MergeSettingsSource:      mergeSettingsSource(r),
 	}
 	if saa := r.GetSecurityAndAnalysis(); saa != nil {
 		s.SecretScanning = saa.GetSecretScanning().GetStatus()
@@ -54,6 +55,22 @@ func (c *Client) RepoSettings(ctx context.Context, owner, repo string) (model.Re
 	return s, nil
 }
 
+// mergeSettingsSource reports whether the repository's merge-policy fields
+// (allow_squash_merge & co.) were present in the API response. GitHub includes
+// them only for classic tokens with push access; fine-grained PATs and app
+// installation tokens never receive them, so go-github's Get* accessors would
+// silently read every one as false.
+func mergeSettingsSource(r *github.Repository) model.SettingsSource {
+	if r.AllowMergeCommit == nil && r.AllowSquashMerge == nil && r.AllowRebaseMerge == nil &&
+		r.DeleteBranchOnMerge == nil {
+		return model.SettingsSource{
+			Status:  model.StatusForbidden,
+			Message: "merge settings are not returned for fine-grained or app tokens (use a classic PAT with the repo scope)",
+		}
+	}
+	return model.SettingsSource{Status: model.StatusOK}
+}
+
 // VulnerabilityAlertsEnabled reports whether Dependabot vulnerability alerts are
 // enabled. It is a separate endpoint from the repository object; a 403/404 is
 // reported as a soft source so an unreadable value is skipped, not fatal.
@@ -68,12 +85,37 @@ func (c *Client) VulnerabilityAlertsEnabled(ctx context.Context, owner, repo str
 	return on, model.SettingsSource{Status: model.StatusOK}
 }
 
-// BranchProtectionSettings reads a branch's protection rule. A 404 means the
-// branch is not protected (or does not exist): that is a readable, compliant-or-
-// not state (Protected=false), so it returns an OK source with an empty rule. A
-// 403 means the token lacks the admin access protection requires, reported as a
-// forbidden source so the checks are skipped rather than failing.
+// BranchProtectionSettings reads a branch's effective protection: the classic
+// branch-protection rule merged with the repository rulesets that apply to the
+// branch. Per setting the stricter source wins, so a protection enforced by
+// either mechanism is reported as enforced. A branch governed only by rulesets
+// is marked ViaRulesetsOnly so classic-only concepts (enforce_admins) can be
+// skipped instead of read as false.
 func (c *Client) BranchProtectionSettings(ctx context.Context, owner, repo, branch string) (model.BranchProtection, model.SettingsSource) {
+	classic, classicSrc := c.classicBranchProtection(ctx, owner, repo, branch)
+	ruleset, rulesOK := c.branchRulesProtection(ctx, owner, repo, branch)
+
+	// No readable ruleset data (or no rules apply): the classic result stands.
+	if !rulesOK || !ruleset.Protected {
+		return classic, classicSrc
+	}
+	// Classic protection readable (including the readable "not protected" 404):
+	// merge the two; mergeBranchProtection returns the ruleset side when there is
+	// no classic rule.
+	if classicSrc.Status == model.StatusOK {
+		return mergeBranchProtection(classic, ruleset), classicSrc
+	}
+	// Classic protection unreadable but rulesets are not: report the ruleset
+	// protection rather than skipping every check.
+	return ruleset, model.SettingsSource{Status: model.StatusOK}
+}
+
+// classicBranchProtection reads a branch's classic protection rule. A 404 means
+// the branch has no classic rule (or does not exist): that is a readable,
+// compliant-or-not state (Protected=false), so it returns an OK source with an
+// empty rule. A 403 means the token lacks the admin access protection requires,
+// reported as a forbidden source so the checks are skipped rather than failing.
+func (c *Client) classicBranchProtection(ctx context.Context, owner, repo, branch string) (model.BranchProtection, model.SettingsSource) {
 	p, _, err := c.gh.Repositories.GetBranchProtection(ctx, owner, repo, branch)
 	if err != nil {
 		var ghErr *github.ErrorResponse
@@ -91,6 +133,116 @@ func (c *Client) BranchProtectionSettings(ctx context.Context, owner, repo, bran
 		return model.BranchProtection{Branch: branch}, model.SettingsSource{Status: model.StatusError, Message: err.Error()}
 	}
 	return mapBranchProtection(branch, p), model.SettingsSource{Status: model.StatusOK}
+}
+
+// branchRulesProtection reads the repository rules (rulesets) that apply to a
+// branch and maps them to the protection model. The second return is false when
+// the rules could not be read at all, so the caller can fall back to the classic
+// result alone.
+func (c *Client) branchRulesProtection(ctx context.Context, owner, repo, branch string) (model.BranchProtection, bool) {
+	rules, _, err := c.gh.Repositories.ListRulesForBranch(ctx, owner, repo, branch, &github.ListOptions{PerPage: 100})
+	if err != nil {
+		return model.BranchProtection{Branch: branch}, false
+	}
+	return mapBranchRules(branch, rules), true
+}
+
+// mapBranchRules maps the effective ruleset rules for a branch onto the
+// protection model. Any branch-target rule marks the branch as protected (even
+// rule types shuck does not model); force-push / deletion protection is the
+// presence of the blocking rule, so its absence means the action is allowed.
+func mapBranchRules(branch string, rules *github.BranchRules) model.BranchProtection {
+	bp := model.BranchProtection{Branch: branch}
+	if rules == nil {
+		return bp
+	}
+	governed := len(rules.PullRequest) > 0 || len(rules.RequiredStatusChecks) > 0 ||
+		len(rules.RequiredLinearHistory) > 0 || len(rules.RequiredSignatures) > 0 ||
+		len(rules.NonFastForward) > 0 || len(rules.Deletion) > 0 ||
+		len(rules.Creation) > 0 || len(rules.Update) > 0 || len(rules.MergeQueue) > 0 ||
+		len(rules.Workflows) > 0 || len(rules.CodeScanning) > 0
+	if !governed {
+		return bp
+	}
+	bp.Protected = true
+	bp.ViaRulesetsOnly = true
+
+	for _, r := range rules.PullRequest {
+		if r == nil {
+			continue
+		}
+		p := r.Parameters
+		bp.RequiredPullRequestReviews = true
+		bp.RequiredApprovingReviewCount = max(bp.RequiredApprovingReviewCount, p.RequiredApprovingReviewCount)
+		bp.DismissStaleReviews = bp.DismissStaleReviews || p.DismissStaleReviewsOnPush
+		bp.RequireCodeOwnerReviews = bp.RequireCodeOwnerReviews || p.RequireCodeOwnerReview
+		bp.RequireLastPushApproval = bp.RequireLastPushApproval || p.RequireLastPushApproval
+		bp.RequireConversationResolution = bp.RequireConversationResolution || p.RequiredReviewThreadResolution
+	}
+	for _, r := range rules.RequiredStatusChecks {
+		if r == nil {
+			continue
+		}
+		bp.StrictStatusChecks = bp.StrictStatusChecks || r.Parameters.StrictRequiredStatusChecksPolicy
+		for _, chk := range r.Parameters.RequiredStatusChecks {
+			if chk != nil {
+				bp.RequiredStatusChecks = append(bp.RequiredStatusChecks, chk.Context)
+			}
+		}
+	}
+	bp.RequireLinearHistory = len(rules.RequiredLinearHistory) > 0
+	bp.RequiredSignatures = len(rules.RequiredSignatures) > 0
+	bp.AllowForcePushes = len(rules.NonFastForward) == 0
+	bp.AllowDeletions = len(rules.Deletion) == 0
+	return bp
+}
+
+// mergeBranchProtection combines a classic protection rule with the ruleset
+// protection for the same branch: per setting the stricter source wins. When
+// only one side protects the branch, that side is returned unchanged.
+func mergeBranchProtection(classic, ruleset model.BranchProtection) model.BranchProtection {
+	if !ruleset.Protected {
+		return classic
+	}
+	if !classic.Protected {
+		return ruleset
+	}
+	out := classic
+	out.ViaRulesetsOnly = false
+	out.RequiredPullRequestReviews = classic.RequiredPullRequestReviews || ruleset.RequiredPullRequestReviews
+	out.RequiredApprovingReviewCount = max(classic.RequiredApprovingReviewCount, ruleset.RequiredApprovingReviewCount)
+	out.DismissStaleReviews = classic.DismissStaleReviews || ruleset.DismissStaleReviews
+	out.RequireCodeOwnerReviews = classic.RequireCodeOwnerReviews || ruleset.RequireCodeOwnerReviews
+	out.RequireLastPushApproval = classic.RequireLastPushApproval || ruleset.RequireLastPushApproval
+	out.RequiredStatusChecks = unionStrings(classic.RequiredStatusChecks, ruleset.RequiredStatusChecks)
+	out.StrictStatusChecks = classic.StrictStatusChecks || ruleset.StrictStatusChecks
+	out.RequireLinearHistory = classic.RequireLinearHistory || ruleset.RequireLinearHistory
+	// The "allow" flags grant a permission, so both sources must allow it.
+	out.AllowForcePushes = classic.AllowForcePushes && ruleset.AllowForcePushes
+	out.AllowDeletions = classic.AllowDeletions && ruleset.AllowDeletions
+	out.RequireConversationResolution = classic.RequireConversationResolution || ruleset.RequireConversationResolution
+	out.RequiredSignatures = classic.RequiredSignatures || ruleset.RequiredSignatures
+	return out
+}
+
+// unionStrings merges two string slices, keeping first-seen order and dropping
+// duplicates.
+func unionStrings(a, b []string) []string {
+	seen := make(map[string]bool, len(a)+len(b))
+	var out []string
+	for _, s := range a {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	for _, s := range b {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func mapBranchProtection(branch string, p *github.Protection) model.BranchProtection {
@@ -115,10 +267,10 @@ func mapBranchProtection(branch string, p *github.Protection) model.BranchProtec
 		}
 	}
 	bp.EnforceAdmins = p.GetEnforceAdmins().GetEnabled()
-	bp.RequireLinearHistory = p.GetRequireLinearHistory().Enabled
-	bp.AllowForcePushes = p.GetAllowForcePushes().Enabled
-	bp.AllowDeletions = p.GetAllowDeletions().Enabled
-	bp.RequireConversationResolution = p.GetRequiredConversationResolution().Enabled
+	bp.RequireLinearHistory = p.GetRequireLinearHistory().GetEnabled()
+	bp.AllowForcePushes = p.GetAllowForcePushes().GetEnabled()
+	bp.AllowDeletions = p.GetAllowDeletions().GetEnabled()
+	bp.RequireConversationResolution = p.GetRequiredConversationResolution().GetEnabled()
 	bp.RequiredSignatures = p.GetRequiredSignatures().GetEnabled()
 	return bp
 }

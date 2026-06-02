@@ -70,6 +70,7 @@ func TestEvaluateRepository(t *testing.T) {
 		AllowMergeCommit:    true, // drift
 		DeleteBranchOnMerge: true, // match
 		DefaultBranch:       "main",
+		MergeSettingsSource: model.SettingsSource{Status: model.StatusOK},
 	}}
 	rep := Evaluate("o", "r", "cfg", cfg, actual)
 	if len(rep.Checks) != 3 {
@@ -93,6 +94,61 @@ func TestEvaluateRepository(t *testing.T) {
 	}
 	if !found {
 		t.Error("allow_merge_commit check missing")
+	}
+}
+
+func TestEvaluateMergeSettingsSkippedWhenUnreadable(t *testing.T) {
+	cfg := Config{Repository: &RepositoryConfig{
+		AllowSquashMerge:    new(true),
+		DeleteBranchOnMerge: new(true),
+		HasWiki:             new(false),
+	}}
+	actual := Actual{Settings: model.RepoSettings{
+		// Fine-grained / app token: the merge fields were absent from the API
+		// response, so their (false) values must not be compared.
+		MergeSettingsSource: model.SettingsSource{Status: model.StatusForbidden, Message: "needs a classic PAT"},
+	}}
+	rep := Evaluate("o", "r", "cfg", cfg, actual)
+	if got := rep.Count(model.ComplianceSkipped); got != 2 {
+		t.Errorf("unreadable merge settings should be skipped, got %d skipped: %+v", got, rep.Checks)
+	}
+	if got := rep.Count(model.CompliancePass); got != 1 {
+		t.Errorf("has_wiki should still pass: %+v", rep.Checks)
+	}
+	if rep.HasFailures() {
+		t.Error("unreadable merge settings must not be a failure")
+	}
+}
+
+func TestEvaluateRulesetOnlyBranch(t *testing.T) {
+	cfg := Config{BranchProtection: map[string]*BranchConfig{
+		"main": {
+			RequiredApprovingReviewCount: new(1),
+			EnforceAdmins:                new(true),
+			AllowForcePushes:             new(false),
+		},
+	}}
+	actual := Actual{Branches: map[string]Branch{
+		"main": {
+			Source: model.SettingsSource{Status: model.StatusOK},
+			Protection: model.BranchProtection{
+				Branch: "main", Protected: true, ViaRulesetsOnly: true,
+				RequiredPullRequestReviews:   true,
+				RequiredApprovingReviewCount: 1,
+				AllowForcePushes:             false,
+			},
+		},
+	}}
+	rep := Evaluate("o", "r", "cfg", cfg, actual)
+	if got := rep.Count(model.CompliancePass); got != 2 {
+		t.Errorf("ruleset protections should pass, got %d pass: %+v", got, rep.Checks)
+	}
+	// enforce_admins has no ruleset equivalent: skipped, not failed as false.
+	if got := rep.Count(model.ComplianceSkipped); got != 1 {
+		t.Errorf("enforce_admins should be skipped for ruleset-only protection: %+v", rep.Checks)
+	}
+	if rep.HasFailures() {
+		t.Errorf("report should have no failures: %+v", rep.Checks)
 	}
 }
 
