@@ -9,6 +9,27 @@ It resolves a PR, reads its checks via the GitHub API, drills GitHub Actions
 failures down to the failed steps + their error logs, and caches results under
 `~/.cache/shuck` to avoid redundant log downloads.
 
+## Use shuck itself (dogfooding)
+
+This repo bakes its own tool in for agents: the `shuck` skill
+(`.claude/skills/shuck/`), the `shuck` MCP server (`.mcp.json`), and — in dev
+environments — the `shuck` binary on PATH. **When a PR's CI fails (here or in
+any repo), reach for shuck before raw GitHub API calls or the Actions UI:**
+
+```sh
+shuck logs <owner>/<repo> <pr>   # the exact failing step logs
+shuck <pr>                       # CI + reviews + security for a PR
+shuck --watch <pr>               # poll until CI finishes, then report
+```
+
+If the binary is not on PATH, build it (`make build`, then `./bin/shuck`) or
+install a release (`curl -fsSL https://raw.githubusercontent.com/justanotherspy/shuck/main/install.sh | bash`).
+
+`.claude/skills/shuck/SKILL.md` is a copy of the plugin's
+`plugins/shuck/skills/shuck/SKILL.md` (the source of truth, which is also
+`go:embed`-ed into the binary for `shuck setup`). CI's Plugin validate job
+fails if the two drift — update both together.
+
 ## Commands
 
 Run `make help` for the full list. The essentials:

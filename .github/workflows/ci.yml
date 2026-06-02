@@ -183,3 +183,10 @@ jobs:
           exit 1
       - name: Validate shuck plugin manifest
         run: ./.github/plugin-validate/node_modules/.bin/claude plugin validate --strict ./plugins/shuck
+      # The repo bakes the plugin's skill in for project-level use
+      # (.claude/skills/shuck) and mirrors its MCP config (.mcp.json); the
+      # plugin copies are the source of truth. Fail when they drift.
+      - name: Check baked-in skill and MCP config match the plugin
+        run: |
+          diff -u plugins/shuck/skills/shuck/SKILL.md .claude/skills/shuck/SKILL.md
+          diff -u plugins/shuck/.mcp.json .mcp.json
