@@ -55,8 +55,10 @@ func Parse(name string) (Version, bool) {
 }
 
 // Compare orders two versions: by (major, minor, patch); then a stable release
-// outranks a prerelease of the same version; then prerelease suffixes compare
-// lexically; finally the raw tag text breaks ties for determinism.
+// outranks a prerelease of the same version; then prerelease suffixes compare by
+// semver precedence (numeric fields numerically, a numeric field below an
+// alphanumeric one, more fields winning a tie); finally the raw tag text breaks
+// ties for determinism.
 func Compare(a, b Version) int {
 	if a.Major != b.Major {
 		return sign(a.Major - b.Major)
@@ -73,10 +75,66 @@ func Compare(a, b Version) int {
 		}
 		return -1
 	}
-	if a.Pre != b.Pre {
-		return strings.Compare(a.Pre, b.Pre)
+	if c := comparePre(a.Pre, b.Pre); c != 0 {
+		return c
 	}
 	return strings.Compare(a.Raw, b.Raw)
+}
+
+// comparePre orders two prerelease strings by Semantic Versioning precedence
+// (§11): each is split on '.' and compared field by field; a purely numeric
+// field compares numerically and ranks below an alphanumeric one; other fields
+// compare lexically in ASCII order; and when one is a prefix of the other, the
+// longer (more fields) wins. Both inputs are empty for stable releases, so this
+// returns 0 and the raw-tag tie-break decides.
+func comparePre(a, b string) int {
+	as := strings.Split(a, ".")
+	bs := strings.Split(b, ".")
+	for i := range min(len(as), len(bs)) {
+		if c := comparePreField(as[i], bs[i]); c != 0 {
+			return c
+		}
+	}
+	return sign(len(as) - len(bs))
+}
+
+// comparePreField compares a single prerelease identifier per semver §11.
+func comparePreField(a, b string) int {
+	aNum, bNum := isNumeric(a), isNumeric(b)
+	switch {
+	case aNum && bNum:
+		return compareNumericField(a, b)
+	case aNum:
+		return -1 // a numeric identifier always ranks below an alphanumeric one
+	case bNum:
+		return 1
+	default:
+		return strings.Compare(a, b)
+	}
+}
+
+// compareNumericField compares two all-digit identifiers by numeric value
+// without overflowing on long inputs: by trimmed length, then lexically.
+func compareNumericField(a, b string) int {
+	a = strings.TrimLeft(a, "0")
+	b = strings.TrimLeft(b, "0")
+	if len(a) != len(b) {
+		return sign(len(a) - len(b))
+	}
+	return strings.Compare(a, b)
+}
+
+// isNumeric reports whether s is a non-empty run of ASCII digits.
+func isNumeric(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // Constraint is a parsed version filter. Specificity is how many components the

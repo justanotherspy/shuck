@@ -22,6 +22,14 @@ func TestCompareBranches(t *testing.T) {
 		{"prerelease suffix lexical less", "v5.0.0-alpha", "v5.0.0-beta", -1},
 		{"prerelease suffix lexical greater", "v5.0.0-rc.2", "v5.0.0-rc.1", 1},
 		{"equal prerelease tie-break on raw", "v5.0.0-rc.1", "V5.0.0-rc.1", 1}, // "v..." > "V..." lexically on raw
+
+		// Semver §11: numeric prerelease fields compare numerically, not
+		// lexically, so rc.10 outranks rc.2 (lexically rc.10 < rc.2).
+		{"numeric prerelease greater", "v1.0.0-rc.10", "v1.0.0-rc.2", 1},
+		{"numeric prerelease less", "v1.0.0-rc.9", "v1.0.0-rc.10", -1},
+		{"longer prerelease wins tie", "v1.0.0-alpha.1", "v1.0.0-alpha", 1},
+		{"numeric ranks below alphanumeric", "v1.0.0-alpha.1", "v1.0.0-alpha.beta", -1},
+		{"alphanumeric ranks above numeric", "v1.0.0-alpha.beta", "v1.0.0-alpha.1", 1},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
