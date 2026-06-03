@@ -5,7 +5,7 @@ go 1.26.0
 // Pin a patched build toolchain (a bare go 1.26.0 stdlib can carry
 // vulnerabilities flagged by govulncheck). With GOTOOLCHAIN=auto this is fetched
 // on demand; bump it when a newer patch fixes a reported issue.
-toolchain go1.26.3
+toolchain go1.26.4
 
 require (
 	github.com/go-git/go-git/v5 v5.19.1
