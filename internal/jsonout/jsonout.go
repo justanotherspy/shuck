@@ -76,15 +76,34 @@ type Job struct {
 	WorkflowName string       `json:"workflow_name"`
 	WorkflowPath string       `json:"workflow_path"`
 	FailedSteps  []FailedStep `json:"failed_steps"`
+	// Annotations are the job's check-run annotations (file:line messages from
+	// problem matchers), independent of the step↔log pairing.
+	Annotations []Annotation `json:"annotations"`
 }
 
 // FailedStep is one failing step: what it ran and the extracted error excerpt.
+// Class is a coarse heuristic category ("lint", "test", "build", "timeout",
+// "oom", "infra"); it is omitted when shuck could not classify the failure.
 type FailedStep struct {
 	Number  int    `json:"number"`
 	Name    string `json:"name"`
 	Kind    string `json:"kind"`
+	Class   string `json:"class,omitempty"`
 	Command string `json:"command"`
 	Excerpt string `json:"excerpt"`
+}
+
+// Annotation is a check-run annotation: a structured file:line message from a
+// problem matcher, pointing straight at the offending location.
+type Annotation struct {
+	Path        string `json:"path"`
+	StartLine   int    `json:"start_line"`
+	EndLine     int    `json:"end_line"`
+	StartColumn int    `json:"start_column,omitempty"`
+	EndColumn   int    `json:"end_column,omitempty"`
+	Level       string `json:"level"`
+	Title       string `json:"title,omitempty"`
+	Message     string `json:"message"`
 }
 
 // OtherCheck is a non-Actions failing check (no logs available).
@@ -250,14 +269,28 @@ func newJob(j model.JobResult) Job {
 		WorkflowName: j.WorkflowName,
 		WorkflowPath: j.WorkflowPath,
 		FailedSteps:  make([]FailedStep, 0, len(j.FailedSteps)),
+		Annotations:  make([]Annotation, 0, len(j.Annotations)),
 	}
 	for _, s := range j.FailedSteps {
 		job.FailedSteps = append(job.FailedSteps, FailedStep{
 			Number:  s.Number,
 			Name:    s.Name,
 			Kind:    string(s.Kind),
+			Class:   string(s.Class),
 			Command: s.Command,
 			Excerpt: s.Excerpt,
+		})
+	}
+	for _, an := range j.Annotations {
+		job.Annotations = append(job.Annotations, Annotation{
+			Path:        an.Path,
+			StartLine:   an.StartLine,
+			EndLine:     an.EndLine,
+			StartColumn: an.StartColumn,
+			EndColumn:   an.EndColumn,
+			Level:       an.Level,
+			Title:       an.Title,
+			Message:     an.Message,
 		})
 	}
 	return job

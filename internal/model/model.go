@@ -77,14 +77,47 @@ const (
 	KindUnknown StepKind = ""
 )
 
+// FailureClass is a coarse, heuristic category for why a step failed, so an
+// agent or script can route a failure (fix code vs. re-run) without re-parsing
+// the excerpt. It is a hint, never authoritative.
+type FailureClass string
+
+// Failure classes. The operational classes (timeout/oom/infra) signal a likely
+// re-run; the rest point at code or config to fix. Empty means unclassified.
+const (
+	ClassUnknown FailureClass = ""
+	ClassLint    FailureClass = "lint"    // linters / formatters / static analysis
+	ClassTest    FailureClass = "test"    // a test suite reported failures
+	ClassBuild   FailureClass = "build"   // compilation / build step
+	ClassTimeout FailureClass = "timeout" // step or job timed out
+	ClassOOM     FailureClass = "oom"     // killed for running out of memory
+	ClassInfra   FailureClass = "infra"   // runner / network / registry trouble
+)
+
 // FailedStep is the high-signal detail for a step that failed: what it ran and
 // the extracted error excerpt from its logs.
 type FailedStep struct {
-	Number  int      `json:"number"`
-	Name    string   `json:"name"`
-	Command string   `json:"command"`
-	Kind    StepKind `json:"kind"`
-	Excerpt string   `json:"excerpt"`
+	Number  int          `json:"number"`
+	Name    string       `json:"name"`
+	Command string       `json:"command"`
+	Kind    StepKind     `json:"kind"`
+	Class   FailureClass `json:"class,omitempty"`
+	Excerpt string       `json:"excerpt"`
+}
+
+// Annotation is a GitHub check-run annotation: a structured file:line message
+// attached to a job by a problem matcher (golangci-lint, go test, tsc, eslint,
+// compilers, …). It points straight at the offending location, so shuck
+// surfaces these alongside the scraped log excerpt.
+type Annotation struct {
+	Path        string `json:"path"`
+	StartLine   int    `json:"start_line"`
+	EndLine     int    `json:"end_line"`
+	StartColumn int    `json:"start_column,omitempty"`
+	EndColumn   int    `json:"end_column,omitempty"`
+	Level       string `json:"level"` // notice | warning | failure
+	Title       string `json:"title,omitempty"`
+	Message     string `json:"message"`
 }
 
 // JobResult is a single GitHub Actions job, including its step overview and (for
@@ -100,7 +133,13 @@ type JobResult struct {
 	WorkflowPath string         `json:"workflow_path"`
 	Steps        []StepOverview `json:"steps"`
 	FailedSteps  []FailedStep   `json:"failed_steps"`
-	Inspected    bool           `json:"inspected"` // logs were drilled for this (id, attempt)
+	// CheckRunID is the job's corresponding check-run ID, used to fetch the
+	// job's annotations. 0 when it could not be resolved.
+	CheckRunID int64 `json:"check_run_id,omitempty"`
+	// Annotations are the job's check-run annotations (file:line messages from
+	// problem matchers), fetched as cheap metadata when the job is drilled.
+	Annotations []Annotation `json:"annotations,omitempty"`
+	Inspected   bool         `json:"inspected"` // logs were drilled for this (id, attempt)
 }
 
 // ActionTag is a tag in a GitHub Actions repository paired with the commit SHA

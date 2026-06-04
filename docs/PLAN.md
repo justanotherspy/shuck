@@ -162,6 +162,43 @@ explicit goal.
 - The Claude Code plugin bundles it via `plugins/shuck/.mcp.json`
   (`${CLAUDE_PLUGIN_ROOT}/bin/shuck mcp`), auto-registered when the plugin loads.
 
+## Round 3 — sharper failure signal
+
+Two additive features that make a failure self-describing, so an agent can jump
+straight to the offending line and route the failure (fix vs. re-run) without
+re-parsing the excerpt. Both are additive to the `--json` schema (no
+`schema_version` bump) and flow through the CLI, the MCP tools, and the cache.
+
+1. **Check-run annotations.** — **DONE.** shuck previously only scraped
+   `##[error]` log text; it now also surfaces a job's GitHub check-run
+   annotations — the structured `path:line:message` records that problem
+   matchers (golangci-lint, `go test`, `tsc`, eslint, compilers) emit — which
+   point straight at the offending location.
+   - `gh.JobAnnotations` paginates the check-runs annotations API. The check-run
+     ID is parsed from each job's `check_run_url` (`gh.checkRunID`); an Actions
+     job's ID and its check-run ID differ, and only the latter keys the API.
+   - Annotations are **cheap metadata**, so they are re-fetched every run (even
+     on the same-commit log-reuse path) and not cached — consistent with how the
+     checks list is always re-validated. Fetching is best-effort: an error is a
+     warning, never a failed inspection (like reviews).
+   - Attached at the **job** level (`model.JobResult.Annotations`), not per
+     failed step: the API does not associate annotations with steps. JSON adds
+     `failed_jobs[]/cancelled_jobs[].annotations[]{path,start_line,end_line,
+     start_column,end_column,level,title,message}` (always `[]`, never null).
+   - Text render lists `failure`/`warning` annotations under each job (capped at
+     20 with a "… N more" note; `notice` level is dropped from text but kept in
+     JSON).
+2. **Failure classification.** — **DONE.** Each failed step is tagged with a
+   coarse `model.FailureClass` — `lint | test | build | timeout | oom | infra` —
+   so consumers can route without re-reading the excerpt.
+   - New dependency-free `internal/classify`: a heuristic over the step command
+     and excerpt with deliberate precedence — operational causes first
+     (timeout/oom/infra ⇒ likely a re-run), then the command's tool, then
+     excerpt keywords. Errs toward unclassified rather than guessing wrong.
+   - Computed in `cli.buildFailedSteps` (the single step↔section chokepoint), so
+     both the PR and run/job paths get it. JSON adds `failed_steps[].class`
+     (omitted when unclassified); text appends a `[class]` tag to the step head.
+
 ### Pushed back / deferred
 
 - **Unprompted triage hint** on every run — noise in pipes and `--json`;

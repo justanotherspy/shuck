@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/justanotherspy/shuck/internal/cache"
+	"github.com/justanotherspy/shuck/internal/classify"
 	"github.com/justanotherspy/shuck/internal/gh"
 	"github.com/justanotherspy/shuck/internal/jsonout"
 	"github.com/justanotherspy/shuck/internal/logs"
@@ -553,9 +554,11 @@ func (a *app) runReport(ctx context.Context, tgt target.Target) (*model.Report, 
 		return nil, err
 	}
 	for i := range failed {
+		a.attachAnnotations(ctx, tgt.Owner, tgt.Repo, &failed[i])
 		a.drill(ctx, tgt.Owner, tgt.Repo, &failed[i])
 	}
 	for i := range cancelled {
+		a.attachAnnotations(ctx, tgt.Owner, tgt.Repo, &cancelled[i])
 		a.drill(ctx, tgt.Owner, tgt.Repo, &cancelled[i])
 	}
 	return &model.Report{
@@ -683,6 +686,7 @@ type inspectClient interface {
 	ListJobs(ctx context.Context, owner, repo, headSHA string) (failed, cancelled []model.JobResult, running []model.RunningJob, err error)
 	OtherChecks(ctx context.Context, owner, repo, sha string) ([]model.OtherCheck, error)
 	JobLog(ctx context.Context, owner, repo string, jobID int64) (string, error)
+	JobAnnotations(ctx context.Context, owner, repo string, checkRunID int64) ([]model.Annotation, error)
 	ReviewsFingerprint(ctx context.Context, owner, repo string, number int) (string, error)
 	PRReviews(ctx context.Context, owner, repo string, number, commentLimit int) ([]model.Review, error)
 	RunReport(ctx context.Context, owner, repo string, runID, jobID int64) (info model.RunInfo, failed, cancelled []model.JobResult, running []model.RunningJob, err error)
@@ -709,6 +713,9 @@ type app struct {
 // the log (caching it for next time, unless noCache).
 func (a *app) drillJobs(ctx context.Context, owner, repo string, number int, jobs []model.JobResult, sameCommit, noCache bool) {
 	for i := range jobs {
+		// Annotations are cheap metadata, so they are always re-fetched — even on
+		// the same-commit cache-reuse path, where the raw log is read locally.
+		a.attachAnnotations(ctx, owner, repo, &jobs[i])
 		if sameCommit {
 			if raw, ok, _ := cache.LoadJobLog(owner, repo, number, jobs[i].ID, jobs[i].RunAttempt); ok {
 				jobs[i].FailedSteps = a.buildFailedSteps(jobs[i], raw)
@@ -723,6 +730,21 @@ func (a *app) drillJobs(ctx context.Context, owner, repo string, number int, job
 			}
 		}
 	}
+}
+
+// attachAnnotations fills job.Annotations from its check run. Like review
+// fetching it is best-effort: an error is reported as a warning and leaves the
+// annotations empty rather than failing the whole inspection.
+func (a *app) attachAnnotations(ctx context.Context, owner, repo string, job *model.JobResult) {
+	if job.CheckRunID == 0 {
+		return
+	}
+	anns, err := a.client.JobAnnotations(ctx, owner, repo, job.CheckRunID)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "shuck: warning: could not fetch annotations:", err)
+		return
+	}
+	job.Annotations = anns
 }
 
 // drill downloads a failed job's log, extracts its failed steps, and returns the
@@ -774,6 +796,7 @@ func (a *app) buildFailedSteps(job model.JobResult, raw string) []model.FailedSt
 			fs.Name = failedSteps[0].Name
 			fs.Number = failedSteps[0].Number
 		}
+		fs.Class = classify.Classify(fs, job.Conclusion)
 		return []model.FailedStep{fs}
 	}
 
@@ -797,6 +820,7 @@ func (a *app) buildFailedSteps(job model.JobResult, raw string) []model.FailedSt
 			fs.Command = logs.ClampCommand(sec.FullCommand(), a.maxCommandLines)
 			fs.Kind = sec.Kind()
 			fs.Excerpt = logs.Extract(sec.Body, a.opts)
+			fs.Class = classify.Classify(fs, job.Conclusion)
 		} else {
 			fs.Excerpt = "(no matching error log section found)"
 		}

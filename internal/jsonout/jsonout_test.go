@@ -14,11 +14,16 @@ func TestEncodeGolden(t *testing.T) {
 		FailedJobs: []model.JobResult{{
 			ID: 7, RunID: 9, Name: "build", Conclusion: "failure",
 			WorkflowName: "CI", WorkflowPath: ".github/workflows/ci.yml",
-			// Inspected is a cache-only field and must not appear in the JSON.
-			Inspected: true,
+			// Inspected and CheckRunID are cache/internal fields and must not
+			// appear in the stable JSON.
+			Inspected: true, CheckRunID: 555,
 			FailedSteps: []model.FailedStep{{
 				Number: 3, Name: "Run tests", Kind: model.KindBash,
-				Command: "go test ./...", Excerpt: "--- FAIL",
+				Class: model.ClassTest, Command: "go test ./...", Excerpt: "--- FAIL",
+			}},
+			Annotations: []model.Annotation{{
+				Path: "main_test.go", StartLine: 12, EndLine: 12, StartColumn: 5,
+				Level: "failure", Message: "TestFoo failed",
 			}},
 		}},
 		CancelledJobs: []model.JobResult{{
@@ -64,8 +69,19 @@ func TestEncodeGolden(t *testing.T) {
           "number": 3,
           "name": "Run tests",
           "kind": "bash",
+          "class": "test",
           "command": "go test ./...",
           "excerpt": "--- FAIL"
+        }
+      ],
+      "annotations": [
+        {
+          "path": "main_test.go",
+          "start_line": 12,
+          "end_line": 12,
+          "start_column": 5,
+          "level": "failure",
+          "message": "TestFoo failed"
         }
       ]
     }
@@ -86,7 +102,8 @@ func TestEncodeGolden(t *testing.T) {
           "command": "make e2e",
           "excerpt": "##[error]The operation was canceled."
         }
-      ]
+      ],
+      "annotations": []
     }
   ],
   "other_checks": [

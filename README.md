@@ -8,7 +8,10 @@
 `shuck` is a Go CLI for GitHub PR triage, built for developers and agents who
 want the signal without the fluff. Its core trick: when CI goes red, `shuck <pr>`
 drills GitHub Actions failures down to the failing **steps** and prints just
-their error logs — no tab-hopping, no log scrolling.
+their error logs — no tab-hopping, no log scrolling. Each failed step is tagged
+with a coarse class (`lint`/`test`/`build`/`timeout`/`oom`/`infra`) and shown
+alongside the job's check-run **annotations** — the `file:line` pointers problem
+matchers emit — so you land on the offending line, not in a wall of log.
 
 Around that core it covers the rest of PR and repo hygiene:
 

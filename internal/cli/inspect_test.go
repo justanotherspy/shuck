@@ -35,6 +35,10 @@ type stubInspect struct {
 	jobLogErr   error
 	jobLogCalls int
 
+	annotations []model.Annotation
+	annErr      error
+	annCalls    int
+
 	fingerprint string
 	fpErr       error
 	fpCalls     int
@@ -74,6 +78,11 @@ func (s *stubInspect) OtherChecks(_ context.Context, _, _, _ string) ([]model.Ot
 func (s *stubInspect) JobLog(_ context.Context, _, _ string, _ int64) (string, error) {
 	s.jobLogCalls++
 	return s.jobLog, s.jobLogErr
+}
+
+func (s *stubInspect) JobAnnotations(_ context.Context, _, _ string, _ int64) ([]model.Annotation, error) {
+	s.annCalls++
+	return s.annotations, s.annErr
 }
 
 func (s *stubInspect) ReviewsFingerprint(_ context.Context, _, _ string, _ int) (string, error) {
@@ -162,6 +171,46 @@ func TestPRReportHappyPath(t *testing.T) {
 	cached, err := cache.Load("o", "r", 42)
 	if err != nil || cached == nil {
 		t.Fatalf("cache not written: %v / %v", cached, err)
+	}
+}
+
+func TestPRReportAttachesAnnotations(t *testing.T) {
+	s := ciStub()
+	// Give the failed job a check-run ID so annotations are fetched, and have
+	// the stub return one.
+	s.failed[0].CheckRunID = 99
+	s.annotations = []model.Annotation{
+		{Path: "main_test.go", StartLine: 12, Level: "failure", Message: "TestThing failed"},
+	}
+	withStubInspect(t, s)
+	tgt := target.Target{Owner: "o", Repo: "r", Number: 42}
+	o := options{reviewCommentLimit: 5, ciOnly: true, context: 10, shortThreshold: 100, tail: 100}
+
+	report, err := inspectWith(context.Background(), tgt, o)
+	if err != nil {
+		t.Fatalf("inspectWith: %v", err)
+	}
+	if s.annCalls != 1 {
+		t.Fatalf("JobAnnotations calls = %d, want 1", s.annCalls)
+	}
+	if got := report.FailedJobs[0].Annotations; len(got) != 1 || got[0].Path != "main_test.go" {
+		t.Fatalf("annotations not attached: %+v", got)
+	}
+
+	// Annotations are cheap metadata: even when the raw log is reused from cache
+	// (no re-download), they are re-fetched.
+	report2, err := inspectWith(context.Background(), tgt, o)
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if s.jobLogCalls != 1 {
+		t.Errorf("second run should reuse cached log: JobLog calls = %d, want 1", s.jobLogCalls)
+	}
+	if s.annCalls != 2 {
+		t.Errorf("annotations should be re-fetched on cache reuse: calls = %d, want 2", s.annCalls)
+	}
+	if len(report2.FailedJobs[0].Annotations) != 1 {
+		t.Errorf("annotations missing on cache-reuse run: %+v", report2.FailedJobs[0].Annotations)
 	}
 }
 

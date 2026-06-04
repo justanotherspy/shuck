@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/go-github/v88/github"
@@ -182,6 +184,7 @@ func jobResult(run *github.WorkflowRun, job *github.WorkflowJob) model.JobResult
 		RunAttempt:   int(job.GetRunAttempt()),
 		WorkflowName: job.GetWorkflowName(),
 		WorkflowPath: run.GetPath(),
+		CheckRunID:   checkRunID(job.GetCheckRunURL()),
 	}
 	for _, st := range job.Steps {
 		jr.Steps = append(jr.Steps, model.StepOverview{
@@ -258,6 +261,56 @@ func (c *Client) JobLog(ctx context.Context, owner, repo string, jobID int64) (s
 		return "", fmt.Errorf("read log for job %d: %w", jobID, err)
 	}
 	return string(body), nil
+}
+
+// checkRunID extracts the trailing numeric ID from a job's check-run URL
+// (".../check-runs/123456"). An Actions job's ID and its check-run ID differ,
+// and only the latter keys the annotations API. Returns 0 when the URL is empty
+// or unparseable, which callers treat as "no annotations to fetch".
+func checkRunID(url string) int64 {
+	i := strings.LastIndex(url, "/")
+	if i < 0 || i+1 >= len(url) {
+		return 0
+	}
+	id, err := strconv.ParseInt(url[i+1:], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return id
+}
+
+// JobAnnotations returns a job's check-run annotations (file:line messages from
+// problem matchers). Annotations are cheap metadata, so shuck re-fetches them
+// each run rather than caching them. A zero checkRunID yields no annotations.
+func (c *Client) JobAnnotations(ctx context.Context, owner, repo string, checkRunID int64) ([]model.Annotation, error) {
+	if checkRunID == 0 {
+		return nil, nil
+	}
+	var out []model.Annotation
+	opts := &github.ListOptions{PerPage: 100}
+	for {
+		anns, resp, err := c.gh.Checks.ListCheckRunAnnotations(ctx, owner, repo, checkRunID, opts)
+		if err != nil {
+			return nil, fmt.Errorf("list annotations for check run %d: %w", checkRunID, err)
+		}
+		for _, a := range anns {
+			out = append(out, model.Annotation{
+				Path:        a.GetPath(),
+				StartLine:   a.GetStartLine(),
+				EndLine:     a.GetEndLine(),
+				StartColumn: a.GetStartColumn(),
+				EndColumn:   a.GetEndColumn(),
+				Level:       a.GetAnnotationLevel(),
+				Title:       a.GetTitle(),
+				Message:     a.GetMessage(),
+			})
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	return out, nil
 }
 
 // OtherChecks lists failing non-Actions checks: external app check runs and
