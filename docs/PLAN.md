@@ -116,8 +116,17 @@ Covered by a flag×target×ordering×dash-style matrix in `cli_test.go`.
    - `render` shows a run/job header and all-clear message in place of the PR
      line; `jsonout` adds an additive optional `run` object (no `schema_version`
      bump). `--offline` is rejected for run/job URLs (nothing is cached).
-   - **Deferred:** the `/pull/<n>/checks?check_run_id=` URL form and run-attempt
-     selection (the attempt segment is currently ignored — latest is used).
+   - **Run-attempt selection — DONE.** `target.parseActionsURL` recognizes a
+     trailing `/attempts/<n>`; `Target.Attempt` flows through `gh.RunReport`,
+     which uses `GetWorkflowRunAttempt` + `ListWorkflowJobsAttempt` for that
+     attempt (0 = latest). `RunInfo.Attempt` / the JSON `run.attempt` field and
+     the `run N (attempt M)` header surface it.
+   - **PR "Checks" tab URL — DONE.** `target.parseChecksURL` recognizes
+     `.../pull/<n>/checks?check_run_id=<id>` (a `check_run_id` query param is
+     required, so a plain PR URL still falls through). `Target.CheckRunID` is
+     resolved at inspection time via `gh.CheckRunTarget` (read the check run's
+     `details_url` → run/job) and inspected as that job; a non-Actions check
+     falls back to the PR-wide report, and a reviews-only pass uses the PR.
 4. **In-progress banner.** — **DONE.** `writeSummary` prints a top-of-output
    `⚠ N still running — failures shown may be incomplete` banner when failures
    coexist with running jobs.

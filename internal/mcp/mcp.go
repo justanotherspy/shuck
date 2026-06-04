@@ -41,13 +41,15 @@ command plus the extracted error excerpt from its log. Non-Actions checks are
 listed by name (no logs exist for them). This is the first move when CI goes
 red on a PR. (For the PR's reviews, use inspect_reviews.)
 
-Target selection (most specific wins): pass url for a PR URL; or repo + pr for
-an explicit PR; or pr alone to use the repo of the local working directory; or
-nothing to inspect the open PR for the current branch. To inspect one workflow
-run instead of a PR, set run to a run/job URL, or to a bare run ID together
-with repo — run targets bypass shuck's cache, so logs are always freshly
-downloaded. Requires a GitHub token in GITHUB_TOKEN or GH_TOKEN in the server's
-environment.`
+Target selection (most specific wins): pass url for a PR URL (a PR "Checks" tab
+link, .../pull/<n>/checks?check_run_id=<id>, is resolved straight to the Actions
+job behind that check); or repo + pr for an explicit PR; or pr alone to use the
+repo of the local working directory; or nothing to inspect the open PR for the
+current branch. To inspect one workflow run instead of a PR, set run to a
+run/job URL (a run URL may name an /attempts/<n> to pick an earlier re-run
+attempt), or to a bare run ID together with repo — run targets bypass shuck's
+cache, so logs are always freshly downloaded. Requires a GitHub token in
+GITHUB_TOKEN or GH_TOKEN in the server's environment.`
 
 const inspectReviewsDesc = `Summarize a GitHub pull request's reviews and review-comment threads.
 
@@ -249,8 +251,8 @@ func defaultOptions() cli.InspectOptions {
 type inspectLogsInput struct {
 	Repo string `json:"repo,omitempty" jsonschema:"GitHub repository as owner/repo. If omitted, it is inferred from the local working directory's origin remote."`
 	PR   int    `json:"pr,omitempty" jsonschema:"Pull request number. If omitted, shuck finds the open PR for the current branch (requires a local repo)."`
-	URL  string `json:"url,omitempty" jsonschema:"A GitHub pull request URL such as https://github.com/owner/repo/pull/42. Takes precedence over repo and pr."`
-	Run  string `json:"run,omitempty" jsonschema:"Inspect a single workflow run instead of a PR: a run/job URL (.../actions/runs/123 or .../job/456), or a bare run ID together with repo. Takes precedence over url/repo/pr."`
+	URL  string `json:"url,omitempty" jsonschema:"A GitHub pull request URL such as https://github.com/owner/repo/pull/42, or a PR 'Checks' tab link (.../pull/42/checks?check_run_id=123) which is resolved to just that check's Actions job. Takes precedence over repo and pr."`
+	Run  string `json:"run,omitempty" jsonschema:"Inspect a single workflow run instead of a PR: a run/job URL (.../actions/runs/123, .../runs/123/job/456, or .../runs/123/attempts/2 for an earlier re-run attempt), or a bare run ID together with repo. Takes precedence over url/repo/pr."`
 
 	extractInput
 

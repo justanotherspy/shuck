@@ -52,7 +52,8 @@ and the repo's security alerts together. Use a subcommand to focus on one.
 Usage:
   shuck [target]              CI + reviews + security for a PR (same as "shuck all")
   shuck <owner>/<repo> <pr>   an explicit PR ("shuck <pr-url>", "shuck <pr>", or "shuck" for the current branch)
-  shuck <run-url> | <job-url> a single GitHub Actions run / job (CI only)
+  shuck <run-url> | <job-url> a single GitHub Actions run / job (CI only; a run URL may name an /attempts/<n>)
+  shuck <pr-checks-url>       a PR "Checks" tab link (.../checks?check_run_id=…) → just that check's job
   shuck --watch [target]      poll until every check finishes, then print the report
 
 Subcommands (single-letter shorthands in parentheses):
@@ -402,6 +403,19 @@ func inspectWith(ctx context.Context, tgt target.Target, o options) (*model.Repo
 		reviewsOnly:        o.reviewsOnly,
 	}
 
+	// A PR "Checks" tab URL names a specific check run; resolve it to the Actions
+	// run/job it represents and inspect just that job. A non-Actions check (or an
+	// unresolvable one) leaves RunID at 0 and falls back to the PR-wide report.
+	// The narrowing applies only to the CI/logs dimension: reviews are
+	// PR-level, so a reviews-only pass uses the PR the check belongs to.
+	if tgt.CheckRunID != 0 && !a.reviewsOnly {
+		runID, jobID, err := a.client.CheckRunTarget(ctx, tgt.Owner, tgt.Repo, tgt.CheckRunID)
+		if err != nil {
+			return nil, err
+		}
+		tgt.RunID, tgt.JobID = runID, jobID
+	}
+
 	if tgt.RunID != 0 {
 		return a.runReport(ctx, tgt)
 	}
@@ -549,7 +563,7 @@ func loadOffline(tgt target.Target) (*model.Report, error) {
 // single job) and drills the failed and cancelled ones for their logs. Run
 // targets bypass the PR-keyed cache, so logs are always re-downloaded.
 func (a *app) runReport(ctx context.Context, tgt target.Target) (*model.Report, error) {
-	info, failed, cancelled, running, err := a.client.RunReport(ctx, tgt.Owner, tgt.Repo, tgt.RunID, tgt.JobID)
+	info, failed, cancelled, running, err := a.client.RunReport(ctx, tgt.Owner, tgt.Repo, tgt.RunID, tgt.JobID, tgt.Attempt)
 	if err != nil {
 		return nil, err
 	}
@@ -689,7 +703,8 @@ type inspectClient interface {
 	JobAnnotations(ctx context.Context, owner, repo string, checkRunID int64) ([]model.Annotation, error)
 	ReviewsFingerprint(ctx context.Context, owner, repo string, number int) (string, error)
 	PRReviews(ctx context.Context, owner, repo string, number, commentLimit int) ([]model.Review, error)
-	RunReport(ctx context.Context, owner, repo string, runID, jobID int64) (info model.RunInfo, failed, cancelled []model.JobResult, running []model.RunningJob, err error)
+	RunReport(ctx context.Context, owner, repo string, runID, jobID int64, attempt int) (info model.RunInfo, failed, cancelled []model.JobResult, running []model.RunningJob, err error)
+	CheckRunTarget(ctx context.Context, owner, repo string, checkRunID int64) (runID, jobID int64, err error)
 }
 
 // newInspectClient builds the client used by the PR / run inspection pipeline.

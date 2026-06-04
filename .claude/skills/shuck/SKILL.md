@@ -59,15 +59,21 @@ The PR-oriented entry points accept the same target forms:
 | a PR number, current repo | `shuck 42` | `pr` alone |
 | the current branch's open PR | `shuck` | (no fields) |
 | an Actions run/job URL (logs only) | `shuck logs <run-url>` | `inspect_logs` `run` = the URL |
+| a specific re-run attempt (logs only) | `shuck logs <run-url>/attempts/2` | `inspect_logs` `run` = that URL |
+| a PR "Checks" tab link | `shuck <checks-url>` | `inspect_logs` `url` = the link |
 | a run ID + repo (logs only) | `shuck logs --run 123 owner/repo` | `inspect_logs` `run` = `"123"`, `repo` |
 
 Rules that bite:
 
 - For the MCP PR tools, setting `repo` **without** `pr` is an error; owner/repo is
   inferred from the local origin remote only when you pass `pr` alone or nothing.
-- Run/job targets (URLs ending `/actions/runs/123` or `.../job/456`, or
-  `logs --run`) skip the PR-wide scan and **always re-download logs** (no cache);
-  they carry no reviews or security half.
+- Run/job targets (URLs ending `/actions/runs/123`, `.../job/456`, or
+  `.../attempts/2`, or `logs --run`) skip the PR-wide scan and **always
+  re-download logs** (no cache); they carry no reviews or security half. A run
+  URL with no `/attempts/<n>` uses the latest attempt.
+- A PR "Checks" tab link (`.../pull/<n>/checks?check_run_id=<id>`) is resolved to
+  just the Actions job behind that check — so it behaves like a job target. If
+  the check isn't a GitHub Actions check, it falls back to the PR-wide report.
 
 ## Using the CLI
 

@@ -157,7 +157,11 @@ Job: build  [failure]
 ```
 
 Pass an Actions run/job URL to skip the PR-wide scan and inspect just that run —
-handy when a failure notification already points at the job.
+handy when a failure notification already points at the job. A run URL can name
+a specific attempt (`.../actions/runs/<id>/attempts/<n>`) to inspect a re-run's
+earlier attempt instead of the latest. A PR "Checks" tab link
+(`.../pull/<n>/checks?check_run_id=<id>`) is resolved straight to the Actions
+job behind that check, so you can paste the URL you're already looking at.
 
 ### Watching until CI finishes
 

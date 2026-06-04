@@ -40,6 +40,7 @@ type Run struct {
 	Repo         string `json:"repo"`
 	RunID        int64  `json:"run_id"`
 	JobID        int64  `json:"job_id,omitempty"`
+	Attempt      int    `json:"attempt,omitempty"`
 	Title        string `json:"title"`
 	HeadSHA      string `json:"head_sha"`
 	HeadBranch   string `json:"head_branch"`
@@ -192,6 +193,7 @@ func NewDocument(r *model.Report) Document {
 			Repo:         r.Run.Repo,
 			RunID:        r.Run.RunID,
 			JobID:        r.Run.JobID,
+			Attempt:      r.Run.Attempt,
 			Title:        r.Run.Title,
 			HeadSHA:      r.Run.HeadSHA,
 			HeadBranch:   r.Run.HeadBranch,

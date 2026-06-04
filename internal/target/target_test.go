@@ -136,26 +136,29 @@ func TestParseActionsURL(t *testing.T) {
 		in           string
 		owner, repo  string
 		runID, jobID int64
+		attempt      int
 		wantOK       bool
 	}{
-		{"https://github.com/justanotherspy/shuck/actions/runs/123", "justanotherspy", "shuck", 123, 0, true},
-		{"http://github.com/justanotherspy/shuck/actions/runs/123", "justanotherspy", "shuck", 123, 0, true},
-		{"github.com/justanotherspy/shuck/actions/runs/123", "justanotherspy", "shuck", 123, 0, true},
-		{"https://github.com/justanotherspy/shuck/actions/runs/123/job/456", "justanotherspy", "shuck", 123, 456, true},
-		{"https://github.com/justanotherspy/shuck/actions/runs/123/jobs/456", "justanotherspy", "shuck", 123, 456, true},
-		{"https://github.com/justanotherspy/shuck/actions/runs/123/job/456?pr=42", "justanotherspy", "shuck", 123, 456, true},
-		{"https://github.com/justanotherspy/shuck/actions/runs/123/attempts/2", "justanotherspy", "shuck", 123, 0, true},
-		{"https://github.example.com/acme/widgets/actions/runs/7/job/8", "acme", "widgets", 7, 8, true},
+		{"https://github.com/justanotherspy/shuck/actions/runs/123", "justanotherspy", "shuck", 123, 0, 0, true},
+		{"http://github.com/justanotherspy/shuck/actions/runs/123", "justanotherspy", "shuck", 123, 0, 0, true},
+		{"github.com/justanotherspy/shuck/actions/runs/123", "justanotherspy", "shuck", 123, 0, 0, true},
+		{"https://github.com/justanotherspy/shuck/actions/runs/123/job/456", "justanotherspy", "shuck", 123, 456, 0, true},
+		{"https://github.com/justanotherspy/shuck/actions/runs/123/jobs/456", "justanotherspy", "shuck", 123, 456, 0, true},
+		{"https://github.com/justanotherspy/shuck/actions/runs/123/job/456?pr=42", "justanotherspy", "shuck", 123, 456, 0, true},
+		{"https://github.com/justanotherspy/shuck/actions/runs/123/attempts/2", "justanotherspy", "shuck", 123, 0, 2, true},
+		{"https://github.com/justanotherspy/shuck/actions/runs/123/attempt/2", "justanotherspy", "shuck", 123, 0, 2, true},
+		{"https://github.example.com/acme/widgets/actions/runs/7/job/8", "acme", "widgets", 7, 8, 0, true},
 		// Not Actions URLs: fall through to other resolution.
-		{"https://github.com/justanotherspy/shuck/pull/12", "", "", 0, 0, false},
-		{"https://github.com/justanotherspy/shuck/actions/runs/notanumber", "", "", 0, 0, false},
-		{"https://github.com/justanotherspy/shuck/actions/runs/0", "", "", 0, 0, false},
-		{"https://github.com/justanotherspy/shuck/actions/runs/123/job/0", "", "", 0, 0, false},
-		{"https://github.com/justanotherspy/shuck/actions", "", "", 0, 0, false},
-		{"42", "", "", 0, 0, false},
+		{"https://github.com/justanotherspy/shuck/pull/12", "", "", 0, 0, 0, false},
+		{"https://github.com/justanotherspy/shuck/actions/runs/notanumber", "", "", 0, 0, 0, false},
+		{"https://github.com/justanotherspy/shuck/actions/runs/0", "", "", 0, 0, 0, false},
+		{"https://github.com/justanotherspy/shuck/actions/runs/123/job/0", "", "", 0, 0, 0, false},
+		{"https://github.com/justanotherspy/shuck/actions/runs/123/attempts/0", "", "", 0, 0, 0, false},
+		{"https://github.com/justanotherspy/shuck/actions", "", "", 0, 0, 0, false},
+		{"42", "", "", 0, 0, 0, false},
 	}
 	for _, c := range cases {
-		owner, repo, runID, jobID, ok := parseActionsURL(c.in)
+		ref, ok := parseActionsURL(c.in)
 		if ok != c.wantOK {
 			t.Errorf("parseActionsURL(%q) ok = %v, want %v", c.in, ok, c.wantOK)
 			continue
@@ -163,9 +166,9 @@ func TestParseActionsURL(t *testing.T) {
 		if !ok {
 			continue
 		}
-		if owner != c.owner || repo != c.repo || runID != c.runID || jobID != c.jobID {
-			t.Errorf("parseActionsURL(%q) = %q/%q run=%d job=%d, want %q/%q run=%d job=%d",
-				c.in, owner, repo, runID, jobID, c.owner, c.repo, c.runID, c.jobID)
+		if ref.Owner != c.owner || ref.Repo != c.repo || ref.RunID != c.runID || ref.JobID != c.jobID || ref.Attempt != c.attempt {
+			t.Errorf("parseActionsURL(%q) = %q/%q run=%d job=%d attempt=%d, want %q/%q run=%d job=%d attempt=%d",
+				c.in, ref.Owner, ref.Repo, ref.RunID, ref.JobID, ref.Attempt, c.owner, c.repo, c.runID, c.jobID, c.attempt)
 		}
 	}
 
@@ -183,5 +186,57 @@ func TestParseActionsURL(t *testing.T) {
 	}
 	if job.RunID != 55 || job.JobID != 66 {
 		t.Errorf("Resolve(job URL) = %+v", job)
+	}
+
+	att, err := Resolve([]string{"https://github.com/justanotherspy/shuck/actions/runs/55/attempts/3"})
+	if err != nil {
+		t.Fatalf("Resolve(attempt URL): unexpected error: %v", err)
+	}
+	if att.RunID != 55 || att.JobID != 0 || att.Attempt != 3 {
+		t.Errorf("Resolve(attempt URL) = %+v", att)
+	}
+}
+
+func TestParseChecksURL(t *testing.T) {
+	cases := []struct {
+		in          string
+		owner, repo string
+		number      int
+		checkRunID  int64
+		wantOK      bool
+	}{
+		{"https://github.com/justanotherspy/shuck/pull/42/checks?check_run_id=12345", "justanotherspy", "shuck", 42, 12345, true},
+		{"https://github.com/justanotherspy/shuck/pull/42/checks?check_run_id=12345&foo=bar", "justanotherspy", "shuck", 42, 12345, true},
+		{"github.com/justanotherspy/shuck/pull/42?check_run_id=7", "justanotherspy", "shuck", 42, 7, true},
+		// No check_run_id: fall through to the plain PR parser.
+		{"https://github.com/justanotherspy/shuck/pull/42/checks", "", "", 0, 0, false},
+		{"https://github.com/justanotherspy/shuck/pull/42", "", "", 0, 0, false},
+		// check_run_id present but not a PR URL.
+		{"https://github.com/justanotherspy/shuck/actions/runs/1?check_run_id=7", "", "", 0, 0, false},
+		// Non-positive / non-numeric check_run_id.
+		{"https://github.com/justanotherspy/shuck/pull/42/checks?check_run_id=0", "", "", 0, 0, false},
+		{"https://github.com/justanotherspy/shuck/pull/42/checks?check_run_id=abc", "", "", 0, 0, false},
+	}
+	for _, c := range cases {
+		owner, repo, number, id, ok := parseChecksURL(c.in)
+		if ok != c.wantOK {
+			t.Errorf("parseChecksURL(%q) ok = %v, want %v", c.in, ok, c.wantOK)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		if owner != c.owner || repo != c.repo || number != c.number || id != c.checkRunID {
+			t.Errorf("parseChecksURL(%q) = %q/%q#%d check=%d, want %q/%q#%d check=%d",
+				c.in, owner, repo, number, id, c.owner, c.repo, c.number, c.checkRunID)
+		}
+	}
+
+	tgt, err := Resolve([]string{"https://github.com/justanotherspy/shuck/pull/42/checks?check_run_id=99"})
+	if err != nil {
+		t.Fatalf("Resolve(checks URL): unexpected error: %v", err)
+	}
+	if tgt.Owner != "justanotherspy" || tgt.Repo != "shuck" || tgt.Number != 42 || tgt.CheckRunID != 99 || tgt.RunID != 0 {
+		t.Errorf("Resolve(checks URL) = %+v", tgt)
 	}
 }
