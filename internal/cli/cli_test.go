@@ -43,6 +43,9 @@ func TestBuildFailedStepsAssociatesErrorSection(t *testing.T) {
 	if fs[0].Command != "go test ./..." || fs[0].Kind != model.KindBash {
 		t.Errorf("command/kind = %q/%q", fs[0].Command, fs[0].Kind)
 	}
+	if fs[0].Class != model.ClassTest {
+		t.Errorf("class = %q, want %q", fs[0].Class, model.ClassTest)
+	}
 	if !strings.Contains(fs[0].Excerpt, "--- FAIL: TestThing") {
 		t.Errorf("excerpt missing failure: %q", fs[0].Excerpt)
 	}

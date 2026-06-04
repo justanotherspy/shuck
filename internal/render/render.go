@@ -77,10 +77,78 @@ func writeJob(w io.Writer, job model.JobResult) {
 	for _, s := range job.Steps {
 		fmt.Fprintf(w, "  %d. %s (%s)\n", s.Number, s.Name, stepState(s))
 	}
+	writeAnnotations(w, job.Annotations)
 	cancelled := model.IsCancelledConclusion(job.Conclusion)
 	for _, fs := range job.FailedSteps {
 		writeFailedStep(w, fs, cancelled)
 	}
+}
+
+// maxRenderedAnnotations caps how many annotations the text output lists per
+// job, so a job with hundreds of warnings does not bury the error excerpt. The
+// full set is always available via --json.
+const maxRenderedAnnotations = 20
+
+// writeAnnotations lists a job's failure and warning annotations (file:line
+// pointers from problem matchers). Notice-level annotations are omitted from the
+// text view as low-signal; they remain in --json. Nothing is printed when there
+// are no failure/warning annotations.
+func writeAnnotations(w io.Writer, anns []model.Annotation) {
+	var shown []model.Annotation
+	for _, a := range anns {
+		if a.Level == "failure" || a.Level == "warning" {
+			shown = append(shown, a)
+		}
+	}
+	if len(shown) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "Annotations:")
+	for i, a := range shown {
+		if i == maxRenderedAnnotations {
+			fmt.Fprintf(w, "  … %d more annotation%s\n", len(shown)-i, plural(len(shown)-i))
+			break
+		}
+		fmt.Fprintf(w, "  %s %s — %s\n", annotationSymbol(a.Level), annotationLoc(a), annotationText(a))
+	}
+}
+
+func annotationSymbol(level string) string {
+	if level == "failure" {
+		return "✗"
+	}
+	return "⚠"
+}
+
+// annotationLoc renders an annotation's location as path:line[:col], or just the
+// path when it carries no line, falling back to the level name when path-less.
+func annotationLoc(a model.Annotation) string {
+	if a.Path == "" {
+		return a.Level
+	}
+	if a.StartLine == 0 {
+		return a.Path
+	}
+	if a.StartColumn > 0 {
+		return fmt.Sprintf("%s:%d:%d", a.Path, a.StartLine, a.StartColumn)
+	}
+	return fmt.Sprintf("%s:%d", a.Path, a.StartLine)
+}
+
+// annotationText is the annotation's first message line, prefixed with its title
+// when one is set, kept to a single line for the listing.
+func annotationText(a model.Annotation) string {
+	msg := a.Message
+	if lines := bodyLines(a.Message); len(lines) > 0 {
+		msg = lines[0]
+	}
+	if a.Title != "" && a.Title != msg {
+		if msg == "" {
+			return a.Title
+		}
+		return a.Title + ": " + msg
+	}
+	return msg
 }
 
 func writeFailedStep(w io.Writer, fs model.FailedStep, cancelled bool) {
@@ -88,7 +156,7 @@ func writeFailedStep(w io.Writer, fs model.FailedStep, cancelled bool) {
 	if cancelled {
 		verdict, logsLabel = "cancelled", "logs before cancellation:"
 	}
-	fmt.Fprintf(w, "\n  ▸ Step %d — %s (%s)\n", fs.Number, fs.Name, verdict)
+	fmt.Fprintf(w, "\n  ▸ Step %d — %s (%s)%s\n", fs.Number, fs.Name, verdict, classTag(fs.Class))
 	if fs.Command != "" {
 		fmt.Fprintln(w, "    Step command:")
 		fmt.Fprintf(w, "      * %s:\n", commandLabel(fs.Kind))
@@ -260,6 +328,15 @@ func writeFenced(w io.Writer, indent, content string) {
 		fmt.Fprintf(w, "%s%s\n", indent, line)
 	}
 	fmt.Fprintf(w, "%s```\n", indent)
+}
+
+// classTag renders a step's heuristic failure class as a trailing " [class]"
+// tag, or "" when the failure was not classified.
+func classTag(class model.FailureClass) string {
+	if class == model.ClassUnknown {
+		return ""
+	}
+	return fmt.Sprintf(" [%s]", class)
 }
 
 func commandLabel(kind model.StepKind) string {
