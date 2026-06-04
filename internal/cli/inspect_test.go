@@ -43,12 +43,19 @@ type stubInspect struct {
 	reviewsErr   error
 	reviewsCalls int
 
-	runInfo   model.RunInfo
-	runFailed []model.JobResult
-	runCancel []model.JobResult
-	runRun    []model.RunningJob
-	runErr    error
-	runCalls  int
+	runInfo    model.RunInfo
+	runFailed  []model.JobResult
+	runCancel  []model.JobResult
+	runRun     []model.RunningJob
+	runErr     error
+	runCalls   int
+	runAttempt int
+	runJobID   int64
+	checkRunID int64
+	checkRun   int64 // resolved run ID returned by CheckRunTarget
+	checkJob   int64 // resolved job ID returned by CheckRunTarget
+	checkErr   error
+	checkCalls int
 }
 
 func (s *stubInspect) GetPR(_ context.Context, _, _ string, _ int) (model.PR, error) {
@@ -86,9 +93,17 @@ func (s *stubInspect) PRReviews(_ context.Context, _, _ string, _, _ int) ([]mod
 	return s.reviews, s.reviewsErr
 }
 
-func (s *stubInspect) RunReport(_ context.Context, _, _ string, _, _ int64) (info model.RunInfo, failed, cancelled []model.JobResult, running []model.RunningJob, err error) {
+func (s *stubInspect) RunReport(_ context.Context, _, _ string, _, jobID int64, attempt int) (info model.RunInfo, failed, cancelled []model.JobResult, running []model.RunningJob, err error) {
 	s.runCalls++
+	s.runJobID = jobID
+	s.runAttempt = attempt
 	return s.runInfo, cloneJobs(s.runFailed), cloneJobs(s.runCancel), s.runRun, s.runErr
+}
+
+func (s *stubInspect) CheckRunTarget(_ context.Context, _, _ string, checkRunID int64) (runID, jobID int64, err error) {
+	s.checkCalls++
+	s.checkRunID = checkRunID
+	return s.checkRun, s.checkJob, s.checkErr
 }
 
 // cloneJobs deep-copies a job slice so a stubbed call returns fresh values that
@@ -496,6 +511,114 @@ func TestRunReportWithJobID(t *testing.T) {
 	}
 	if report.Run == nil || report.Run.JobID != 456 {
 		t.Errorf("single-job run info wrong: %+v", report.Run)
+	}
+}
+
+func TestRunReportWithAttempt(t *testing.T) {
+	s := &stubInspect{
+		runInfo:   model.RunInfo{Owner: "o", Repo: "r", RunID: 123, Attempt: 2},
+		runFailed: []model.JobResult{failedJob()},
+		jobLog:    failLog,
+	}
+	withStubInspect(t, s)
+	tgt := target.Target{Owner: "o", Repo: "r", RunID: 123, Attempt: 2}
+	report, err := inspectWith(context.Background(), tgt, options{
+		reviewCommentLimit: 5, context: 10, shortThreshold: 100, tail: 100,
+	})
+	if err != nil {
+		t.Fatalf("inspectWith: %v", err)
+	}
+	if s.runAttempt != 2 {
+		t.Errorf("RunReport attempt = %d, want 2", s.runAttempt)
+	}
+	if report.Run == nil || report.Run.Attempt != 2 {
+		t.Errorf("attempt run info wrong: %+v", report.Run)
+	}
+}
+
+// A PR "Checks" tab URL (CheckRunID set) resolves to the underlying Actions
+// run/job and is inspected as a run target.
+func TestCheckRunIDResolvesToRun(t *testing.T) {
+	s := &stubInspect{
+		checkRun:  123,
+		checkJob:  456,
+		runInfo:   model.RunInfo{Owner: "o", Repo: "r", RunID: 123, JobID: 456},
+		runFailed: []model.JobResult{failedJob()},
+		jobLog:    failLog,
+	}
+	withStubInspect(t, s)
+	tgt := target.Target{Owner: "o", Repo: "r", Number: 42, CheckRunID: 77}
+	report, err := inspectWith(context.Background(), tgt, options{
+		reviewCommentLimit: 5, context: 10, shortThreshold: 100, tail: 100,
+	})
+	if err != nil {
+		t.Fatalf("inspectWith: %v", err)
+	}
+	if s.checkCalls != 1 || s.checkRunID != 77 {
+		t.Errorf("CheckRunTarget calls = %d, id = %d, want 1/77", s.checkCalls, s.checkRunID)
+	}
+	if s.runCalls != 1 || s.runJobID != 456 {
+		t.Errorf("RunReport calls = %d job = %d, want 1/456", s.runCalls, s.runJobID)
+	}
+	if report.Run == nil || report.Run.RunID != 123 {
+		t.Errorf("expected run report, got %+v", report.Run)
+	}
+}
+
+// A non-Actions check run (CheckRunTarget returns 0/0) falls back to a PR-wide
+// inspection using the PR number from the URL.
+func TestCheckRunIDFallsBackToPR(t *testing.T) {
+	s := ciStub()
+	s.checkRun, s.checkJob = 0, 0 // not an Actions check
+	withStubInspect(t, s)
+	tgt := target.Target{Owner: "o", Repo: "r", Number: 42, CheckRunID: 77}
+	report, err := inspectWith(context.Background(), tgt, options{
+		reviewCommentLimit: 5, context: 10, shortThreshold: 100, tail: 100, noCache: true,
+	})
+	if err != nil {
+		t.Fatalf("inspectWith: %v", err)
+	}
+	if s.checkCalls != 1 {
+		t.Errorf("CheckRunTarget calls = %d, want 1", s.checkCalls)
+	}
+	if s.runCalls != 0 {
+		t.Errorf("RunReport calls = %d, want 0 (PR fallback)", s.runCalls)
+	}
+	if report.Run != nil || report.PR.Number != 42 {
+		t.Errorf("expected PR #42 report, got run=%+v pr=%+v", report.Run, report.PR)
+	}
+}
+
+// In a reviews-only pass a checks URL is treated as its PR, not narrowed to a
+// single job: CheckRunTarget is never called and reviews come from the PR.
+func TestCheckRunIDReviewsUsesPR(t *testing.T) {
+	s := ciStub()
+	s.reviews = []model.Review{{Author: "alice", State: "APPROVED"}}
+	withStubInspect(t, s)
+	tgt := target.Target{Owner: "o", Repo: "r", Number: 42, CheckRunID: 77}
+	report, err := inspectWith(context.Background(), tgt, options{
+		reviewsOnly: true, reviewCommentLimit: 5, context: 10, shortThreshold: 100, tail: 100, noCache: true,
+	})
+	if err != nil {
+		t.Fatalf("inspectWith: %v", err)
+	}
+	if s.checkCalls != 0 {
+		t.Errorf("CheckRunTarget calls = %d, want 0 (reviews are PR-level)", s.checkCalls)
+	}
+	if report.Run != nil || report.PR.Number != 42 || len(report.Reviews) != 1 {
+		t.Errorf("expected PR #42 reviews, got run=%+v reviews=%+v", report.Run, report.Reviews)
+	}
+}
+
+func TestCheckRunTargetError(t *testing.T) {
+	s := ciStub()
+	s.checkErr = errors.New("nope")
+	withStubInspect(t, s)
+	tgt := target.Target{Owner: "o", Repo: "r", Number: 42, CheckRunID: 77}
+	if _, err := inspectWith(context.Background(), tgt, options{
+		reviewCommentLimit: 5, context: 10, shortThreshold: 100, tail: 100,
+	}); err == nil {
+		t.Fatal("expected CheckRunTarget error")
 	}
 }
 

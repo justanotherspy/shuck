@@ -153,7 +153,8 @@ type RunInfo struct {
 	Owner        string `json:"owner"`
 	Repo         string `json:"repo"`
 	RunID        int64  `json:"run_id"`
-	JobID        int64  `json:"job_id,omitempty"` // 0 when the whole run was targeted
+	JobID        int64  `json:"job_id,omitempty"`  // 0 when the whole run was targeted
+	Attempt      int    `json:"attempt,omitempty"` // 0 when the latest attempt was used
 	Title        string `json:"title"`
 	HeadSHA      string `json:"head_sha"`
 	HeadBranch   string `json:"head_branch"`

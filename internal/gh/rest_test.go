@@ -210,7 +210,7 @@ func TestRunReportAllJobs(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	info, failed, _, _, err := testClient(t, srv).RunReport(context.Background(), "o", "r", 100, 0)
+	info, failed, _, _, err := testClient(t, srv).RunReport(context.Background(), "o", "r", 100, 0, 0)
 	if err != nil {
 		t.Fatalf("RunReport: %v", err)
 	}
@@ -235,7 +235,7 @@ func TestRunReportSingleJob(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	info, failed, _, _, err := testClient(t, srv).RunReport(context.Background(), "o", "r", 100, 5)
+	info, failed, _, _, err := testClient(t, srv).RunReport(context.Background(), "o", "r", 100, 5, 0)
 	if err != nil {
 		t.Fatalf("RunReport: %v", err)
 	}
@@ -247,13 +247,86 @@ func TestRunReportSingleJob(t *testing.T) {
 	}
 }
 
+func TestRunReportAttempt(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/o/r/actions/runs/100/attempts/2":
+			_, _ = w.Write([]byte(`{"id":100,"display_title":"CI","run_attempt":2,"name":"build"}`))
+		case "/repos/o/r/actions/runs/100/attempts/2/jobs":
+			_, _ = w.Write([]byte(`{"total_count":1,"jobs":[
+				{"id":1,"name":"build","status":"completed","conclusion":"failure","run_attempt":2}
+			]}`))
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	info, failed, _, _, err := testClient(t, srv).RunReport(context.Background(), "o", "r", 100, 0, 2)
+	if err != nil {
+		t.Fatalf("RunReport: %v", err)
+	}
+	if info.Attempt != 2 || info.RunID != 100 {
+		t.Errorf("info = %+v", info)
+	}
+	if len(failed) != 1 || failed[0].Name != "build" {
+		t.Errorf("failed = %+v", failed)
+	}
+}
+
+func TestCheckRunTarget(t *testing.T) {
+	const detailsURL = "https://github.com/o/r/actions/runs/100/job/5"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/o/r/check-runs/77" {
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"id":77,"details_url":"` + detailsURL + `"}`))
+	}))
+	defer srv.Close()
+
+	runID, jobID, err := testClient(t, srv).CheckRunTarget(context.Background(), "o", "r", 77)
+	if err != nil {
+		t.Fatalf("CheckRunTarget: %v", err)
+	}
+	if runID != 100 || jobID != 5 {
+		t.Errorf("CheckRunTarget = run %d job %d, want 100/5", runID, jobID)
+	}
+}
+
+func TestCheckRunTargetNonActions(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// An external (non-Actions) check: details_url is not a run/job URL.
+		_, _ = w.Write([]byte(`{"id":77,"details_url":"https://ci.example.com/build/9"}`))
+	}))
+	defer srv.Close()
+
+	runID, jobID, err := testClient(t, srv).CheckRunTarget(context.Background(), "o", "r", 77)
+	if err != nil {
+		t.Fatalf("CheckRunTarget: %v", err)
+	}
+	if runID != 0 || jobID != 0 {
+		t.Errorf("CheckRunTarget = run %d job %d, want 0/0 (fall back to PR)", runID, jobID)
+	}
+}
+
+func TestCheckRunTargetError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	if _, _, err := testClient(t, srv).CheckRunTarget(context.Background(), "o", "r", 77); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
 func TestRunReportRunError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "boom", http.StatusNotFound)
 	}))
 	defer srv.Close()
 
-	if _, _, _, _, err := testClient(t, srv).RunReport(context.Background(), "o", "r", 100, 0); err == nil {
+	if _, _, _, _, err := testClient(t, srv).RunReport(context.Background(), "o", "r", 100, 0, 0); err == nil {
 		t.Fatal("expected error")
 	}
 }
@@ -268,7 +341,7 @@ func TestRunReportJobError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, _, _, _, err := testClient(t, srv).RunReport(context.Background(), "o", "r", 100, 5); err == nil {
+	if _, _, _, _, err := testClient(t, srv).RunReport(context.Background(), "o", "r", 100, 5, 0); err == nil {
 		t.Fatal("expected error fetching single job")
 	}
 }

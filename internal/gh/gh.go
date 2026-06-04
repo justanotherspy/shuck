@@ -13,6 +13,7 @@ import (
 	"github.com/google/go-github/v88/github"
 
 	"github.com/justanotherspy/shuck/internal/model"
+	"github.com/justanotherspy/shuck/internal/target"
 )
 
 // Client talks to the GitHub REST and GraphQL APIs.
@@ -101,7 +102,7 @@ func (c *Client) ListJobs(ctx context.Context, owner, repo, headSHA string) (fai
 		return nil, nil, nil, err
 	}
 	for _, run := range runs {
-		jobs, jerr := c.listRunJobs(ctx, owner, repo, run.GetID())
+		jobs, jerr := c.listRunJobs(ctx, owner, repo, run.GetID(), 0)
 		if jerr != nil {
 			return nil, nil, nil, jerr
 		}
@@ -115,11 +116,17 @@ func (c *Client) ListJobs(ctx context.Context, owner, repo, headSHA string) (fai
 
 // RunReport inspects a single workflow run by ID. When jobID is non-zero it
 // restricts the result to that one job (a job-URL target); otherwise it
-// classifies every job in the run. It also returns the run's head context for
-// the report header. Non-Actions checks do not apply to a run, so none are
-// returned.
-func (c *Client) RunReport(ctx context.Context, owner, repo string, runID, jobID int64) (info model.RunInfo, failed, cancelled []model.JobResult, running []model.RunningJob, err error) {
-	run, _, err := c.gh.Actions.GetWorkflowRunByID(ctx, owner, repo, runID)
+// classifies every job in the run. When attempt is non-zero it inspects that
+// specific run attempt rather than the latest. It also returns the run's head
+// context for the report header. Non-Actions checks do not apply to a run, so
+// none are returned.
+func (c *Client) RunReport(ctx context.Context, owner, repo string, runID, jobID int64, attempt int) (info model.RunInfo, failed, cancelled []model.JobResult, running []model.RunningJob, err error) {
+	var run *github.WorkflowRun
+	if attempt != 0 {
+		run, _, err = c.gh.Actions.GetWorkflowRunAttempt(ctx, owner, repo, runID, attempt, nil)
+	} else {
+		run, _, err = c.gh.Actions.GetWorkflowRunByID(ctx, owner, repo, runID)
+	}
 	if err != nil {
 		return model.RunInfo{}, nil, nil, nil, fmt.Errorf("get run %d for %s/%s: %w", runID, owner, repo, err)
 	}
@@ -128,6 +135,7 @@ func (c *Client) RunReport(ctx context.Context, owner, repo string, runID, jobID
 		Repo:         repo,
 		RunID:        runID,
 		JobID:        jobID,
+		Attempt:      attempt,
 		Title:        run.GetDisplayTitle(),
 		HeadSHA:      run.GetHeadSHA(),
 		HeadBranch:   run.GetHeadBranch(),
@@ -135,18 +143,38 @@ func (c *Client) RunReport(ctx context.Context, owner, repo string, runID, jobID
 	}
 
 	var jobs []*github.WorkflowJob
-	if jobID != 0 {
+	switch {
+	case jobID != 0:
 		job, _, jerr := c.gh.Actions.GetWorkflowJobByID(ctx, owner, repo, jobID)
 		if jerr != nil {
 			return info, nil, nil, nil, fmt.Errorf("get job %d for %s/%s: %w", jobID, owner, repo, jerr)
 		}
 		jobs = []*github.WorkflowJob{job}
-	} else if jobs, err = c.listRunJobs(ctx, owner, repo, runID); err != nil {
-		return info, nil, nil, nil, err
+	default:
+		if jobs, err = c.listRunJobs(ctx, owner, repo, runID, attempt); err != nil {
+			return info, nil, nil, nil, err
+		}
 	}
 
 	failed, cancelled, running = classifyJobs(run, jobs)
 	return info, failed, cancelled, running, nil
+}
+
+// CheckRunTarget resolves a check-run ID (from a PR "Checks" tab URL) to the
+// GitHub Actions run and job it represents, by reading the check run's details
+// URL. It returns (0, 0, nil) when the check run is not an Actions check (its
+// details URL is not a run/job URL), so callers can fall back to a PR-wide
+// inspection — a non-Actions check has no downloadable logs anyway.
+func (c *Client) CheckRunTarget(ctx context.Context, owner, repo string, checkRunID int64) (runID, jobID int64, err error) {
+	cr, _, err := c.gh.Checks.GetCheckRun(ctx, owner, repo, checkRunID)
+	if err != nil {
+		return 0, 0, fmt.Errorf("get check run %d for %s/%s: %w", checkRunID, owner, repo, err)
+	}
+	ref, ok := target.ParseActionsURL(cr.GetDetailsURL())
+	if !ok {
+		return 0, 0, nil
+	}
+	return ref.RunID, ref.JobID, nil
 }
 
 // classifyJobs sorts a run's jobs into the failed, cancelled, and still-running
@@ -214,14 +242,26 @@ func (c *Client) listRuns(ctx context.Context, owner, repo, sha string) ([]*gith
 	return out, nil
 }
 
-func (c *Client) listRunJobs(ctx context.Context, owner, repo string, runID int64) ([]*github.WorkflowJob, error) {
+// listRunJobs lists a run's jobs. With attempt == 0 it returns the latest
+// attempt's jobs; with a specific attempt it returns that attempt's jobs via
+// the per-attempt API.
+func (c *Client) listRunJobs(ctx context.Context, owner, repo string, runID int64, attempt int) ([]*github.WorkflowJob, error) {
 	opts := &github.ListWorkflowJobsOptions{
 		Filter:      "latest",
 		ListOptions: github.ListOptions{PerPage: 100},
 	}
 	var out []*github.WorkflowJob
 	for {
-		jobs, resp, err := c.gh.Actions.ListWorkflowJobs(ctx, owner, repo, runID, opts)
+		var (
+			jobs *github.Jobs
+			resp *github.Response
+			err  error
+		)
+		if attempt != 0 {
+			jobs, resp, err = c.gh.Actions.ListWorkflowJobsAttempt(ctx, owner, repo, runID, int64(attempt), &opts.ListOptions)
+		} else {
+			jobs, resp, err = c.gh.Actions.ListWorkflowJobs(ctx, owner, repo, runID, opts)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("list jobs for run %d: %w", runID, err)
 		}

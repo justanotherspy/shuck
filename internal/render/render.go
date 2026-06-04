@@ -305,11 +305,14 @@ func allClearLabel(r *model.Report) string {
 	return fmt.Sprintf("all checks passing for PR #%d", r.PR.Number)
 }
 
-// runLabel names a run/job target for headers and messages, e.g. "run 123" or
-// "job 456 (run 123)".
+// runLabel names a run/job target for headers and messages, e.g. "run 123",
+// "job 456 (run 123)", or "run 123 (attempt 2)".
 func runLabel(rn *model.RunInfo) string {
 	if rn.JobID != 0 {
 		return fmt.Sprintf("job %d (run %d)", rn.JobID, rn.RunID)
+	}
+	if rn.Attempt != 0 {
+		return fmt.Sprintf("run %d (attempt %d)", rn.RunID, rn.Attempt)
 	}
 	return fmt.Sprintf("run %d", rn.RunID)
 }
