@@ -9,5 +9,15 @@
   },
   "enabledPlugins": {
     "shuck@justanotherspy": true
+  },
+  "permissions": {
+    "allow": [
+      "mcp__shuck__inspect_logs",
+      "mcp__shuck__inspect_reviews",
+      "mcp__shuck__inspect_security",
+      "mcp__shuck__check_compliance",
+      "mcp__shuck__inspect_action",
+      "mcp__shuck__inspect_images"
+    ]
   }
 }
