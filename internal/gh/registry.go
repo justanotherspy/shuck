@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
+	neturl "net/url"
 	"strings"
 )
 
@@ -180,11 +180,11 @@ func nextLink(link, host string) string {
 // configured registry base. A parse failure or any mismatch is treated as a
 // different origin (fail closed).
 func sameOrigin(rawURL, base string) bool {
-	u, err := url.Parse(rawURL)
+	u, err := neturl.Parse(rawURL)
 	if err != nil {
 		return false
 	}
-	b, err := url.Parse(base)
+	b, err := neturl.Parse(base)
 	if err != nil {
 		return false
 	}
