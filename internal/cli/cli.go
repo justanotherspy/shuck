@@ -65,6 +65,8 @@ Subcommands (single-letter shorthands in parentheses):
   shuck security (s) [owner/repo | url]      a repo's security alerts (code scanning, secrets, Dependabot)
   shuck compliance (c) [owner/repo | url]    check a repo's settings against its .github/compliance.yml
   shuck compliance discover [owner/repo]     snapshot the live settings into .github/compliance.yml
+  shuck dependabot (d) [owner/repo | url]    audit .github/dependabot.yml against the repo's ecosystems
+  shuck dependabot discover [owner/repo]     scaffold or extend .github/dependabot.yml from detected ecosystems
   shuck mcp                   run as a local MCP (stdio) server exposing shuck tools
   shuck setup                 install the shuck skill + CLAUDE.md note for Claude Code (and, optionally, the MCP)
   shuck version [--check]     print the installed version; --check looks for a newer release
@@ -107,6 +109,7 @@ var subcommandAliases = map[string]string{
 	"a": "action",
 	"s": "security",
 	"c": "compliance",
+	"d": "dependabot",
 	"i": "image",
 }
 
@@ -132,6 +135,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			return runSecurity(args[1:], stdout, stderr)
 		case "compliance":
 			return runCompliance(args[1:], stdout, stderr)
+		case "dependabot":
+			return runDependabot(args[1:], stdout, stderr)
 		case "logs":
 			return runLogs(args[1:], stdout, stderr)
 		case "reviews":

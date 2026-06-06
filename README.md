@@ -22,6 +22,7 @@ Around that core it covers the rest of PR and repo hygiene:
 | `shuck reviews` | A PR's reviews and review-comment threads. |
 | `shuck security` | A repo's security alerts (code scanning, secrets, Dependabot). |
 | `shuck compliance` | Check a repo's live settings against a committed `.github/compliance.yml`. |
+| `shuck dependabot` | Audit `.github/dependabot.yml` against the ecosystems the repo uses. |
 | `shuck action` | Resolve a GitHub Action to its latest tag + commit SHA for pinning. |
 | `shuck image` | Resolve a GHCR container image to its latest tag + digest for pinning. |
 
@@ -82,6 +83,8 @@ shuck image (i) [owner | ghcr.io/owner/name[:tag]]  # list / digest-pin GHCR ima
 shuck security (s) [owner/repo | url]           # security alerts
 shuck compliance (c) [owner/repo | url]         # settings vs .github/compliance.yml
 shuck compliance discover [owner/repo]          # snapshot live settings into the config
+shuck dependabot (d) [owner/repo | url]         # audit .github/dependabot.yml vs the repo's ecosystems
+shuck dependabot discover [owner/repo]          # scaffold/extend .github/dependabot.yml
 shuck mcp                                       # run as a local MCP (stdio) server
 shuck setup                                     # install the Claude Code skill (+ MCP)
 shuck version [--check] | shuck upgrade         # version / self-update
@@ -282,6 +285,40 @@ shuck compliance discover --dry-run  # preview without writing
 A missing config gets a complete snapshot; an existing one keeps only its
 declared keys and has drifted values patched in place (comments preserved).
 
+## Dependabot audit
+
+`shuck dependabot` checks a repo's `.github/dependabot.yml` against the package
+ecosystems the repo **actually uses** — detected from its manifest files
+(`go.mod`, `package.json`, `Dockerfile`, `*.tf`, `*.csproj`, Actions workflows,
+…). It flags ecosystems that are used but have no update entry, and best-practice
+gaps in each entry (missing `groups`, `assignees`, `labels`, a `cooldown`,
+`open-pull-requests-limit`, or a `commit-message` prefix):
+
+```sh
+shuck dependabot                         # audit the local checkout
+shuck dependabot owner/repo              # detect ecosystems from the repo's file tree
+shuck dependabot --json owner/repo       # stable JSON document
+shuck dependabot --exit-code --error-on-missing-ecosystem owner/repo  # gate CI on coverage
+```
+
+Findings are `error` / `warning` / `info`. Exit is `0` whenever a report is
+produced and `2` on an operational error; `--exit-code` gates on errors,
+`--error-on-missing-ecosystem` makes an uncovered ecosystem an error, and
+`--strict` makes warnings gate too.
+
+Don't write the config by hand — scaffold or extend it from the detected
+ecosystems:
+
+```sh
+shuck dependabot discover            # scaffold/extend .github/dependabot.yml
+shuck dependabot discover --dry-run  # preview without writing
+```
+
+A missing config is scaffolded in full (weekly schedule, a minor/patch group, a
+label, an open-PR limit, a commit-message prefix per ecosystem); an existing one
+gets an entry appended for each uncovered ecosystem, comments preserved. Add
+assignees yourself — shuck can't know who should own the PRs.
+
 ## MCP server
 
 `shuck mcp` runs a local [Model Context Protocol](https://modelcontextprotocol.io)
@@ -293,6 +330,7 @@ stdio server, so any MCP-aware agent can use shuck as typed tool calls:
 | `inspect_reviews` | A PR's reviews and review-comment threads. |
 | `inspect_security` | A repo's security alerts. |
 | `check_compliance` | Check a repo's settings against its `.github/compliance.yml`. |
+| `audit_dependabot` | Audit a repo's `.github/dependabot.yml` against the ecosystems it uses. |
 | `inspect_action` | Resolve an Action to its latest tag + SHA for pinning. |
 | `inspect_images` | List GHCR images, or resolve one to its digest. |
 

@@ -3,14 +3,15 @@ name: shuck
 description: >-
   Show the exact failing CI step logs for a GitHub pull request, summarize its
   reviews, list a repo's security alerts, check a repo's settings against a
-  committed compliance policy, and pin GitHub Actions to SHAs — plus watch a PR's
-  checks until they finish. Works two ways: the `shuck` CLI (with `--json` for
-  structured output) or the shuck MCP tools (`inspect_logs`, `inspect_reviews`,
-  `inspect_security`, `check_compliance`, `inspect_action`, `inspect_images`) —
-  use either or both. Use when the user wants to know why CI is failing, debug a
-  failed GitHub Actions check, pull the error logs for a PR, see what reviewers
-  asked for, triage a repo's security findings, verify a repo's settings match
-  policy, or SHA-pin an action.
+  committed compliance policy, audit a repo's Dependabot config, and pin GitHub
+  Actions to SHAs — plus watch a PR's checks until they finish. Works two ways:
+  the `shuck` CLI (with `--json` for structured output) or the shuck MCP tools
+  (`inspect_logs`, `inspect_reviews`, `inspect_security`, `check_compliance`,
+  `audit_dependabot`, `inspect_action`, `inspect_images`) — use either or both.
+  Use when the user wants to know why CI is failing, debug a failed GitHub
+  Actions check, pull the error logs for a PR, see what reviewers asked for,
+  triage a repo's security findings, verify a repo's settings match policy, check
+  Dependabot covers every ecosystem, or SHA-pin an action.
 ---
 
 # shuck — failing CI logs, reviews, and security for a PR
@@ -43,6 +44,8 @@ For one-shot inspection the two are interchangeable; only the CLI does `--watch`
 | A repo's security alerts | `shuck security [repo]` (alias `s`) | `inspect_security` |
 | Check settings against policy | `shuck compliance [repo]` (alias `c`) | `check_compliance` |
 | Bootstrap/sync the policy file | `shuck compliance discover [repo]` | (CLI only) |
+| Audit the Dependabot config | `shuck dependabot [repo]` (alias `d`) | `audit_dependabot` |
+| Scaffold/extend the Dependabot config | `shuck dependabot discover [repo]` | (CLI only) |
 | Resolve an Action to a SHA pin | `shuck action <ref>` (alias `a`) | `inspect_action` |
 
 Running `shuck` with **no subcommand** is the same as `shuck all`: CI + reviews +
@@ -93,6 +96,8 @@ shuck --watch [flags] [target]  # poll until every check finishes, then report
 | `shuck security [owner/repo \| url]` (`s`) | a repo's security alerts (code scanning, secrets, Dependabot) |
 | `shuck compliance [owner/repo \| url]` (`c`) | check a repo's settings against its `.github/compliance.yml` |
 | `shuck compliance discover [owner/repo \| url]` | snapshot the live settings into the local `.github/compliance.yml` (create it, or sync drifted declared keys) |
+| `shuck dependabot [owner/repo \| url]` (`d`) | audit `.github/dependabot.yml` against the ecosystems the repo uses |
+| `shuck dependabot discover [owner/repo \| url]` | scaffold or extend `.github/dependabot.yml` from the detected ecosystems |
 | `shuck action <owner>/<action>[@<ver>]` (`a`) | resolve an Action to its latest tag + commit SHA for pinning |
 | `shuck version [--check]` | print the installed version; `--check` looks for a newer release |
 | `shuck upgrade` | download + install the latest release in place (and refresh the installed skill) |
@@ -198,6 +203,7 @@ rendered report as text **and** the matching JSON document as structured output.
 | `inspect_reviews` | a PR's reviews and comment threads | PR target fields; optional `review_comment_limit` |
 | `inspect_security` | a repo's security alerts | `repo` (`owner/repo`) **or** `url`, or none → the local repo; optional `state`, `refresh` |
 | `check_compliance` | a repo's settings vs its compliance config | `repo` (`owner/repo`) **or** `url`, or none → the local repo; optional `config`, `ref` |
+| `audit_dependabot` | a repo's Dependabot config vs the ecosystems it uses | `repo` (`owner/repo`) **or** `url`, or none → the local repo; optional `config`, `ref`, `error_on_missing_ecosystem` |
 | `inspect_action` | resolve an Action to a SHA pin | `action` (`owner/action[/subpath][@version]`); optional `refresh` |
 | `inspect_images` | list GHCR images, or resolve one to a digest | `image` (an owner, `owner/repo`, a URL, or `ghcr.io/owner/name[:tag]`), or none → the local repo; optional `refresh` |
 
@@ -205,7 +211,9 @@ rendered report as text **and** the matching JSON document as structured output.
 `short_threshold`, `tail`) and the cache knobs (`refresh`, `no_cache`, `offline`).
 The MCP tools are one-shot snapshots — to **wait** for CI, use the CLI watch loop.
 There is no combined `all` MCP tool: call `inspect_logs` + `inspect_reviews` +
-`inspect_security` for the full picture.
+`inspect_security` for the full picture. `audit_dependabot` and the compliance
+discover step are read-only one-shots like the rest; only the CLI writes files
+(`shuck dependabot discover`, `shuck compliance discover`).
 
 ## Security alerts
 
@@ -337,6 +345,64 @@ Exit code (CLI): `0` when compliant, `1` when a setting drifted (CI gating —
 suppress with `--exit-zero`), `2` on an operational error. Reading branch
 protection and security settings needs a token with the `repo` scope and admin
 access.
+
+## Dependabot config audit
+
+`shuck dependabot [owner/repo | url]` (alias `d`) and the `audit_dependabot` tool
+check a repo's `.github/dependabot.yml` against the package ecosystems the repo
+**actually uses**. shuck detects ecosystems from manifest files (`go.mod`,
+`package.json`, `Dockerfile`, `*.tf`, `*.csproj`, GitHub Actions workflows, …)
+and reports:
+
+- **Coverage** — ecosystems used but with **no update entry** (and directories an
+  otherwise-covered ecosystem omits). The headline check: "are we even updating
+  this?"
+- **Best practice** — per update entry, whether it sets `groups` (batch PRs),
+  `assignees`/`reviewers`, `labels`, a `cooldown` (minimum release age),
+  `open-pull-requests-limit`, and a `commit-message` prefix.
+- **Config** — a missing config, or one at `.github/dependabot.yaml` (the spelling
+  GitHub **ignores**).
+
+```sh
+shuck dependabot                         # the local checkout
+shuck dependabot owner/repo              # detect ecosystems from the repo's file tree
+shuck dependabot --json owner/repo       # the stable JSON document
+shuck dependabot --exit-code --error-on-missing-ecosystem owner/repo  # gate CI on coverage
+```
+
+Findings have three levels: **error**, **warning**, **info**. Exit is `0`
+whenever a report is produced (even with findings) and `2` on an operational
+error; `--exit-code` makes **error**-level findings exit `1`,
+`--error-on-missing-ecosystem` promotes an uncovered ecosystem to an error, and
+`--strict` makes warnings gate too. Ecosystem detection scans the working
+directory for the local repo and the GitHub file tree (`--ref` to pick a branch)
+for an explicit one.
+
+### Scaffolding the config: `shuck dependabot discover`
+
+`shuck dependabot discover [owner/repo | url]` writes a best-practice config from
+the detected ecosystems:
+
+```sh
+shuck dependabot discover               # scaffold .github/dependabot.yml for the local repo
+shuck dependabot discover --dry-run     # preview without writing
+shuck dependabot discover owner/repo    # detect from an explicit repo's file tree
+```
+
+- **No config yet** → a full config is scaffolded (weekly schedule, a
+  minor/patch group, a label, an open-PR limit, a commit-message prefix) for each
+  ecosystem.
+- **Config exists** → an entry is appended for each detected ecosystem it does
+  not cover, preserving the existing comments and order.
+- Assignees are left out — shuck can't know who should own the PRs — so add them.
+
+The dependabot JSON document (also `audit_dependabot`'s structured output):
+`schema_version` (int), `repo` `{owner, repo}`, `config_source`, `has_config`
+(bool), `ok` (bool), `summary` `{total, error, warning, info}`, `ecosystems[]`
+`{ecosystem, directories[], covered}`, and `findings[]` — each
+`{level, category, ecosystem?, directory?, message, suggestion?}` where level is
+`error` | `warning` | `info` and category is `config` | `coverage` |
+`best-practice`.
 
 ## Pinning actions to SHAs
 

@@ -22,6 +22,7 @@ import (
 	"github.com/justanotherspy/shuck/internal/action"
 	"github.com/justanotherspy/shuck/internal/cli"
 	"github.com/justanotherspy/shuck/internal/compliance"
+	"github.com/justanotherspy/shuck/internal/dependabot"
 	"github.com/justanotherspy/shuck/internal/image"
 	"github.com/justanotherspy/shuck/internal/jsonout"
 	"github.com/justanotherspy/shuck/internal/logs"
@@ -124,6 +125,24 @@ config to read a local file path instead. Requires a GitHub token in GITHUB_TOKE
 or GH_TOKEN; reading branch protection, security, and Actions settings needs the
 repo scope and admin access.`
 
+const auditDependabotDesc = `Audit a repository's .github/dependabot.yml against the ecosystems it uses.
+
+shuck detects the package ecosystems a repo actually uses — from its manifest
+files (go.mod, package.json, Dockerfile, *.tf, GitHub Actions workflows, …) —
+and compares them with the update entries in .github/dependabot.yml. It returns
+the detected ecosystems (covered or not) plus findings: ecosystems used but not
+covered by an update entry, and best-practice gaps in each entry (missing
+groups, assignees, labels, cooldowns, open-PR limits, commit-message prefixes).
+Reach for this to make sure dependencies across every ecosystem stay updated and
+the config follows best practice.
+
+Target selection: pass url for a github.com/<owner>/<repo>[/...] URL, or repo as
+owner/repo, or nothing to use the repo of the local working directory. For an
+explicit repo the file tree and config are read via the API (set ref to pick a
+branch/tag/SHA); set config to read a local config file instead. Set
+error_on_missing_ecosystem to mark an uncovered ecosystem as an error. Requires
+a GitHub token in GITHUB_TOKEN or GH_TOKEN to read an explicit repo.`
+
 // Serve runs the shuck MCP server over stdio until the client disconnects or
 // ctx is cancelled. It takes no positional arguments.
 func Serve(ctx context.Context, args []string) error {
@@ -185,6 +204,13 @@ func newServer() *mcp.Server {
 		Description: checkComplianceDesc,
 		Annotations: annotations,
 	}, checkCompliance)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "audit_dependabot",
+		Title:       "Audit a repo's Dependabot config",
+		Description: auditDependabotDesc,
+		Annotations: annotations,
+	}, auditDependabot)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "inspect_action",
@@ -399,6 +425,47 @@ func checkCompliance(ctx context.Context, _ *mcp.CallToolRequest, in checkCompli
 // targetArgs maps the tool inputs onto the positional args target.ResolveRepo
 // understands, so the MCP and CLI share one resolution path.
 func (in checkComplianceInput) targetArgs() []string {
+	switch {
+	case in.URL != "":
+		return []string{in.URL}
+	case in.Repo != "":
+		return []string{in.Repo}
+	default:
+		return nil // local repo
+	}
+}
+
+type auditDependabotInput struct {
+	Repo                    string `json:"repo,omitempty" jsonschema:"GitHub repository as owner/repo. If omitted, it is inferred from the local working directory's origin remote."`
+	URL                     string `json:"url,omitempty" jsonschema:"A github.com/<owner>/<repo>[/...] URL. Takes precedence over repo."`
+	Config                  string `json:"config,omitempty" jsonschema:"Path to a local dependabot config file. If omitted, .github/dependabot.yml is read from the repo."`
+	Ref                     string `json:"ref,omitempty" jsonschema:"Git ref (branch/tag/SHA) to read the file tree and config from. Default: the repo's default branch."`
+	ErrorOnMissingEcosystem bool   `json:"error_on_missing_ecosystem,omitempty" jsonschema:"Mark an ecosystem used but not covered by the config as an error rather than a warning."`
+}
+
+func auditDependabot(ctx context.Context, _ *mcp.CallToolRequest, in auditDependabotInput) (*mcp.CallToolResult, dependabot.Document, error) {
+	owner, repo, err := target.ResolveRepo(in.targetArgs())
+	if err != nil {
+		return nil, dependabot.Document{}, err
+	}
+	report, err := cli.Dependabot(ctx, owner, repo, cli.DependabotOptions{
+		ConfigPath:              in.Config,
+		Ref:                     in.Ref,
+		PreferLocal:             in.Config == "" && in.Repo == "" && in.URL == "",
+		ErrorOnMissingEcosystem: in.ErrorOnMissingEcosystem,
+	})
+	if err != nil {
+		return nil, dependabot.Document{}, err
+	}
+	var b strings.Builder
+	dependabot.Render(&b, report)
+	res := &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: b.String()}}}
+	return res, dependabot.NewDocument(report), nil
+}
+
+// targetArgs maps the tool inputs onto the positional args target.ResolveRepo
+// understands, so the MCP and CLI share one resolution path.
+func (in auditDependabotInput) targetArgs() []string {
 	switch {
 	case in.URL != "":
 		return []string{in.URL}

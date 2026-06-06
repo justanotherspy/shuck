@@ -401,16 +401,16 @@ func ComplianceDiscover(ctx context.Context, owner, repo string, opts Compliance
 	disc.Owner, disc.Repo, disc.Path = owner, repo, path
 
 	if !opts.DryRun && disc.Changed {
-		if err := writeComplianceConfig(path, disc.Data); err != nil {
+		if err := writeRepoConfig(path, disc.Data); err != nil {
 			return nil, err
 		}
 	}
 	return &disc, nil
 }
 
-// writeComplianceConfig writes the config, creating its directory (.github)
-// when needed.
-func writeComplianceConfig(path string, data []byte) error {
+// writeRepoConfig writes a committed repo config file (compliance or
+// dependabot), creating its directory (.github) when needed.
+func writeRepoConfig(path string, data []byte) error {
 	if dir := filepath.Dir(path); dir != "." && dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("create %s: %w", dir, err)

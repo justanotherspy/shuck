@@ -7,16 +7,18 @@ Guidance for agents working in this repository.
 `shuck` is a Go CLI + MCP server + Claude Code plugin that prints the exact
 failing CI step logs for a GitHub PR. It also summarizes PR reviews, lists a
 repo's security alerts, checks live repo settings against a committed
-compliance policy, and SHA-pins GitHub Actions / GHCR images. Results are
-cached under `~/.cache/shuck`.
+compliance policy, audits a repo's Dependabot config against the ecosystems it
+uses, and SHA-pins GitHub Actions / GHCR images. Results are cached under
+`~/.cache/shuck`.
 
 ## Dogfood shuck
 
 This repo bakes its own tool in for agents: the `shuck` skill
 (`.claude/skills/shuck/`), the `shuck` MCP server (`.mcp.json` → `shuck mcp`,
 tools `inspect_logs` / `inspect_reviews` / `inspect_security` /
-`check_compliance` / `inspect_action` / `inspect_images`), and — in dev
-environments — the `shuck` binary on PATH. **When a PR's CI fails (here or in
+`check_compliance` / `audit_dependabot` / `inspect_action` / `inspect_images`),
+and — in dev environments — the `shuck` binary on PATH. **When a PR's CI fails
+(here or in
 any repo), reach for shuck before raw GitHub API calls or the Actions UI:**
 
 ```sh
@@ -84,7 +86,7 @@ render → update cache.
 | Package | Responsibility |
 | --- | --- |
 | `main.go` | Thin entry: dispatches `mcp` and `setup`, else `cli.Run`. Holds the `go:embed` of the plugin's `SKILL.md`. |
-| `internal/cli` | Flag parsing + orchestration. Subcommands: `logs`, `reviews`, `all` (the bare-`shuck` default), `action`, `image`, `security`, `compliance` (+ `discover`), `version`, `upgrade`; single-letter aliases via `subcommandAliases`. The exported cores (`Inspect`, `Security`, `Compliance`, `ComplianceDiscover`, `Action`, `Image`, `Images`) back both the CLI and the MCP server. |
+| `internal/cli` | Flag parsing + orchestration. Subcommands: `logs`, `reviews`, `all` (the bare-`shuck` default), `action`, `image`, `security`, `compliance` (+ `discover`), `dependabot` (+ `discover`), `version`, `upgrade`; single-letter aliases via `subcommandAliases`. The exported cores (`Inspect`, `Security`, `Compliance`, `ComplianceDiscover`, `Dependabot`, `DependabotDiscover`, `Action`, `Image`, `Images`) back both the CLI and the MCP server. |
 | `internal/mcp` | Stdio MCP server (`shuck mcp`): a thin typed front-end over the `cli` cores. |
 | `internal/jsonout` | The stable, versioned `--json` schema. Its view types are deliberately separate from `model` so internal refactors don't break consumers. |
 | `internal/action` | `shuck action`: pick the latest semver tag matching an `owner/action[@version]` ref (stable preferred, prerelease fallback; `Select`) → SHA-pin line / JSON (`action.Document`). |
@@ -92,10 +94,11 @@ render → update cache.
 | `internal/semver` | Tiny dependency-free semver (`Parse` / `Compare` / `Constraint.Matches`) shared by `action` / `image`. |
 | `internal/security` | Sort + render a `model.SecurityReport` (code scanning, secret scanning, Dependabot) to text / JSON. Pure presentation. |
 | `internal/compliance` | Strict-parse `.github/compliance.yml` (`Parse`) and `Evaluate` it against live settings into a `model.ComplianceReport`; the inverse snapshot (`Discover` / `FromActual`, comment-preserving yaml.Node patching) lives in `discover.go`. Pure logic. |
+| `internal/dependabot` | Strict-parse `.github/dependabot.yml` (`Parse`), detect the repo's ecosystems from its file paths (`Detect`, `ecosystem.go`), and `Audit` the two into a `model.DependabotReport` (coverage + best-practice findings). `Discover` scaffolds/extends a best-practice config (comment-preserving yaml.Node append). Pure logic. |
 | `internal/release` | Self-update: resolve the latest release, download + checksum-verify, replace the binary. Backs `version --check` / `upgrade`. |
 | `internal/setup` | `shuck setup`: install the embedded skill to `~/.claude/skills/shuck`, add a managed CLAUDE.md note, optionally register the MCP at user scope. |
 | `internal/target` | Resolve owner/repo/PR from args or the local repo (go-git). |
-| `internal/gh` | go-github (v88) wrappers: PR head, Actions runs/jobs/logs, checks, security alerts, compliance reads (repo settings, branch protection incl. rulesets, Actions policy), GHCR Packages API. Plus two hand-rolled clients: GraphQL for reviews (`reviews.go`) and anonymous OCI registry-v2 (`registry.go`). |
+| `internal/gh` | go-github (v88) wrappers: PR head, Actions runs/jobs/logs, checks, security alerts, compliance reads (repo settings, branch protection incl. rulesets, Actions policy), the recursive Git Trees file listing (`RepoTree`, for dependabot ecosystem detection), GHCR Packages API. Plus two hand-rolled clients: GraphQL for reviews (`reviews.go`) and anonymous OCI registry-v2 (`registry.go`). |
 | `internal/cache` | On-disk cache under `~/.cache/shuck/…`: per-PR reports + whole raw job logs, action tag lists, security reports, image listings. `Purge(ttl, keep)` sweeps stale entries on every run. |
 | `internal/logs` | Parse a job log into `##[group]`-delimited sections; extract the high-signal error excerpt. |
 | `internal/render` | Format a `model.Report` to text. |
@@ -135,6 +138,16 @@ render → update cache.
 - **Compliance config is the source of truth and partial**: only declared keys
   are checked; `compliance.Parse` rejects unknown keys and invalid enum values
   so a typo can't silently skip a check.
+- **Dependabot audit is repo-driven**: the repo's *files* are the source of
+  truth for which ecosystems exist (`dependabot.Detect` maps manifest paths to
+  ecosystems), and the config is checked against them. Detection is conservative
+  — an ecosystem the config declares but no manifest matched is an *info* note,
+  never a false failure; coverage gaps are warnings (errors with
+  `--error-on-missing-ecosystem`). `dependabot.Parse` is strict (unknown keys,
+  bad ecosystems/intervals rejected). A missing config is a finding, not a fatal
+  error; report exit codes follow the same opt-in `--exit-code` gating as the
+  other report commands. Detection reads the local working tree for the local
+  repo and `gh.RepoTree` (recursive Git Trees) for an explicit one.
 - **Image pinning**: listing an owner's packages requires a classic token with
   `read:packages`; resolving one image falls back to the anonymous OCI
   registry-v2 API when tokenless or rejected. Cosign/referrer tags
