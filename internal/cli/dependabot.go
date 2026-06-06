@@ -51,6 +51,7 @@ Usage:
   shuck dependabot <owner>/<repo>  an explicit repository
   shuck dependabot <url>           a github.com/<owner>/<repo>[/...] URL
   shuck dependabot discover [...]  scaffold or extend .github/dependabot.yml
+  shuck dependabot fix [...]       add missing best-practice fields to existing entries
 
 shuck detects the package ecosystems the repository actually uses (from its
 manifest files — go.mod, package.json, Dockerfile, *.tf, workflows, …) and
@@ -79,8 +80,13 @@ Flags:
 // runDependabot implements `shuck dependabot [owner/repo | url]` and dispatches
 // the `discover` sub-subcommand.
 func runDependabot(args []string, stdout, stderr io.Writer) int {
-	if len(args) > 0 && args[0] == "discover" {
-		return runDependabotDiscover(args[1:], stdout, stderr)
+	if len(args) > 0 {
+		switch args[0] {
+		case "discover":
+			return runDependabotDiscover(args[1:], stdout, stderr)
+		case "fix":
+			return runDependabotFix(args[1:], stdout, stderr)
+		}
 	}
 
 	fs := flag.NewFlagSet("shuck dependabot", flag.ContinueOnError)
@@ -432,4 +438,115 @@ func DependabotDiscover(ctx context.Context, owner, repo string, opts Dependabot
 		}
 	}
 	return &disc, nil
+}
+
+const dependabotFixUsage = `shuck dependabot fix — fill in missing best-practice fields on existing entries.
+
+Usage:
+  shuck dependabot fix                 the local .github/dependabot.yml
+  shuck dependabot fix <owner>/<repo>  label the report for this repo (still edits the local file)
+  shuck dependabot fix <url>           a github.com/<owner>/<repo>[/...] URL
+
+Unlike "discover", fix never adds or removes update entries — it patches the
+entries already in the config, adding the best-practice fields each one is
+missing while preserving comments and key order:
+
+  - groups                    a minor/patch group, to batch updates into one PR
+  - labels                    a "dependencies" label for triage/automation
+  - cooldown                  a minimum release age, so brand-new releases wait
+  - open-pull-requests-limit  an explicit PR cap
+  - commit-message prefix     a conventional-commit prefix
+
+Assignees are never added — shuck cannot know who should own the PRs — so an
+entry missing them is noted for you to fill in. fix is purely local: it reads
+and writes the config file and makes no network calls (so it needs no token).
+
+Exit: 0 on success (changed or already complete), 2 on an operational error.
+
+Flags:
+`
+
+// runDependabotFix implements `shuck dependabot fix [owner/repo | url]`.
+func runDependabotFix(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("shuck dependabot fix", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var (
+		jsonOut bool
+		config  string
+		dryRun  bool
+	)
+	fs.BoolVar(&jsonOut, "json", false, "emit machine-readable JSON instead of the text summary")
+	fs.StringVar(&config, "config", "", "path of the dependabot config to fix (default: "+defaultDependabotConfig+")")
+	fs.BoolVar(&dryRun, "dry-run", false, "print the resulting config without writing it")
+	fs.Usage = func() {
+		fmt.Fprint(stderr, dependabotFixUsage)
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(permuteArgs(fs, args)); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+
+	owner, repo, err := target.ResolveRepo(fs.Args())
+	if err != nil {
+		fmt.Fprintln(stderr, "shuck:", err)
+		return 2
+	}
+
+	res, err := DependabotFix(owner, repo, DependabotFixOptions{ConfigPath: config, DryRun: dryRun})
+	if err != nil {
+		fmt.Fprintln(stderr, "shuck:", err)
+		return 2
+	}
+
+	if jsonOut {
+		if err := dependabot.EncodeFixJSON(stdout, res); err != nil {
+			fmt.Fprintln(stderr, "shuck:", err)
+			return 2
+		}
+		return 0
+	}
+	dependabot.RenderFix(stdout, res, dryRun)
+	return 0
+}
+
+// DependabotFixOptions tunes a Dependabot fix.
+type DependabotFixOptions struct {
+	ConfigPath string // path to the config to read/write (default: .github/dependabot.yml)
+	DryRun     bool   // build the patched config but do not write it
+}
+
+// DependabotFix fills in the best-practice fields shuck can safely supply on the
+// existing entries of a local Dependabot config. It is exported so other
+// front-ends can share the CLI's pipeline. It does no network I/O: it reads the
+// local config, patches it, and writes it back unless DryRun is set (or it is
+// already complete). A missing config is an error — there is nothing to fix.
+func DependabotFix(owner, repo string, opts DependabotFixOptions) (*dependabot.FixResult, error) {
+	path := opts.ConfigPath
+	if path == "" {
+		path = defaultDependabotConfig
+	}
+
+	existing, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%s: no Dependabot config to fix (run `shuck dependabot discover` to create one)", path)
+		}
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+
+	res, err := dependabot.Fix(existing)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	res.Owner, res.Repo, res.Path = owner, repo, path
+
+	if !opts.DryRun && res.Changed {
+		if err := writeRepoConfig(path, res.Data); err != nil {
+			return nil, err
+		}
+	}
+	return &res, nil
 }

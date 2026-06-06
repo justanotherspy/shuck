@@ -86,7 +86,7 @@ render → update cache.
 | Package | Responsibility |
 | --- | --- |
 | `main.go` | Thin entry: dispatches `mcp` and `setup`, else `cli.Run`. Holds the `go:embed` of the plugin's `SKILL.md`. |
-| `internal/cli` | Flag parsing + orchestration. Subcommands: `logs`, `reviews`, `all` (the bare-`shuck` default), `action`, `image`, `security`, `compliance` (+ `discover`), `dependabot` (+ `discover`), `version`, `upgrade`; single-letter aliases via `subcommandAliases`. The exported cores (`Inspect`, `Security`, `Compliance`, `ComplianceDiscover`, `Dependabot`, `DependabotDiscover`, `Action`, `Image`, `Images`) back both the CLI and the MCP server. |
+| `internal/cli` | Flag parsing + orchestration. Subcommands: `logs`, `reviews`, `all` (the bare-`shuck` default), `action`, `image`, `security`, `compliance` (+ `discover`), `dependabot` (+ `discover`, `fix`), `version`, `upgrade`; single-letter aliases via `subcommandAliases`. The exported cores (`Inspect`, `Security`, `Compliance`, `ComplianceDiscover`, `Dependabot`, `DependabotDiscover`, `DependabotFix`, `Action`, `Image`, `Images`) back both the CLI and the MCP server. |
 | `internal/mcp` | Stdio MCP server (`shuck mcp`): a thin typed front-end over the `cli` cores. |
 | `internal/jsonout` | The stable, versioned `--json` schema. Its view types are deliberately separate from `model` so internal refactors don't break consumers. |
 | `internal/action` | `shuck action`: pick the latest semver tag matching an `owner/action[@version]` ref (stable preferred, prerelease fallback; `Select`) → SHA-pin line / JSON (`action.Document`). |
@@ -94,7 +94,7 @@ render → update cache.
 | `internal/semver` | Tiny dependency-free semver (`Parse` / `Compare` / `Constraint.Matches`) shared by `action` / `image`. |
 | `internal/security` | Sort + render a `model.SecurityReport` (code scanning, secret scanning, Dependabot) to text / JSON. Pure presentation. |
 | `internal/compliance` | Strict-parse `.github/compliance.yml` (`Parse`) and `Evaluate` it against live settings into a `model.ComplianceReport`; the inverse snapshot (`Discover` / `FromActual`, comment-preserving yaml.Node patching) lives in `discover.go`. Pure logic. |
-| `internal/dependabot` | Strict-parse `.github/dependabot.yml` (`Parse`), detect the repo's ecosystems from its file paths (`Detect`, `ecosystem.go`), and `Audit` the two into a `model.DependabotReport` (coverage + best-practice findings). `Discover` scaffolds/extends a best-practice config (comment-preserving yaml.Node append). Pure logic. |
+| `internal/dependabot` | Strict-parse `.github/dependabot.yml` (`Parse`), detect the repo's ecosystems from its file paths (`Detect`, `ecosystem.go`), and `Audit` the two into a `model.DependabotReport` (coverage + best-practice findings). `Discover` scaffolds/extends a best-practice config (comment-preserving yaml.Node append); `Fix` fills best-practice fields onto existing entries in place (comment-preserving yaml.Node patch). Pure logic. |
 | `internal/release` | Self-update: resolve the latest release, download + checksum-verify, replace the binary. Backs `version --check` / `upgrade`. |
 | `internal/setup` | `shuck setup`: install the embedded skill to `~/.claude/skills/shuck`, add a managed CLAUDE.md note, optionally register the MCP at user scope. |
 | `internal/target` | Resolve owner/repo/PR from args or the local repo (go-git). |

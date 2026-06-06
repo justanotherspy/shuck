@@ -81,9 +81,10 @@ func extend(existing []byte, detected []Detected) (Discovery, error) {
 }
 
 // bestPracticeUpdate builds a recommended update entry for one ecosystem: a
-// weekly schedule, an open-PR limit, a grouping of minor/patch bumps, a label,
-// and a commit-message prefix. Assignees are intentionally left out — shuck
-// cannot know who should own the PRs — and noted for the caller to fill in.
+// weekly schedule, an open-PR limit, a grouping of minor/patch bumps, a label, a
+// cooldown (a minimum release age), and a commit-message prefix. Assignees are
+// intentionally left out — shuck cannot know who should own the PRs — and noted
+// for the caller to fill in.
 func bestPracticeUpdate(eco string, dirs []string) Update {
 	u := Update{PackageEcosystem: eco}
 	switch {
@@ -105,9 +106,15 @@ func bestPracticeUpdate(eco string, dirs []string) Update {
 			UpdateTypes: []string{"minor", "patch"},
 		},
 	}
+	u.Cooldown = &Cooldown{DefaultDays: new(defaultCooldownDays)}
 	u.CommitMessage = &CommitMessage{Prefix: commitPrefix(eco)}
 	return u
 }
+
+// defaultCooldownDays is the minimum release age shuck recommends: skip a
+// release until it has been out this many days, so a brand-new, unproven (or
+// compromised) version does not immediately open a PR.
+const defaultCooldownDays = 7
 
 // commitPrefix picks a conventional-commit prefix for an ecosystem's update PRs.
 func commitPrefix(eco string) string {

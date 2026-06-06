@@ -85,6 +85,7 @@ shuck compliance (c) [owner/repo | url]         # settings vs .github/compliance
 shuck compliance discover [owner/repo]          # snapshot live settings into the config
 shuck dependabot (d) [owner/repo | url]         # audit .github/dependabot.yml vs the repo's ecosystems
 shuck dependabot discover [owner/repo]          # scaffold/extend .github/dependabot.yml
+shuck dependabot fix [owner/repo]               # fill best-practice gaps in existing entries
 shuck mcp                                       # run as a local MCP (stdio) server
 shuck setup                                     # install the Claude Code skill (+ MCP)
 shuck version [--check] | shuck upgrade         # version / self-update
@@ -315,9 +316,20 @@ shuck dependabot discover --dry-run  # preview without writing
 ```
 
 A missing config is scaffolded in full (weekly schedule, a minor/patch group, a
-label, an open-PR limit, a commit-message prefix per ecosystem); an existing one
-gets an entry appended for each uncovered ecosystem, comments preserved. Add
-assignees yourself — shuck can't know who should own the PRs.
+label, a cooldown, an open-PR limit, a commit-message prefix per ecosystem); an
+existing one gets an entry appended for each uncovered ecosystem, comments
+preserved. Add assignees yourself — shuck can't know who should own the PRs.
+
+`discover` only closes coverage gaps; it never edits the entries already in the
+config. To clear the best-practice findings on existing entries, use `fix`,
+which fills in each entry's missing `groups`, `labels`, `cooldown`,
+`open-pull-requests-limit`, and `commit-message` prefix in place (comments and
+key order preserved, present fields untouched, no network):
+
+```sh
+shuck dependabot fix             # patch .github/dependabot.yml in place
+shuck dependabot fix --dry-run   # preview without writing
+```
 
 ## MCP server
 

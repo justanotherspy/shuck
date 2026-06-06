@@ -13,7 +13,11 @@ updates:
       go-dependencies:
         patterns:
           - "*"
-
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: chore
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -27,7 +31,11 @@ updates:
       github-actions:
         patterns:
           - "*"
-
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: ci
   - package-ecosystem: docker
     directory: /
     schedule:
@@ -41,7 +49,11 @@ updates:
       docker:
         patterns:
           - "*"
-
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: chore
   # Hash-pinned pip requirements used by the zizmor / semgrep workflows
   # (.github/requirements/*.txt).
   - package-ecosystem: pip
@@ -57,7 +69,11 @@ updates:
       pip:
         patterns:
           - "*"
-
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: chore
   # Lockfile-pinned Claude Code CLI used by the plugin-validate CI job.
   - package-ecosystem: npm
     directory: /.github/plugin-validate
@@ -72,3 +88,8 @@ updates:
       npm:
         patterns:
           - "*"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: chore
