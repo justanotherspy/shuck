@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	neturl "net/url"
 	"strings"
 )
 
@@ -130,8 +131,13 @@ func decodeRegistry(resp *http.Response, out any, what string) error {
 	return nil
 }
 
-// nextLink extracts the URL of a rel="next" RFC 5988 Link header, resolving a
-// relative path against host. It returns "" when there is no next page.
+// nextLink extracts the URL of a rel="next" RFC 5988 Link header. A relative
+// path is resolved against host; an absolute URL is only followed when it
+// targets the same origin (scheme+host) as the configured registry. Each
+// paginated request carries the registry bearer token, so refusing to follow a
+// next link to a different host keeps that token from being forwarded to an
+// origin the registry's Link header points at. It returns "" when there is no
+// next page or the next link points off-host.
 func nextLink(link, host string) string {
 	for part := range strings.SplitSeq(link, ",") {
 		segs := strings.Split(strings.TrimSpace(part), ";")
@@ -152,10 +158,35 @@ func nextLink(link, host string) string {
 		if u == "" {
 			continue
 		}
+		// A scheme-relative URL ("//host/path") names its own authority, so it
+		// is not an in-registry path; reject it rather than treat it as one.
+		if strings.HasPrefix(u, "//") {
+			return ""
+		}
 		if strings.HasPrefix(u, "/") {
 			return host + u
 		}
-		return u
+		// Absolute URL: only follow it when it stays on the registry's own
+		// origin, so the Authorization bearer token is never sent elsewhere.
+		if sameOrigin(u, host) {
+			return u
+		}
+		return ""
 	}
 	return ""
+}
+
+// sameOrigin reports whether rawURL has the same scheme and host as the
+// configured registry base. A parse failure or any mismatch is treated as a
+// different origin (fail closed).
+func sameOrigin(rawURL, base string) bool {
+	u, err := neturl.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	b, err := neturl.Parse(base)
+	if err != nil {
+		return false
+	}
+	return u.Scheme == b.Scheme && u.Host == b.Host
 }
