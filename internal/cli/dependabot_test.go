@@ -274,6 +274,111 @@ func TestRunDependabotDiscoverJSON(t *testing.T) {
 	}
 }
 
+// fixableDependabot is a config whose single entry is missing the best-practice
+// fields shuck fills (cooldown, open-PR limit, commit-message, groups, labels).
+const fixableDependabot = `version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    assignees: [alice]
+`
+
+func TestRunDependabotFixText(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "db.yml")
+	if err := os.WriteFile(path, []byte(fixableDependabot), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	code := runDependabot([]string{"fix", "o/r", "--config", path}, &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr=%s", code, errb.String())
+	}
+	if !strings.Contains(out.String(), "Updated 1 update entry(ies)") {
+		t.Errorf("expected an Updated message:\n%s", out.String())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("config not written: %v", err)
+	}
+	for _, want := range []string{"default-days: 7", "open-pull-requests-limit: 10", "prefix: chore"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("fixed config missing %q:\n%s", want, data)
+		}
+	}
+}
+
+func TestRunDependabotFixDryRun(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "db.yml")
+	if err := os.WriteFile(path, []byte(fixableDependabot), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := runDependabot([]string{"fix", "o/r", "--config", path, "--dry-run"}, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	if !strings.Contains(out.String(), "Would update") {
+		t.Errorf("expected a dry-run message:\n%s", out.String())
+	}
+	// The file is untouched by a dry run.
+	data, _ := os.ReadFile(path)
+	if string(data) != fixableDependabot {
+		t.Errorf("--dry-run must not write the file:\n%s", data)
+	}
+}
+
+func TestRunDependabotFixJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "db.yml")
+	if err := os.WriteFile(path, []byte(fixableDependabot), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := runDependabot([]string{"fix", "o/r", "--config", path, "--json"}, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	var doc struct {
+		Changed bool `json:"changed"`
+		Fixed   []struct {
+			Ecosystem string   `json:"ecosystem"`
+			Added     []string `json:"added"`
+		} `json:"fixed"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatalf("json: %v\n%s", err, out.String())
+	}
+	if !doc.Changed || len(doc.Fixed) != 1 || doc.Fixed[0].Ecosystem != "gomod" {
+		t.Errorf("doc = %+v", doc)
+	}
+}
+
+func TestRunDependabotFixMissingConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nope.yml")
+	var out, errb bytes.Buffer
+	if code := runDependabot([]string{"fix", "o/r", "--config", path}, &out, &errb); code != 2 {
+		t.Fatalf("missing config should exit 2, got %d", code)
+	}
+	if !strings.Contains(errb.String(), "no Dependabot config to fix") {
+		t.Errorf("expected a missing-config error:\n%s", errb.String())
+	}
+}
+
+func TestRunDependabotFixInvalidConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "db.yml")
+	if err := os.WriteFile(path, []byte("version: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := runDependabot([]string{"fix", "o/r", "--config", path}, &out, &errb); code != 2 {
+		t.Fatalf("invalid config should exit 2, got %d", code)
+	}
+}
+
 func TestDependabotExit(t *testing.T) {
 	errReport := &model.DependabotReport{Findings: []model.DependabotFinding{{Level: model.DependabotError}}}
 	warnReport := &model.DependabotReport{Findings: []model.DependabotFinding{{Level: model.DependabotWarning}}}

@@ -29,7 +29,7 @@ so they return the same data; pick whichever is wired up.
 | Front-end | How you call it | Best when |
 | --- | --- | --- |
 | **CLI** (`shuck …`, Bash) | run the binary; add `--json` for structured data | the binary is on PATH; you want to **watch** CI to completion, script exit codes, or pipe `--json` |
-| **MCP tools** | call `inspect_logs` / `inspect_reviews` / `inspect_security` / `check_compliance` / `inspect_action` / `inspect_images` | the shuck MCP server is registered; you want typed structured output with no parsing |
+| **MCP tools** | call `inspect_logs` / `inspect_reviews` / `inspect_security` / `check_compliance` / `audit_dependabot` / `inspect_action` / `inspect_images` | the shuck MCP server is registered; you want typed structured output with no parsing |
 
 For one-shot inspection the two are interchangeable; only the CLI does `--watch`.
 
@@ -46,7 +46,9 @@ For one-shot inspection the two are interchangeable; only the CLI does `--watch`
 | Bootstrap/sync the policy file | `shuck compliance discover [repo]` | (CLI only) |
 | Audit the Dependabot config | `shuck dependabot [repo]` (alias `d`) | `audit_dependabot` |
 | Scaffold/extend the Dependabot config | `shuck dependabot discover [repo]` | (CLI only) |
+| Fix best-practice gaps in existing entries | `shuck dependabot fix [repo]` | (CLI only) |
 | Resolve an Action to a SHA pin | `shuck action <ref>` (alias `a`) | `inspect_action` |
+| List GHCR images / pin one to a digest | `shuck image [ref]` (alias `i`) | `inspect_images` |
 
 Running `shuck` with **no subcommand** is the same as `shuck all`: CI + reviews +
 security in one report. Use `logs` / `reviews` to focus on one dimension.
@@ -98,7 +100,9 @@ shuck --watch [flags] [target]  # poll until every check finishes, then report
 | `shuck compliance discover [owner/repo \| url]` | snapshot the live settings into the local `.github/compliance.yml` (create it, or sync drifted declared keys) |
 | `shuck dependabot [owner/repo \| url]` (`d`) | audit `.github/dependabot.yml` against the ecosystems the repo uses |
 | `shuck dependabot discover [owner/repo \| url]` | scaffold or extend `.github/dependabot.yml` from the detected ecosystems |
+| `shuck dependabot fix [owner/repo \| url]` | add missing best-practice fields (groups, labels, cooldown, PR limit, commit-message prefix) to existing entries |
 | `shuck action <owner>/<action>[@<ver>]` (`a`) | resolve an Action to its latest tag + commit SHA for pinning |
+| `shuck image [owner \| ghcr.io/owner/name[:tag]]` (`i`) | list an owner's GHCR images, or resolve one to its latest digest for pinning |
 | `shuck version [--check]` | print the installed version; `--check` looks for a newer release |
 | `shuck upgrade` | download + install the latest release in place (and refresh the installed skill) |
 | `shuck setup` | install this skill + a CLAUDE.md note (and, optionally, the MCP) |
@@ -194,7 +198,7 @@ running. To wait for the final verdict, watch the PR (below).
 
 ## Using the MCP tools
 
-The MCP server (`shuck mcp`) exposes six read-only tools. Each returns the
+The MCP server (`shuck mcp`) exposes seven read-only tools. Each returns the
 rendered report as text **and** the matching JSON document as structured output.
 
 | Tool | Use it for | Inputs |
@@ -390,11 +394,30 @@ shuck dependabot discover owner/repo    # detect from an explicit repo's file tr
 ```
 
 - **No config yet** → a full config is scaffolded (weekly schedule, a
-  minor/patch group, a label, an open-PR limit, a commit-message prefix) for each
-  ecosystem.
+  minor/patch group, a label, a cooldown, an open-PR limit, a commit-message
+  prefix) for each ecosystem.
 - **Config exists** → an entry is appended for each detected ecosystem it does
   not cover, preserving the existing comments and order.
 - Assignees are left out — shuck can't know who should own the PRs — so add them.
+
+### Fixing existing entries: `shuck dependabot fix`
+
+`discover` only closes **coverage** gaps (it adds whole entries); it never edits
+the entries already in the config. To clear the **best-practice** findings the
+audit reports on existing entries, use `shuck dependabot fix`:
+
+```sh
+shuck dependabot fix                    # patch the local .github/dependabot.yml
+shuck dependabot fix --dry-run          # preview the patched config without writing
+```
+
+For every existing update entry, `fix` fills in the best-practice fields it is
+missing — `groups`, `labels`, `cooldown`, `open-pull-requests-limit`, and a
+`commit-message` prefix — preserving the file's comments and key order and never
+touching fields that are already set. It adds and removes no entries (that is
+`discover`'s job) and makes no network calls. Assignees are never added — shuck
+can't know who should own the PRs — so entries missing them are noted for you to
+fill in.
 
 The dependabot JSON document (also `audit_dependabot`'s structured output):
 `schema_version` (int), `repo` `{owner, repo}`, `config_source`, `has_config`
