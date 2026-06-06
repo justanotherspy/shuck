@@ -21,6 +21,9 @@ func TestNextLink(t *testing.T) {
 		{"malformed no semicolon", `<https://x>`, ""},
 		{"empty url", `<>; rel="next"`, ""},
 		{"next among many", `<https://a>; rel="prev", </v2/n>; rel="next"`, "https://ghcr.io/v2/n"},
+		{"off-host absolute rejected", `<https://evil.example/v2/o/n/tags/list?last=z>; rel="next"`, ""},
+		{"scheme-relative rejected", `<//evil.example/v2/n>; rel="next"`, ""},
+		{"wrong scheme rejected", `<http://ghcr.io/v2/n>; rel="next"`, ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
