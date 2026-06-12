@@ -142,9 +142,16 @@ func extractEntry(root *os.Root, f *zip.File) error {
 		_ = dst.Close()
 		return err
 	}
-	if n, _ := io.CopyN(io.Discard, src, 1); n != 0 {
+	// This read must reach EOF: it both rejects excess data and is the read on
+	// which archive/zip verifies the entry's CRC-32 (a mismatch is ErrChecksum).
+	n, err := io.CopyN(io.Discard, src, 1)
+	if n != 0 {
 		_ = dst.Close()
 		return fmt.Errorf("inflates past its declared size %d", declared)
+	}
+	if !errors.Is(err, io.EOF) {
+		_ = dst.Close()
+		return err
 	}
 	return dst.Close()
 }

@@ -204,6 +204,31 @@ func TestDownloadArtifactsErrors(t *testing.T) {
 	})
 }
 
+// archive/zip only verifies an entry's CRC-32 on the read that reaches EOF;
+// extraction must surface that error instead of keeping the corrupt file.
+func TestExtractZipCRCMismatch(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.CreateHeader(&zip.FileHeader{Name: "data.txt", Method: zip.Store})
+	if err != nil {
+		t.Fatalf("zip create: %v", err)
+	}
+	if _, err := w.Write([]byte("hello-crc")); err != nil {
+		t.Fatalf("zip write: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zip close: %v", err)
+	}
+	// Flip a byte of the stored entry data; the recorded CRC no longer matches.
+	corrupted := bytes.Replace(buf.Bytes(), []byte("hello-crc"), []byte("hELLO-crc"), 1)
+	if bytes.Equal(corrupted, buf.Bytes()) {
+		t.Fatal("corruption did not apply")
+	}
+	if err := extractZip(bytes.NewReader(corrupted), t.TempDir()); err == nil {
+		t.Fatal("expected a CRC mismatch to fail extraction")
+	}
+}
+
 func TestSafeArtifactName(t *testing.T) {
 	for _, tt := range []struct{ in, want string }{
 		{"coverage", "coverage"},
