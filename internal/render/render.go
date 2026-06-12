@@ -32,6 +32,7 @@ func Report(w io.Writer, r *model.Report) {
 			fmt.Fprintf(w, "\n⏳ no failures yet — some checks are still running\n")
 		}
 		writeRunning(w, r.RunningJobs)
+		writeArtifacts(w, r.Artifacts)
 		writeReviews(w, r.Reviews)
 		return
 	}
@@ -42,6 +43,7 @@ func Report(w io.Writer, r *model.Report) {
 	writeOther(w, r.OtherChecks)
 	writeCancelled(w, r.CancelledJobs)
 	writeRunning(w, r.RunningJobs)
+	writeArtifacts(w, r.Artifacts)
 	writeReviews(w, r.Reviews)
 }
 
@@ -207,6 +209,44 @@ func writeCancelled(w io.Writer, jobs []model.JobResult) {
 			fmt.Fprintf(w, "  ⊘ %s\n", j.Name)
 		}
 	}
+}
+
+// writeArtifacts lists the artifacts the inspected run uploaded, each with its
+// size and expiry — and, when --download-artifacts was used, the local
+// directory it was extracted to.
+func writeArtifacts(w io.Writer, arts []model.Artifact) {
+	if len(arts) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "\nArtifacts:")
+	for _, a := range arts {
+		detail := formatSize(a.SizeBytes)
+		switch {
+		case a.Expired:
+			detail += ", expired"
+		case !a.ExpiresAt.IsZero():
+			detail += ", expires " + a.ExpiresAt.Format("2006-01-02")
+		}
+		if a.Path != "" {
+			fmt.Fprintf(w, "  📦 %s (%s) — saved to %s\n", a.Name, detail, a.Path)
+		} else {
+			fmt.Fprintf(w, "  📦 %s (%s)\n", a.Name, detail)
+		}
+	}
+}
+
+// formatSize renders a byte count with a binary-prefix unit, one decimal.
+func formatSize(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
 func writeRunning(w io.Writer, jobs []model.RunningJob) {

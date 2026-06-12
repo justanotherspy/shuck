@@ -88,6 +88,7 @@ type options struct {
 	reviewCommentLimit int
 	ciOnly             bool
 	reviewsOnly        bool
+	artifactsDir       string
 	state              string
 	token              string
 	refresh            bool
@@ -192,6 +193,7 @@ func parseArgs(args []string, stderr io.Writer) (options, []string, error) {
 
 	var o options
 	registerInspectFlags(fs, &o)
+	registerArtifactFlags(fs, &o)
 	fs.StringVar(&o.state, "state", "open", "security alert state to include: open|all|dismissed|fixed|resolved")
 	fs.BoolVar(&o.version, "version", false, "print the shuck version and exit")
 	fs.BoolVar(&o.watch, "watch", false, "poll until every check reaches a terminal state, then print the report")
@@ -222,6 +224,13 @@ func registerInspectFlags(fs *flag.FlagSet, o *options) {
 	fs.BoolVar(&o.offline, "offline", false, "render only from cache, without network access")
 	fs.BoolVar(&o.json, "json", false, "emit machine-readable JSON (stable schema) instead of text")
 	fs.BoolVar(&o.exitCode, "exit-code", false, "exit 1 when failing checks are found (for CI gating)")
+}
+
+// registerArtifactFlags registers the artifact-download flag on the paths that
+// can inspect a workflow run (the default path and `logs`) — reviews never see
+// a run, so it stays off that flag set.
+func registerArtifactFlags(fs *flag.FlagSet, o *options) {
+	fs.StringVar(&o.artifactsDir, "download-artifacts", "", "download the run's artifacts into this directory (run targets only); each is extracted to <dir>/<name>/")
 }
 
 func run(ctx context.Context, args []string, o options, stdout, stderr io.Writer) (int, error) {
@@ -337,10 +346,14 @@ type InspectOptions struct {
 	ReviewCommentLimit int
 	CIOnly             bool
 	ReviewsOnly        bool
-	Token              string
-	Refresh            bool
-	NoCache            bool
-	Offline            bool
+	// ArtifactsDir, when non-empty, downloads the inspected run's artifacts
+	// into this directory (run targets only); each artifact's zip archive is
+	// extracted to <dir>/<artifact-name>/.
+	ArtifactsDir string
+	Token        string
+	Refresh      bool
+	NoCache      bool
+	Offline      bool
 }
 
 // Inspect runs shuck's pipeline for an already-resolved target and returns the
@@ -358,6 +371,7 @@ func Inspect(ctx context.Context, tgt target.Target, opts InspectOptions) (*mode
 		reviewCommentLimit: opts.ReviewCommentLimit,
 		ciOnly:             opts.CIOnly,
 		reviewsOnly:        opts.ReviewsOnly,
+		artifactsDir:       opts.ArtifactsDir,
 		token:              opts.Token,
 		refresh:            opts.Refresh,
 		noCache:            opts.NoCache,
@@ -387,6 +401,9 @@ func inspectWith(ctx context.Context, tgt target.Target, o options) (*model.Repo
 		if tgt.RunID != 0 {
 			return nil, fmt.Errorf("offline is not supported for run/job URLs; it works only with PR targets, which are cached")
 		}
+		if o.artifactsDir != "" {
+			return nil, fmt.Errorf("--download-artifacts needs network access; it cannot be combined with --offline")
+		}
 		report, err := loadOffline(tgt)
 		if err != nil {
 			return nil, err
@@ -406,6 +423,7 @@ func inspectWith(ctx context.Context, tgt target.Target, o options) (*model.Repo
 		reviewCommentLimit: o.reviewCommentLimit,
 		ciOnly:             o.ciOnly,
 		reviewsOnly:        o.reviewsOnly,
+		artifactsDir:       o.artifactsDir,
 	}
 
 	// A PR "Checks" tab URL names a specific check run; resolve it to the Actions
@@ -423,6 +441,9 @@ func inspectWith(ctx context.Context, tgt target.Target, o options) (*model.Repo
 
 	if tgt.RunID != 0 {
 		return a.runReport(ctx, tgt)
+	}
+	if o.artifactsDir != "" {
+		return nil, fmt.Errorf("--download-artifacts requires a run target (a run/job URL, or logs --run): artifacts belong to one workflow run")
 	}
 	return a.prReport(ctx, tgt, o.refresh, o.noCache)
 }
@@ -580,13 +601,17 @@ func (a *app) runReport(ctx context.Context, tgt target.Target) (*model.Report, 
 		a.attachAnnotations(ctx, tgt.Owner, tgt.Repo, &cancelled[i])
 		a.drill(ctx, tgt.Owner, tgt.Repo, &cancelled[i])
 	}
-	return &model.Report{
+	report := &model.Report{
 		Run:           &info,
 		FailedJobs:    failed,
 		CancelledJobs: cancelled,
 		RunningJobs:   running,
 		CheckedAt:     time.Now(),
-	}, nil
+	}
+	if err := a.attachArtifacts(ctx, tgt.Owner, tgt.Repo, tgt.RunID, report); err != nil {
+		return nil, err
+	}
+	return report, nil
 }
 
 // emit renders the report as JSON or human-readable text and returns the
@@ -710,6 +735,8 @@ type inspectClient interface {
 	PRReviews(ctx context.Context, owner, repo string, number, commentLimit int) ([]model.Review, error)
 	RunReport(ctx context.Context, owner, repo string, runID, jobID int64, attempt int) (info model.RunInfo, failed, cancelled []model.JobResult, running []model.RunningJob, err error)
 	CheckRunTarget(ctx context.Context, owner, repo string, checkRunID int64) (runID, jobID int64, err error)
+	RunArtifacts(ctx context.Context, owner, repo string, runID int64) ([]model.Artifact, error)
+	ArtifactArchive(ctx context.Context, owner, repo string, artifactID int64) (io.ReadCloser, error)
 }
 
 // newInspectClient builds the client used by the PR / run inspection pipeline.
@@ -726,6 +753,7 @@ type app struct {
 	reviewCommentLimit int
 	ciOnly             bool
 	reviewsOnly        bool
+	artifactsDir       string
 }
 
 // drillJobs fills in each job's log detail: on the same head commit it re-parses

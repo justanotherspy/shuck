@@ -112,6 +112,7 @@ gating. `shuck compliance` is the exception: drift exits `1` by default
 | `--full` | false | Show full, untrimmed logs for failed steps. |
 | `--max-command-lines N` | 30 | Max lines of a failed step's command to show (`0` = no limit). |
 | `--review-comment-limit N` | 5 | Max comments shown per active review thread. |
+| `--download-artifacts DIR` | — | Download a run's uploaded artifacts, each extracted to `DIR/<name>/` (run targets only). |
 | `--state S` | open | Security alert states to include: `open\|all\|dismissed\|fixed\|resolved`. |
 | `--token T` | — | GitHub token (overrides `GITHUB_TOKEN`/`GH_TOKEN`). |
 | `--refresh` | false | Ignore and rebuild the cache. |

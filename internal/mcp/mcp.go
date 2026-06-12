@@ -49,8 +49,11 @@ repo of the local working directory; or nothing to inspect the open PR for the
 current branch. To inspect one workflow run instead of a PR, set run to a
 run/job URL (a run URL may name an /attempts/<n> to pick an earlier re-run
 attempt), or to a bare run ID together with repo — run targets bypass shuck's
-cache, so logs are always freshly downloaded. Requires a GitHub token in
-GITHUB_TOKEN or GH_TOKEN in the server's environment.`
+cache, so logs are always freshly downloaded. Run targets also list the
+artifacts the run uploaded; set download_artifacts to a directory to download
+them (each artifact's archive is extracted to <dir>/<name>/, and the report
+records the path per artifact). Requires a GitHub token in GITHUB_TOKEN or
+GH_TOKEN in the server's environment.`
 
 const inspectReviewsDesc = `Summarize a GitHub pull request's reviews and review-comment threads.
 
@@ -282,6 +285,8 @@ type inspectLogsInput struct {
 
 	extractInput
 
+	DownloadArtifacts string `json:"download_artifacts,omitempty" jsonschema:"Directory to download the run's uploaded artifacts into (run targets only). Each artifact's zip archive is extracted to <dir>/<artifact-name>/."`
+
 	Refresh bool `json:"refresh,omitempty" jsonschema:"Ignore and rebuild the cache (use when CI was re-run and cached results look stale)."`
 	NoCache bool `json:"no_cache,omitempty" jsonschema:"Do not read or write the cache."`
 	Offline bool `json:"offline,omitempty" jsonschema:"Render only from the local cache, without network access. Requires repo and pr."`
@@ -295,6 +300,7 @@ func inspectLogs(ctx context.Context, _ *mcp.CallToolRequest, in inspectLogsInpu
 
 	opts := in.apply(defaultOptions())
 	opts.CIOnly = true
+	opts.ArtifactsDir = in.DownloadArtifacts
 	opts.Refresh = in.Refresh
 	opts.NoCache = in.NoCache
 	opts.Offline = in.Offline

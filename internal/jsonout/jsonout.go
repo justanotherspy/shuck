@@ -30,7 +30,10 @@ type Document struct {
 	CancelledJobs []Job        `json:"cancelled_jobs"`
 	OtherChecks   []OtherCheck `json:"other_checks"`
 	RunningJobs   []RunningJob `json:"running_jobs"`
-	Reviews       []Review     `json:"reviews"`
+	// Artifacts are the file bundles the inspected workflow run uploaded.
+	// Present only for run/job targets (additive; omitted elsewhere).
+	Artifacts []Artifact `json:"artifacts,omitempty"`
+	Reviews   []Review   `json:"reviews"`
 }
 
 // Run identifies a workflow-run (or single-job) target and its head context. It
@@ -105,6 +108,20 @@ type Annotation struct {
 	Level       string `json:"level"`
 	Title       string `json:"title,omitempty"`
 	Message     string `json:"message"`
+}
+
+// Artifact is a file bundle the inspected workflow run uploaded. path is the
+// local directory the artifact's archive was extracted to, present only when a
+// download was requested; an expired artifact can no longer be downloaded.
+type Artifact struct {
+	ID        int64  `json:"id"`
+	RunID     int64  `json:"run_id"`
+	Name      string `json:"name"`
+	SizeBytes int64  `json:"size_bytes"`
+	Expired   bool   `json:"expired"`
+	CreatedAt string `json:"created_at"`
+	ExpiresAt string `json:"expires_at"`
+	Path      string `json:"path,omitempty"`
 }
 
 // OtherCheck is a non-Actions failing check (no logs available).
@@ -222,6 +239,19 @@ func NewDocument(r *model.Report) Document {
 			Name:         j.Name,
 			Status:       j.Status,
 			WorkflowName: j.WorkflowName,
+		})
+	}
+
+	for _, a := range r.Artifacts {
+		doc.Artifacts = append(doc.Artifacts, Artifact{
+			ID:        a.ID,
+			RunID:     a.RunID,
+			Name:      a.Name,
+			SizeBytes: a.SizeBytes,
+			Expired:   a.Expired,
+			CreatedAt: a.CreatedAt.Format(time.RFC3339),
+			ExpiresAt: a.ExpiresAt.Format(time.RFC3339),
+			Path:      a.Path,
 		})
 	}
 

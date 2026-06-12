@@ -27,6 +27,9 @@ Target forms (when --run is not given):
 --run accepts a run ID (repo inferred from the local repo, or pass owner/repo)
 or a github.com/.../actions/runs/<id> URL.
 
+Run targets also list the artifacts the run uploaded; add
+--download-artifacts <dir> to download them, each extracted to <dir>/<name>/.
+
 Flags:
 `
 
@@ -37,6 +40,7 @@ func runLogs(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	var o options
 	registerInspectFlags(fs, &o)
+	registerArtifactFlags(fs, &o)
 	var runRef string
 	fs.StringVar(&runRef, "run", "", "inspect a single workflow run by run ID or run/job URL instead of a PR")
 	fs.Usage = func() {

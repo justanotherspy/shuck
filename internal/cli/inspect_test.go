@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"testing"
 
 	"github.com/justanotherspy/shuck/internal/cache"
@@ -60,6 +63,13 @@ type stubInspect struct {
 	checkJob   int64 // resolved job ID returned by CheckRunTarget
 	checkErr   error
 	checkCalls int
+
+	artifacts      []model.Artifact
+	artifactsErr   error
+	artifactsCalls int
+	archives       map[int64][]byte // zip bytes served by ArtifactArchive, per artifact ID
+	archiveErr     error
+	archiveCalls   int
 }
 
 func (s *stubInspect) GetPR(_ context.Context, _, _ string, _ int) (model.PR, error) {
@@ -113,6 +123,23 @@ func (s *stubInspect) CheckRunTarget(_ context.Context, _, _ string, checkRunID 
 	s.checkCalls++
 	s.checkRunID = checkRunID
 	return s.checkRun, s.checkJob, s.checkErr
+}
+
+func (s *stubInspect) RunArtifacts(_ context.Context, _, _ string, _ int64) ([]model.Artifact, error) {
+	s.artifactsCalls++
+	return append([]model.Artifact(nil), s.artifacts...), s.artifactsErr
+}
+
+func (s *stubInspect) ArtifactArchive(_ context.Context, _, _ string, artifactID int64) (io.ReadCloser, error) {
+	s.archiveCalls++
+	if s.archiveErr != nil {
+		return nil, s.archiveErr
+	}
+	data, ok := s.archives[artifactID]
+	if !ok {
+		return nil, fmt.Errorf("no archive stubbed for artifact %d", artifactID)
+	}
+	return io.NopCloser(bytes.NewReader(data)), nil
 }
 
 // cloneJobs deep-copies a job slice so a stubbed call returns fresh values that
