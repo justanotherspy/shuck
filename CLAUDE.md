@@ -190,7 +190,11 @@ render → update cache.
 - Tag-triggered `release.yml` runs GoReleaser: multi-platform builds, a cosign
   keyless signature over `checksums.txt`, SPDX SBOMs, SLSA provenance, and the
   Homebrew cask push. Versioning is `git describe`-derived (injected into
-  `internal/cli.version`); there is no `VERSION` file.
+  `internal/cli.version`); there is no `VERSION` file. Once the release is
+  promoted it also sends a `repository_dispatch` to
+  `justanotherspy/justanotherspy.com` (via the `WEBSITE_DISPATCH_TOKEN`
+  secret; skipped with a warning if unset) so the website rebuilds and its
+  shuck page shows the new version.
 - `docker.yml` builds/pushes a multi-arch GHCR image (cosign-signed): `:edge`
   + `:sha-*` on pushes to main, semver tags + `:latest` via a `workflow_call`
   from `release.yml` (a `release:` trigger would never fire — token-created

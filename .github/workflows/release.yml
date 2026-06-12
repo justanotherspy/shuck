@@ -80,3 +80,27 @@ jobs:
       id-token: write # cosign keyless signing + provenance OIDC
       attestations: write # actions/attest-build-provenance
     uses: ./.github/workflows/docker.yml
+
+  # Tell justanotherspy.com a release went live so it rebuilds and its shuck
+  # project page picks up the new version (the site fetches the latest release
+  # tag at build time, excluding pre-releases — hence after goreleaser, which
+  # ends by promoting the release out of pre-release).
+  notify-website:
+    needs: goreleaser
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Send repository_dispatch to justanotherspy.com
+        env:
+          # Fine-grained PAT with contents:write on
+          # justanotherspy/justanotherspy.com (repository_dispatch needs a
+          # cross-repo token; GITHUB_TOKEN only reaches this repo).
+          GH_TOKEN: ${{ secrets.WEBSITE_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::WEBSITE_DISPATCH_TOKEN not set; skipping website rebuild trigger."
+            exit 0
+          fi
+          gh api repos/justanotherspy/justanotherspy.com/dispatches \
+            -f event_type=release-published
