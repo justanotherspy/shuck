@@ -40,6 +40,7 @@ For one-shot inspection the two are interchangeable; only the CLI does `--watch`
 | Everything on a PR (CI + reviews + security) | `shuck [target]` / `shuck all [target]` | (call the three below) |
 | Failing CI step logs | `shuck logs [target]` (alias `l`) | `inspect_logs` |
 | Logs for a single Actions run | `shuck logs --run <id\|url>` | `inspect_logs` with `run` |
+| Download a run's artifacts | `shuck logs --run <id\|url> --download-artifacts <dir>` | `inspect_logs` with `run` + `download_artifacts` |
 | A PR's reviews | `shuck reviews [target]` (alias `r`) | `inspect_reviews` |
 | A repo's security alerts | `shuck security [repo]` (alias `s`) | `inspect_security` |
 | Check settings against policy | `shuck compliance [repo]` (alias `c`) | `check_compliance` |
@@ -76,6 +77,12 @@ Rules that bite:
   `.../attempts/2`, or `logs --run`) skip the PR-wide scan and **always
   re-download logs** (no cache); they carry no reviews or security half. A run
   URL with no `/attempts/<n>` uses the latest attempt.
+- Run targets also **list the artifacts the run uploaded** (name, size,
+  expiry). Add `--download-artifacts <dir>` (MCP: `download_artifacts`) to
+  download them: each artifact's zip archive is extracted to `<dir>/<name>/`
+  and the report shows the path per artifact. Expired artifacts are listed but
+  cannot be downloaded. The flag requires a run target — artifacts belong to
+  one workflow run, so it errors on a PR target.
 - A PR "Checks" tab link (`.../pull/<n>/checks?check_run_id=<id>`) is resolved to
   just the Actions job behind that check — so it behaves like a job target. If
   the check isn't a GitHub Actions check, it falls back to the PR-wide report.
@@ -123,6 +130,8 @@ path and on `logs`:
 Focusing and selection:
 
 - `--run <id|url>` (on `logs`) — inspect one workflow run instead of a PR.
+- `--download-artifacts DIR` (run targets only; default path and `logs`) —
+  download the run's uploaded artifacts, each extracted to `DIR/<name>/`.
 - `--state open|all|dismissed|fixed|resolved` (default `open`) — which security
   alerts to include in the default/`all` view (and on `shuck security`).
 
@@ -164,6 +173,7 @@ shuck logs justanotherspy/shuck 42                # just the failing CI logs
 shuck reviews 42                                  # just the reviews
 shuck logs --run https://github.com/owner/repo/actions/runs/123  # one run
 shuck logs --run 123 owner/repo                   # one run, by ID
+shuck logs --run 123 owner/repo --download-artifacts ./artifacts  # …and pull its artifacts
 shuck --json https://github.com/owner/repo/pull/42  # combined structured output
 shuck security owner/repo                         # a repo's open security alerts
 shuck action actions/checkout@v4                  # resolve to a SHA pin
@@ -183,7 +193,10 @@ results programmatically.**
   where each step is `{number, name, kind, command, excerpt}`, plus
   `cancelled_jobs[]` (same shape as `failed_jobs[]`; its `failed_steps[]` hold
   the step that was interrupted by the cancellation and its last output),
-  `other_checks[]`, `running_jobs[]`, and `reviews[]`.
+  `other_checks[]`, `running_jobs[]`, and `reviews[]`. Run targets with
+  uploaded artifacts also carry `artifacts[]` `{id, run_id, name, size_bytes,
+  expired, created_at, expires_at, path?}` — `path` is the local directory an
+  artifact was extracted to, present only when a download was requested.
 - `shuck` / `shuck all --json` (a PR target) wrap that in a **combined envelope**:
   `{schema_version, inspection: <the document above>, security?: <the security
   document>, security_error?}`. The `security` half is omitted (and
@@ -212,7 +225,9 @@ rendered report as text **and** the matching JSON document as structured output.
 | `inspect_images` | list GHCR images, or resolve one to a digest | `image` (an owner, `owner/repo`, a URL, or `ghcr.io/owner/name[:tag]`), or none → the local repo; optional `refresh` |
 
 `inspect_logs` also accepts the extraction knobs (`full`, `context`, `pattern`,
-`short_threshold`, `tail`) and the cache knobs (`refresh`, `no_cache`, `offline`).
+`short_threshold`, `tail`), the cache knobs (`refresh`, `no_cache`, `offline`),
+and `download_artifacts` (a directory; run targets only) to download the run's
+uploaded artifacts.
 The MCP tools are one-shot snapshots — to **wait** for CI, use the CLI watch loop.
 There is no combined `all` MCP tool: call `inspect_logs` + `inspect_reviews` +
 `inspect_security` for the full picture. `audit_dependabot` and the compliance

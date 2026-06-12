@@ -142,6 +142,21 @@ type JobResult struct {
 	Inspected   bool         `json:"inspected"` // logs were drilled for this (id, attempt)
 }
 
+// Artifact is a file bundle a workflow run uploaded (actions/upload-artifact).
+// shuck lists a run target's artifacts alongside its jobs; Path is set only
+// when a download was requested, to the local directory the artifact's archive
+// was extracted into.
+type Artifact struct {
+	ID        int64     `json:"id"`
+	RunID     int64     `json:"run_id"`
+	Name      string    `json:"name"`
+	SizeBytes int64     `json:"size_bytes"`
+	Expired   bool      `json:"expired"`
+	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+	Path      string    `json:"path,omitempty"`
+}
+
 // ActionTag is a tag in a GitHub Actions repository paired with the commit SHA
 // it resolves to. shuck uses it to pin a workflow `uses:` reference to an
 // immutable SHA. The SHA is the peeled commit a checkout would land on, even
@@ -213,7 +228,11 @@ type Report struct {
 	CancelledJobs []JobResult  `json:"cancelled_jobs"`
 	RunningJobs   []RunningJob `json:"running_jobs"`
 	OtherChecks   []OtherCheck `json:"other_checks"`
-	Reviews       []Review     `json:"reviews,omitempty"`
+	// Artifacts are the file bundles attached to the inspected workflow run.
+	// They are listed only for run/job targets (Run non-nil), where the run is
+	// unambiguous.
+	Artifacts []Artifact `json:"artifacts,omitempty"`
+	Reviews   []Review   `json:"reviews,omitempty"`
 	// ReviewsFingerprint is a cheap signature of the PR's review state, persisted
 	// so a later run can skip the full review pull when nothing changed.
 	ReviewsFingerprint string `json:"reviews_fingerprint,omitempty"`
