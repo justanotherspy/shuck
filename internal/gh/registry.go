@@ -49,6 +49,7 @@ func (c *Client) RegistryTags(ctx context.Context, owner, name string) ([]string
 		}
 		err = decodeRegistry(resp, &page, fmt.Sprintf("list tags for %s", repo))
 		if err != nil {
+			_ = resp.Body.Close()
 			return nil, err
 		}
 		tags = append(tags, page.Tags...)

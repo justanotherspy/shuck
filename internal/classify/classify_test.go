@@ -106,6 +106,12 @@ func TestClassify(t *testing.T) {
 			want:    model.ClassTest,
 		},
 		{
+			name:    "test from FAIL at a later line start",
+			command: "make verify",
+			excerpt: "ok\texample.com/other\t0.2s\nFAIL\texample.com/pkg\t0.1s",
+			want:    model.ClassTest,
+		},
+		{
 			name:    "build from text when command unknown",
 			command: "make all",
 			excerpt: "./x.go:9:2: cannot find package \"y\"",

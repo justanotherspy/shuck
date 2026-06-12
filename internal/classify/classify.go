@@ -33,7 +33,7 @@ var (
 	// The generic "file:line:col:" form is deliberately not a lint signal: it is
 	// just as common in compiler output, so it would steal build failures.
 	lintText  = regexp.MustCompile(`(?i)(\blint\b|lint(er|ing)|gofmt|not formatted|would reformat|::error.*eslint)`)
-	testText  = regexp.MustCompile(`(?i)(--- FAIL|^FAIL\b|\bFAILED\b|assertionerror|tests? failed|\d+ (failed|failing)|expect\(.*\)\.to|test suite failed)`)
+	testText  = regexp.MustCompile(`(?im)(--- FAIL|^FAIL\b|\bFAILED\b|assertionerror|tests? failed|\d+ (failed|failing)|expect\(.*\)\.to|test suite failed)`)
 	buildText = regexp.MustCompile(`(?i)(cannot find package|undefined:|undeclared name|syntax error|compilation (failed|error)|cannot compile|build failed|error: cannot find|ld: |linker command failed|no such module|unresolved import|type error ts\d+)`)
 )
 
