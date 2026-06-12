@@ -2,16 +2,18 @@
 name: shuck
 description: >-
   Show the exact failing CI step logs for a GitHub pull request, summarize its
-  reviews, list a repo's security alerts, check a repo's settings against a
-  committed compliance policy, audit a repo's Dependabot config, and pin GitHub
-  Actions to SHAs — plus watch a PR's checks until they finish. Works two ways:
-  the `shuck` CLI (with `--json` for structured output) or the shuck MCP tools
-  (`inspect_logs`, `inspect_reviews`, `inspect_security`, `check_compliance`,
-  `audit_dependabot`, `inspect_action`, `inspect_images`) — use either or both.
-  Use when the user wants to know why CI is failing, debug a failed GitHub
-  Actions check, pull the error logs for a PR, see what reviewers asked for,
-  triage a repo's security findings, verify a repo's settings match policy, check
-  Dependabot covers every ecosystem, or SHA-pin an action.
+  reviews, list a repo's security alerts, check settings against a committed
+  compliance policy, audit the Dependabot config, and pin GitHub Actions to
+  SHAs — plus watch a PR's checks to completion and report a clean pass or the
+  failing logs. Works two ways: the `shuck` CLI (`--json` for structured
+  output) or the shuck MCP tools (`inspect_logs`, `inspect_reviews`,
+  `inspect_security`, `check_compliance`, `audit_dependabot`, `inspect_action`,
+  `inspect_images`). Use whenever a GitHub Actions workflow is in play: right
+  after opening a PR or pushing new commits to one (start a `shuck --watch`
+  monitor to close the loop with a pass or the exact errors), to learn why CI
+  is failing, debug a failed check, pull a PR's error logs, wait for checks to
+  finish, see what reviewers asked for, triage security findings, verify
+  settings match policy, check Dependabot coverage, or SHA-pin an action.
 ---
 
 # shuck — failing CI logs, reviews, and security for a PR
@@ -20,6 +22,33 @@ description: >-
 their error logs, summarizes a PR's reviews, lists a repo's security alerts, and
 resolves an Action to a SHA pin. Reach for it instead of paging through the
 GitHub UI or `gh`.
+
+## The PR loop: push → watch → fix → repeat
+
+Any task that ends in a pull request isn't done at "pushed" — close the loop on
+CI. Every time you **open a PR or push new commits to one**, set up a shuck
+monitor and drive it to a verdict:
+
+1. **Confirm checks have registered** for the new head commit before watching —
+   a quick `shuck <pr>` showing running jobs is enough. (A watch started before
+   any run exists for the commit reports all-clear immediately.)
+2. **Start the monitor in the background** (Bash `run_in_background`) so you
+   keep working while CI runs:
+
+   ```sh
+   shuck --watch --exit-code --watch-timeout 30m <pr>
+   ```
+
+3. **Act on the verdict** when it returns:
+   - exit `0` — every check passed. Report the PR is green; the loop is closed.
+   - exit `1` — checks failed, and the final report already contains the
+     failing step logs. Fix from those errors (re-run `shuck logs <pr>` or the
+     `inspect_logs` MCP tool for fresh/typed detail), push, and **go back to
+     step 1** — every push needs a new watch.
+   - exit `2` — operational error (auth, target not found); resolve and retry.
+
+Repeat until a watch exits `0`. The full watch flag reference is in
+"Watching CI to completion (CLI)" below.
 
 ## Two ways in — use either or both
 
