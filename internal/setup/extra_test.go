@@ -168,6 +168,30 @@ func TestRefreshSkillReadError(t *testing.T) {
 	}
 }
 
+// TestRefreshClaudeMDReadError hits refreshClaudeMD's read-error branch: with an
+// installed skill present (so the skill arm succeeds first) and CLAUDE.md a
+// directory, reading the note fails with a non-IsNotExist error.
+func TestRefreshClaudeMDReadError(t *testing.T) {
+	dir := useConfigDir(t)
+	skillPath := filepath.Join(dir, "skills", "shuck", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skillPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skillPath, []byte("OLD\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "CLAUDE.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut strings.Builder
+	if code := Run([]string{"--refresh-skill"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 2 {
+		t.Fatalf("exit = %d, want 2 when CLAUDE.md is unreadable", code)
+	}
+	if !strings.Contains(errOut.String(), "read CLAUDE.md") {
+		t.Errorf("expected CLAUDE.md read-error note, got %q", errOut.String())
+	}
+}
+
 // TestUpdateClaudeMDReadError makes CLAUDE.md a directory so its read fails with
 // a non-IsNotExist error.
 func TestUpdateClaudeMDReadError(t *testing.T) {

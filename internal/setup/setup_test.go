@@ -314,6 +314,143 @@ func TestRefreshSkillUpdatesStaleAndLeavesRest(t *testing.T) {
 	}
 }
 
+// TestRefreshUpdatesStaleNoteWhenPresent verifies the upgrade refresh path keeps
+// an already-installed CLAUDE.md note current: a stale managed block is rewritten
+// in place to the real claudeNote while the user's surrounding content survives.
+func TestRefreshUpdatesStaleNoteWhenPresent(t *testing.T) {
+	dir := useConfigDir(t)
+
+	// An installed skill so the skill arm has something to refresh.
+	skillPath := filepath.Join(dir, "skills", "shuck", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skillPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skillPath, []byte("OLD SKILL\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A CLAUDE.md that already carries shuck's managed block, but stale.
+	mdPath := filepath.Join(dir, "CLAUDE.md")
+	stale := "# My notes\n\n" + claudeBegin + "\nOLD NOTE\n" + claudeEnd + "\n\ntrailer\n"
+	if err := os.WriteFile(mdPath, []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errOut strings.Builder
+	if code := Run([]string{"--refresh-skill"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", code, errOut.String())
+	}
+
+	md, err := os.ReadFile(mdPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(md), "OLD NOTE") {
+		t.Errorf("stale note not replaced:\n%s", md)
+	}
+	if !strings.Contains(string(md), "shuck` skill") {
+		t.Errorf("refreshed note missing skill mention:\n%s", md)
+	}
+	if !strings.HasPrefix(string(md), "# My notes\n") || !strings.HasSuffix(string(md), "trailer\n") {
+		t.Errorf("surrounding content not preserved:\n%s", md)
+	}
+	if !strings.Contains(out.String(), "refreshed CLAUDE.md note") {
+		t.Errorf("expected CLAUDE.md refresh note, got %q", out.String())
+	}
+}
+
+// TestRefreshLeavesUnmanagedClaudeMDAlone verifies the refresh path does not
+// inject the block into a CLAUDE.md that has no markers — only `shuck setup`
+// adds the note; refresh never writes config the user did not opt into.
+func TestRefreshLeavesUnmanagedClaudeMDAlone(t *testing.T) {
+	dir := useConfigDir(t)
+	skillPath := filepath.Join(dir, "skills", "shuck", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skillPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skillPath, []byte("OLD SKILL\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mdPath := filepath.Join(dir, "CLAUDE.md")
+	const userOnly = "# Just my notes\n\nno shuck block here\n"
+	if err := os.WriteFile(mdPath, []byte(userOnly), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errOut strings.Builder
+	if code := Run([]string{"--refresh-skill"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", code, errOut.String())
+	}
+
+	md, err := os.ReadFile(mdPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(md) != userOnly {
+		t.Errorf("unmanaged CLAUDE.md was modified:\n%s", md)
+	}
+	if strings.Contains(string(md), claudeBegin) {
+		t.Errorf("refresh injected a managed block into an unmanaged CLAUDE.md:\n%s", md)
+	}
+}
+
+// TestRefreshNoteDryRun covers refreshClaudeMD's dry-run branch: a stale managed
+// note is reported but not written.
+func TestRefreshNoteDryRun(t *testing.T) {
+	dir := useConfigDir(t)
+	skillPath := filepath.Join(dir, "skills", "shuck", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skillPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skillPath, []byte("OLD SKILL\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mdPath := filepath.Join(dir, "CLAUDE.md")
+	stale := claudeBegin + "\nOLD NOTE\n" + claudeEnd + "\n"
+	if err := os.WriteFile(mdPath, []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errOut strings.Builder
+	if code := Run([]string{"--refresh-skill", "--dry-run"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "[dry-run] would refresh CLAUDE.md note") {
+		t.Errorf("expected dry-run refresh note, got %q", out.String())
+	}
+	got, _ := os.ReadFile(mdPath)
+	if string(got) != stale {
+		t.Errorf("dry-run must not rewrite CLAUDE.md, got %q", got)
+	}
+}
+
+// TestRefreshNoteUpToDate covers the unchanged branch: when the installed note
+// already matches claudeNote, refresh reports it and writes nothing.
+func TestRefreshNoteUpToDate(t *testing.T) {
+	dir := useConfigDir(t)
+	skillPath := filepath.Join(dir, "skills", "shuck", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skillPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skillPath, []byte(fakeSkill), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mdPath := filepath.Join(dir, "CLAUDE.md")
+	current := claudeBegin + "\n" + claudeNote + "\n" + claudeEnd + "\n"
+	if err := os.WriteFile(mdPath, []byte(current), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errOut strings.Builder
+	if code := Run([]string{"--refresh-skill"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "installed CLAUDE.md note already up to date") {
+		t.Errorf("expected up-to-date note, got %q", out.String())
+	}
+}
+
 // stubClaude points lookPath at a fake claude and makes runCommand return out/err.
 func stubClaude(t *testing.T, out []byte, err error) {
 	t.Helper()

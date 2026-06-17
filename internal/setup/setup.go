@@ -1,7 +1,8 @@
 // Package setup installs shuck's Claude Code integration for users who do not use
 // the plugin marketplace. `shuck setup` writes the shuck skill into the Claude
-// config directory, adds a short managed note to the user's CLAUDE.md, and
-// optionally registers the local MCP server at user scope.
+// config directory, adds a managed note to the user's CLAUDE.md, and optionally
+// registers the local MCP server at user scope. Re-running refreshes the skill
+// and the note in place when either has drifted from this binary's copies.
 package setup
 
 import (
@@ -26,17 +27,48 @@ const (
 )
 
 // claudeNote is the body shuck keeps between the markers in the user's CLAUDE.md.
-// It tells the agent it can reach shuck either through the skill (CLI) or the MCP.
-const claudeNote = "## shuck — failing CI logs for a PR\n" +
+// It names the `shuck` skill so the agent reaches for it, and enumerates the
+// scenarios shuck covers so the agent knows when to. shuck is reachable through
+// the skill (which drives the CLI) or the MCP tools, so both are mentioned.
+const claudeNote = "## shuck — GitHub PR & CI triage (skill + CLI + MCP)\n" +
 	"\n" +
-	"When CI goes red on a GitHub PR, reach for **shuck** to get the exact failing\n" +
-	"step logs instead of paging through the Actions UI. Two equivalent ways in:\n" +
+	"`shuck` shucks the husk and keeps the kernel: it returns the **exact failing\n" +
+	"CI step logs** for a GitHub PR — and covers the rest of PR/repo hygiene —\n" +
+	"instead of paging through the Actions UI or hand-rolling `gh`/GitHub API calls.\n" +
+	"**Whenever a GitHub Actions run, a PR, or a repo-hygiene question is in play,\n" +
+	"reach for the `shuck` skill first.**\n" +
 	"\n" +
-	"- **Skill (CLI):** use the `shuck` skill — it runs the `shuck` CLI for you.\n" +
-	"- **MCP:** call the `inspect_logs` / `inspect_reviews` / `inspect_security` /\n" +
-	"  `inspect_action` tools from the shuck MCP server.\n" +
+	"Invoke the **`shuck` skill** for the full playbook. It drives shuck either way —\n" +
+	"the `shuck` CLI (Bash; add `--json` for structured output) or the shuck **MCP\n" +
+	"tools** — same engine, same data, so use whichever is wired up. Only the CLI\n" +
+	"can `--watch` CI to completion; the MCP tools are one-shot snapshots.\n" +
 	"\n" +
-	"Use whichever is wired up; the skill documents both. Manage this with `shuck setup`."
+	"Reach for shuck to:\n" +
+	"\n" +
+	"- **Monitor a PR to a verdict.** Every time you open a PR or push new commits,\n" +
+	"  start `shuck --watch --exit-code <pr>` in the background and act on the\n" +
+	"  result — green, or the exact failing-step logs. Close the loop on every push.\n" +
+	"- **Debug why CI is red.** `shuck logs <pr>` / `inspect_logs` returns each\n" +
+	"  failed step's command and error excerpt — for a PR, a single run/job URL, or\n" +
+	"  a specific re-run attempt.\n" +
+	"- **Grab a run's archived artifacts.** `shuck logs --run <id|url>\n" +
+	"  --download-artifacts <dir>` (MCP: `download_artifacts`) lists what a run\n" +
+	"  uploaded and extracts each artifact zip to `<dir>/<name>/`.\n" +
+	"- **See what reviewers asked for.** `shuck reviews <pr>` / `inspect_reviews`.\n" +
+	"- **Triage security alerts.** `shuck security` / `inspect_security` — code\n" +
+	"  scanning, secret scanning, Dependabot.\n" +
+	"- **Check settings against policy.** `shuck compliance` / `check_compliance`\n" +
+	"  vs a committed `.github/compliance.yml`.\n" +
+	"- **Audit Dependabot coverage.** `shuck dependabot` / `audit_dependabot`.\n" +
+	"- **Pin Actions and images.** `shuck action actions/checkout@v4` /\n" +
+	"  `inspect_action` resolves an Action's latest tag + commit SHA; `shuck image`\n" +
+	"  / `inspect_images` resolves a GHCR image's latest digest.\n" +
+	"\n" +
+	"MCP tools: `inspect_logs`, `inspect_reviews`, `inspect_security`,\n" +
+	"`check_compliance`, `audit_dependabot`, `inspect_action`, `inspect_images`.\n" +
+	"\n" +
+	"Install/keep current with `shuck upgrade`; manage this note and the skill with\n" +
+	"`shuck setup`."
 
 const (
 	mcpName    = "shuck"
@@ -80,11 +112,17 @@ func Run(args []string, skill string, stdin io.Reader, stdout, stderr io.Writer)
 		return 2
 	}
 
-	// --refresh-skill is the skill-only path `shuck upgrade` invokes on the
-	// freshly-installed binary: refresh just the skill (from this binary's own
-	// embedded copy) and touch nothing else — no CLAUDE.md, no MCP, no prompt.
+	// --refresh-skill is the in-place refresh path `shuck upgrade` invokes on the
+	// freshly-installed binary: bring the *already-installed* skill and managed
+	// CLAUDE.md note up to date with this binary's embedded copies, but create
+	// nothing new and never touch the MCP or prompt. A user who never ran
+	// `shuck setup` has neither artifact, so both steps are quiet no-ops for them.
 	if o.refreshSkill {
 		if err := refreshInstalledSkill(dir, skill, o.dryRun, stdout); err != nil {
+			fmt.Fprintln(stderr, "shuck:", err)
+			return 2
+		}
+		if err := refreshClaudeMD(dir, o.dryRun, stdout); err != nil {
 			fmt.Fprintln(stderr, "shuck:", err)
 			return 2
 		}
@@ -119,7 +157,7 @@ func parse(args []string, stderr io.Writer) (options, error) {
 	fs.BoolVar(&o.mcp, "mcp", false, "register the shuck MCP server at user scope without prompting")
 	fs.BoolVar(&o.noMCP, "no-mcp", false, "skip the MCP server step without prompting")
 	fs.BoolVar(&o.dryRun, "dry-run", false, "report what would change without writing anything")
-	fs.BoolVar(&o.refreshSkill, "refresh-skill", false, "refresh only the already-installed skill (used by `shuck upgrade`); makes no other changes")
+	fs.BoolVar(&o.refreshSkill, "refresh-skill", false, "refresh the already-installed skill and CLAUDE.md note in place (used by `shuck upgrade`); creates nothing new and skips the MCP step")
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
 	}
@@ -203,6 +241,45 @@ func refreshInstalledSkill(dir, skill string, dryRun bool, stdout io.Writer) err
 		return fmt.Errorf("write skill: %w", err)
 	}
 	fmt.Fprintf(stdout, "refreshed installed skill: %s\n", path)
+	return nil
+}
+
+// refreshClaudeMD rewrites shuck's managed block in <dir>/CLAUDE.md to the
+// current claudeNote, but only when the file already exists and already contains
+// the markers — i.e. the user previously ran `shuck setup`. Like
+// refreshInstalledSkill it is the in-place arm of `shuck upgrade`: it never
+// creates CLAUDE.md and never injects the block where it isn't already, so an
+// upgrade keeps an opted-in note current without writing config behind the back
+// of a user who never asked for it.
+func refreshClaudeMD(dir string, dryRun bool, stdout io.Writer) error {
+	path := filepath.Join(dir, "CLAUDE.md")
+	existing, err := os.ReadFile(path)
+	switch {
+	case os.IsNotExist(err):
+		return nil
+	case err != nil:
+		return fmt.Errorf("read CLAUDE.md: %w", err)
+	}
+	// No managed block means the user never installed the note (or removed it on
+	// purpose); refresh must not inject one — that is `shuck setup`'s job.
+	if !strings.Contains(string(existing), claudeBegin) {
+		return nil
+	}
+	block := claudeBegin + "\n" + claudeNote + "\n" + claudeEnd + "\n"
+	updated, verb := spliceSection(string(existing), block)
+	if verb == "unchanged" {
+		fmt.Fprintf(stdout, "installed CLAUDE.md note already up to date: %s\n", path)
+		return nil
+	}
+	if dryRun {
+		fmt.Fprintf(stdout, "[dry-run] would refresh CLAUDE.md note: %s\n", path)
+		return nil
+	}
+	// CLAUDE.md is a documentation file meant to be read; 0644 is intentional.
+	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil { //nolint:gosec // user-readable doc file
+		return fmt.Errorf("write CLAUDE.md: %w", err)
+	}
+	fmt.Fprintf(stdout, "refreshed CLAUDE.md note: %s\n", path)
 	return nil
 }
 
