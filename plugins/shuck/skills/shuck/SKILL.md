@@ -11,9 +11,10 @@ description: >-
   `inspect_images`). Use whenever a GitHub Actions workflow is in play: right
   after opening a PR or pushing new commits to one (start a `shuck --watch`
   monitor to close the loop with a pass or the exact errors), to learn why CI
-  is failing, debug a failed check, pull a PR's error logs, wait for checks to
-  finish, see what reviewers asked for, triage security findings, verify
-  settings match policy, check Dependabot coverage, or SHA-pin an action.
+  is failing, debug a failed check, pull a PR's error logs, download a run's
+  archived artifacts, wait for checks to finish, see what reviewers asked for,
+  triage security findings, verify settings match policy, check Dependabot
+  coverage, SHA-pin an action, or digest-pin a GHCR image.
 ---
 
 # shuck — failing CI logs, reviews, and security for a PR
@@ -486,6 +487,33 @@ shuck action --json github/codeql-action/init@v3
 Auth is optional for public repos; a token lifts the unauthenticated rate limit.
 Tags are cached for a day; `--refresh` re-fetches.
 
+## Pinning GHCR images to digests
+
+`shuck image [owner | ghcr.io/owner/name[:tag]]` (alias `i`) and the
+`inspect_images` tool do the same job for GitHub Container Registry images,
+resolving to an immutable digest instead of a SHA:
+
+```sh
+shuck image chainguard                       # list every image under an owner
+shuck image ghcr.io/justanotherspy/shuck     # resolve the latest stable tag
+shuck image ghcr.io/justanotherspy/shuck:v1  # resolve the latest matching v1.x
+shuck image --json ghcr.io/owner/name        # the stable JSON document
+```
+
+- A bare **owner** (or `owner/repo`, a github.com URL, or nothing → the local
+  repo's owner) **lists** every image published under that owner, each with its
+  latest tag and digest.
+- A full **`ghcr.io/owner/name[:tag]`** reference **resolves** that one image to
+  its newest matching tag and manifest digest, and prints a digest-pinned
+  reference ready to use (`ghcr.io/owner/name@sha256:… # tag`). For a multi-arch
+  image the digest is the image-index digest — the correct value to pin.
+
+Listing an owner's images uses the GitHub Packages API and needs a classic token
+with `read:packages`; resolving a single public image works without a token via
+the anonymous registry API (private images need a token). Stable tags win over
+prereleases, and cosign/referrer tags are never selected. Results are cached for
+an hour; `--refresh` re-fetches.
+
 ## Watching CI to completion (CLI)
 
 One-shot inspection (CLI without `--watch`, or the MCP tools) is a point-in-time
@@ -535,8 +563,8 @@ an initial inspection shows running jobs.
   ```
 
   Keep it current with `shuck upgrade` (and check with `shuck version --check`).
-  `shuck upgrade` also refreshes this skill in your Claude config if you
-  installed it with `shuck setup`.
+  `shuck upgrade` also refreshes this skill and the managed CLAUDE.md note in
+  your Claude config in place if you installed them with `shuck setup`.
 - A GitHub token in `GITHUB_TOKEN` or `GH_TOKEN` (the MCP server reads it from
   its environment; the CLI also accepts `--token`). `shuck action` works
   unauthenticated against public repos, but a token lifts the rate limit.

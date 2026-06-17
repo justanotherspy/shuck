@@ -14,8 +14,8 @@ import (
 )
 
 // refreshSkillCmd runs the just-installed binary to refresh the user's installed
-// skill from its own (new) embedded copy. It is indirected so tests can stub the
-// exec without spawning a process.
+// skill and managed CLAUDE.md note from its own (new) embedded copies. It is
+// indirected so tests can stub the exec without spawning a process.
 var refreshSkillCmd = func(exe string) ([]byte, error) {
 	return exec.Command(exe, "setup", "--refresh-skill").CombinedOutput()
 }
@@ -84,11 +84,12 @@ func runUpgrade(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// refreshInstalledSkill asks the just-upgraded binary to bring the skill
-// installed by `shuck setup` up to date with the new version. The new skill text
-// lives inside the new binary, not this running process, so we exec it. It is
-// best-effort and a no-op when the skill was never installed: a failure is
-// reported but never fails the upgrade, whose real work (the binary) is done.
+// refreshInstalledSkill asks the just-upgraded binary to bring the skill and
+// managed CLAUDE.md note installed by `shuck setup` up to date with the new
+// version. Their text lives inside the new binary, not this running process, so
+// we exec it. It is best-effort and a no-op when neither was ever installed: a
+// failure is reported but never fails the upgrade, whose real work (the binary)
+// is done.
 func refreshInstalledSkill(exe string, stdout, stderr io.Writer) {
 	out, err := refreshSkillCmd(exe)
 	trimmed := strings.TrimRight(string(out), "\n")
