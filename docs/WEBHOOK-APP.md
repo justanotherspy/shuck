@@ -12,13 +12,33 @@ architecture and name the hard parts before writing code.
 
 ---
 
-## 1. The key realization: most of this already exists
+## 0. Scope: terminal Claude Code, not the web system
 
-Before designing anything, note that the exact shape the user describes — a
-GitHub App receiving PR webhooks, a session that **subscribes** to a PR, events
-that **wake** the session to react to CI failures and review comments — is a
-**shipping production feature**: *Auto-fix pull requests* in Claude Code on the
-web.
+The target is **Claude Code running in a host terminal** — the CLI on a
+developer's own machine — **not** Claude Code on the web. That constraint is
+load-bearing, so it's stated up front:
+
+- The web platform's `subscribe_pr_activity` / `<github-webhook-activity>` /
+  Auto-fix machinery (§1) is **web-only**. We can use it as a *reference design*
+  that proves the shape works, but a terminal user cannot ride it. Everything in
+  §6 that recommended "lean on the platform" is **off the table** for this goal.
+- A terminal host is **long-lived and local**, which actually *simplifies* the
+  ephemeral-session problem (§5.1) — the broker and the session can sit on the
+  same box. But it *introduces* a new one: a laptop behind NAT **cannot receive
+  inbound webhooks**, so ingress needs a tunnel or an outbound-connected relay
+  (new §3.5). That is the central terminal-specific design problem.
+- The transports that *do* work in the terminal are **channels** (`--channels`,
+  §3.3a — channels are fundamentally a terminal feature), **Agent-SDK
+  `send_message`** (§3.3c), and **background poll + Monitor** (§3.3e).
+
+## 1. The key realization: the shape already exists (as a reference)
+
+The exact shape the user describes — a GitHub App receiving PR webhooks, a
+session that **subscribes** to a PR, events that **wake** the session to react to
+CI failures and review comments — is a **shipping production feature**:
+*Auto-fix pull requests* in Claude Code on the web. We can't use it directly
+(it's web-only, §0), but it's worth studying because it's the proof the shape
+works and a map of the moving parts:
 
 - The **Claude GitHub App** receives PR webhooks; installation is what enables
   Auto-fix (it "uses the App to receive PR webhooks").
@@ -33,10 +53,11 @@ web.
 
 This matters two ways:
 
-1. **We don't have to invent the session-push transport.** Two real ones exist
-   (the platform's `subscribe_pr_activity`, and the generic `--channels` MCP
-   mechanism). The design question is *which to ride*, not *whether one can
-   exist*.
+1. **We don't have to invent the session-push transport from scratch.** A real
+   terminal-available one exists — the generic `--channels` MCP mechanism — and
+   the web platform's `subscribe_pr_activity` shows the ergonomics to copy. The
+   design question is how to make a terminal-usable transport solid, not whether
+   one can exist.
 2. **It tells us where shuck's distinct value is.** The platform delivers a
    **raw** GitHub event ("check_run failed", "a review was submitted"). It does
    *not* tell the agent the failing step's command, the extracted error
@@ -162,20 +183,15 @@ session. Reuses all of shuck's existing MCP plumbing; the session opts in with
 > away-from-keyboard case. It is the *right* primitive and improving, but we
 > can't ship on it alone for idle delivery.
 
-#### (b) Ride the platform's `subscribe_pr_activity` (web/remote only) ✅ *recommended companion*
+#### (b) Ride the platform's `subscribe_pr_activity` — ❌ *web-only, not available in the terminal*
 
-On Claude Code on the web, the platform *already* delivers
-`<github-webhook-activity>` and exposes `subscribe_pr_activity` /
-`unsubscribe_pr_activity`, and it *already* wakes idle sessions reliably (that's
-the shipped Auto-fix feature). In this world shuck does **not** build transport
-at all — it stays the **digestion layer the woken session calls**: the platform
-wakes the session with the raw event, the session calls `inspect_logs` /
-`inspect_security`. That is literally what this repo's `CLAUDE.md` already tells
-agents to do. Zero new infra; works today.
-
-The limitation: it's tied to the Anthropic-managed web runtime and delivers raw
-(undigested) events, and we don't control its event set (e.g. it explicitly does
-*not* deliver merge-conflict or CI-success transitions).
+On Claude Code on the web the platform delivers `<github-webhook-activity>`,
+exposes `subscribe_pr_activity` / `unsubscribe_pr_activity`, and reliably wakes
+idle sessions (the shipped Auto-fix feature). **A terminal session cannot use
+this** — it's part of the Anthropic-managed web runtime, not the CLI. It stays a
+*reference design* (copy its tool ergonomics) and a reminder of what the channel
+path (a) still has to solve on its own (reliable idle-wake). Listed here only so
+the comparison is complete.
 
 #### (c) Agent SDK streaming input (`send_message`) — *most reliable injection*
 
@@ -212,10 +228,46 @@ ergonomics:
   closing-the-loop kinds; a session can ask for only `ci` or only `security`.
 - `shuck_unsubscribe(repo, pr)` → drops the registration.
 
-The **session id** is the routing key. In cloud sessions it's available as
-`CLAUDE_CODE_REMOTE_SESSION_ID`; the channel connection carries it so the broker
-knows which stream a digest belongs to. Subscription state is the broker's, not
-the session's, so it survives a session restart.
+The **session id** is the routing key. The terminal session generates/derives an
+id (or the broker assigns one on connect); the channel connection carries it so
+the broker knows which stream a digest belongs to. Subscription state is the
+broker's, so it survives a session restart.
+
+### 3.5 Getting webhooks to a terminal host (the central terminal problem)
+
+GitHub delivers webhooks by making an **inbound** HTTP request to a public URL.
+A developer's terminal is almost always behind NAT / a firewall with no public
+ingress, so GitHub cannot reach it directly. This is *the* difference from the
+web platform (which has a public, Anthropic-managed receiver). Three ways to
+bridge it:
+
+1. **Hosted relay, outbound connection from the laptop (recommended).** Run a
+   tiny always-on public service (`shuck-relay`) that owns the GitHub App and
+   receives the webhooks. The local `shuck` opens an **outbound** long-lived
+   connection *to the relay* (WebSocket/SSE) — which NAT allows — and the relay
+   streams matching, already-digested events down it. The laptop never needs a
+   public address. This is the same outbound-channel shape the web runtime uses,
+   just self-hosted, and it's the cleanest fit for `--channels`.
+   - Where digestion runs is a choice: the **relay** can run shuck's cores (one
+     shared installation token, no GitHub creds on the laptop), **or** the relay
+     can forward the raw event and the **local** shuck digests it with the user's
+     own token. Relay-side digestion is better for multi-machine / least-laptop-
+     privilege; local-side keeps all credentials on the laptop.
+2. **Webhook tunnel (dev-grade).** A tunnel like GitHub's own `smee.io`,
+   `cloudflared`, `ngrok`, or `tailscale funnel` exposes a local port publicly so
+   GitHub's webhook can reach a `shuck broker` running *entirely* on the laptop.
+   Zero hosted infra, all creds local — great for a single developer, but the
+   public URL must be registered as the App's webhook target and the tunnel must
+   stay up. `smee.io` is purpose-built for exactly this (it's what GitHub's own
+   App quickstart uses) and is the lowest-friction starting point.
+3. **No webhooks at all — poll (3.3e).** Skip ingress entirely: a local
+   `shuck --watch` (or a periodic `shuck` scan for security alerts) polls the
+   GitHub API outbound-only. No App, no relay, no tunnel. Loses true push and
+   costs API calls, but for one or a few PRs it's by far the least moving parts —
+   and it's already shipped.
+
+The progression is deliberate: (3) needs nothing new, (2) is a single-developer
+push setup with a tunnel, (1) is the productized multi-user version.
 
 ---
 
@@ -256,15 +308,15 @@ Reviews and security alerts follow the same path with `cli.Inspect`
 
 ## 5. The genuinely hard parts (don't hand-wave these)
 
-1. **Ephemeral sessions vs. durable subscriptions.** Cloud containers are
-   reclaimed on inactivity; a laptop session ends when closed. So "push to the
-   session that subscribed" breaks the moment that session is gone. The broker
-   must hold subscriptions durably, *and* decide what to do when the target
-   session is dead: drop, queue-until-resume, or **start a new session**. The
-   platform's answer is routines/`/schedule` (it can spin up a fresh web
-   session); a shuck backend reusing the web API could do the same, or fall back
-   to posting the digest as a PR comment that the platform's own subscription
-   then surfaces.
+1. **Session lifetime vs. durable subscriptions.** A terminal session ends when
+   the user closes it; the relay/broker outlives it. So "push to the session that
+   subscribed" breaks the moment that session is gone. *This is milder in the
+   terminal than on the web* — the host is long-lived and local, the user is
+   usually present, and a closed session is a deliberate "stop watching" signal,
+   so **drop-on-disconnect** is a defensible default. The broker still holds
+   subscriptions durably so a `shuck resubscribe` on the next launch reattaches;
+   queue-until-resume and PR-comment fallback are options, but "spin up a new
+   session" (the web platform's routine answer) has no terminal analogue.
 2. **Idle-wake is unsolved on the generic channel path** (§3.3a). Until those
    Claude Code bugs close, the dependable wake paths are the platform's
    `subscribe_pr_activity` (b) and Agent-SDK injection (c). Plan for both, treat
@@ -289,49 +341,66 @@ Reviews and security alerts follow the same path with `cli.Inspect`
 
 ---
 
-## 6. Recommendation
+## 6. Recommendation (terminal-first)
 
-A **layered** answer, not one transport:
+**Channels are the receiving mechanism.** `--channels` is a terminal Claude Code
+feature, and shuck already ships the MCP server that would host one — so a
+shuck channel is the natural, in-the-grain way for a terminal session to
+*receive* digested PR events. The web `subscribe_pr_activity` path is out of
+reach (§0), so the channel isn't just *an* option, it's *the* one. Build around
+it, in layers:
 
-- **Tier 0 — ship nothing new, use what exists.** For the single-PR "I just
-  pushed, tell me when CI is done or what broke" loop, keep using
-  `shuck --watch` as a bounded background poll (3.3e). On Claude Code on the web,
-  lean on the platform's `subscribe_pr_activity` and make shuck the **digestion
-  layer the woken session calls** (3.3b) — this is already how `CLAUDE.md`
-  steers agents and needs no backend. *This covers most of the stated need
-  today.*
+- **Tier 0 — ship nothing new (works today).** For the single-PR "I just pushed,
+  tell me when CI is done or what broke" loop, use `shuck --watch` as a bounded
+  background poll (3.3e). Outbound-only, no App, no relay. Covers a large share
+  of the stated need with zero new infra.
 
-- **Tier 1 — build the App + broker for the cases polling can't serve:** push
-  (no poll cost), org-wide / multi-PR, **security-alert** events (no
-  poll-until-done shape), and away-from-keyboard. Reuse shuck's cores server-side
-  for digestion; expose `shuck_subscribe` / `shuck_unsubscribe` MCP tools;
-  deliver primarily over the **MCP channel** (3.3a, the purpose-built primitive
-  shuck is already 90% set up to host), with **Agent-SDK `send_message`** (3.3c)
-  as the reliable-injection path for owned/headless sessions and a **PR-comment
-  fallback** for dead sessions.
+- **Tier 1 — the shuck channel over a self-hosted relay.** The productized
+  push path. A GitHub App + a tiny public `shuck-relay` receives the webhooks
+  and runs shuck's cores to **digest**; the local `shuck mcp` connects
+  **outbound** to the relay (solving NAT, §3.5) and surfaces each digest as a
+  `<shuck-event>` **channel** message (3.3a). Session opts in with
+  `--channels shuck` and the `shuck_subscribe` / `shuck_unsubscribe` tools. This
+  is the only path that serves push, multi-PR, and **security-alert** events
+  (which have no poll-until-done shape).
+  - *Known gap to engineer around:* channel notifications are currently
+    unreliable at **waking an idle** session (open Claude-Code bugs, §3.3a). Two
+    mitigations for the terminal: (i) the **Agent-SDK `send_message`** injection
+    (3.3c) for headless/owned `shuck watch --agent` runs, which is a real turn
+    and can't be dropped; (ii) for a single developer who just wants push without
+    a hosted relay, a **`smee.io`/tunnel + local `shuck broker`** (3.5 option 2)
+    keeps everything on the laptop.
 
 **Direct answers to the questions posed:**
 
-- *Are channels an option?* Yes — they are *the* designed-for-this primitive, and
-  shuck already runs the MCP server that would host one. Caveat: idle-delivery
-  bugs make them best-effort-while-active for now.
-- *Is a background process / monitor still best?* For the single-PR
-  just-pushed loop, yes — `shuck --watch` as a background task is simplest,
-  already shipped, and needs no infra. The App+backend is the *upgrade* for push,
-  multi-PR, security, and unattended operation — not a replacement for the poll.
-- *How do we push "this PR had this error in the logs" back to CC?* The broker
-  runs `cli.Inspect` the instant the `check_run` webhook lands and ships the
-  resulting `jsonout.Document` (failing step + excerpt + class + annotations) as
-  a `<shuck-event>` over the channel to every subscribed session — so the session
-  receives the *answer*, having made zero GitHub API calls itself.
+- *Can channels still be the mechanism for receiving events?* **Yes — that's the
+  recommendation.** Channels are a terminal CC feature, shuck already runs the
+  MCP server to host one, and they're built for exactly this ("react to webhook
+  events while you're away"). The one caveat is the idle-wake reliability gap
+  above; while the session is active, channel delivery already works, and
+  `send_message` / a tunnel cover the idle case.
+- *Is a background process / monitor still best?* For the single-PR just-pushed
+  loop, yes — `shuck --watch` as a background task is simplest, already shipped,
+  outbound-only. The App + relay + channel is the *upgrade* for push, multi-PR,
+  security, and away-from-keyboard — not a replacement for the poll.
+- *How do we push "this PR had this error in the logs" back to CC?* The relay
+  runs `cli.Inspect` the instant the `check_run` webhook lands and streams the
+  resulting `jsonout.Document` (failing step + excerpt + class + annotations)
+  down the laptop's outbound channel connection as a `<shuck-event>` — so the
+  terminal session receives the *answer*, having made zero GitHub API calls
+  itself.
 
 ---
 
 ## 7. If we build Tier 1 — rough package shape
 
-- `cmd/shuck-broker` (or a `shuck broker` subcommand) — the always-on service:
-  HTTP webhook receiver + queue + digest workers + subscription registry +
-  channel fan-out endpoint (SSE/WS).
+- `cmd/shuck-relay` (or a `shuck broker` subcommand) — the always-on public
+  service: HTTP webhook receiver + queue + digest workers + subscription
+  registry + an **outbound-friendly** channel fan-out endpoint (SSE/WS) the
+  laptop connects *up* to (§3.5). For the single-developer tunnel variant the
+  same binary runs locally behind `smee.io`/`cloudflared`.
+- Channel client in `internal/mcp` — the local `shuck mcp` dials the relay
+  outbound and re-emits each digest as a `<shuck-event>` channel notification.
 - `internal/app` — GitHub App auth: JWT signing, installation-token minting +
   caching, HMAC verification. (Distinct from `internal/gh`, which is user-token
   API wrappers; the broker would call those cores with an installation token.)
