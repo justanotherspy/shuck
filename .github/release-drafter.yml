@@ -3,46 +3,58 @@ tag-template: "v$RESOLVED_VERSION"
 
 categories:
   - title: "Features"
-    labels:
-      - "feature"
-      - "enhancement"
+    when:
+      labels:
+        - "feature"
+        - "enhancement"
   - title: "Bug Fixes"
-    labels:
-      - "fix"
-      - "bug"
+    when:
+      labels:
+        - "fix"
+        - "bug"
   - title: "Maintenance"
-    labels:
-      - "chore"
-      - "refactor"
-      - "dependencies"
+    when:
+      labels:
+        - "chore"
+        - "refactor"
+        - "dependencies"
   - title: "Documentation"
-    labels:
-      - "docs"
-      - "documentation"
+    when:
+      labels:
+        - "docs"
+        - "documentation"
+
+  # Version resolution (migrated from the deprecated `version-resolver` block).
+  - type: "version-resolver"
+    semver-increment: "major"
+    when:
+      labels:
+        - "major"
+  - type: "version-resolver"
+    semver-increment: "minor"
+    when:
+      labels:
+        - "minor"
+        - "feature"
+        - "enhancement"
+  - type: "version-resolver"
+    semver-increment: "patch"
+    when:
+      labels:
+        - "patch"
+        - "fix"
+        - "bug"
+        - "chore"
+        - "refactor"
+        - "dependencies"
+        - "docs"
+        - "documentation"
+  # No `when` condition ⇒ the default increment (was `version-resolver.default`).
+  - type: "version-resolver"
+    semver-increment: "patch"
 
 change-template: "- $TITLE @$AUTHOR (#$NUMBER)"
 change-title-escapes: '\<*_&'
-
-version-resolver:
-  major:
-    labels:
-      - "major"
-  minor:
-    labels:
-      - "minor"
-      - "feature"
-      - "enhancement"
-  patch:
-    labels:
-      - "patch"
-      - "fix"
-      - "bug"
-      - "chore"
-      - "refactor"
-      - "dependencies"
-      - "docs"
-      - "documentation"
-  default: patch
 
 template: |
   ## Changes
