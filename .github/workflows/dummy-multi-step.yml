@@ -1,0 +1,37 @@
+# Scenario: a single job with MULTIPLE failed steps (not just one).
+# Steps after the first use `if: always()` so they still run after an earlier
+# failure and fail too. This exercises shuck's buildFailedSteps, which pairs each
+# failed API step with its error-bearing log section by order. The trailing
+# passing step makes sure shuck ignores non-failed steps.
+name: Dummy Multi-Step Fail
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  many-failed-steps:
+    runs-on: ubuntu-latest
+    steps:
+      - name: First failure
+        run: |
+          echo "step 1 running"
+          echo "ERROR: first failure" >&2
+          exit 1
+      - name: Second failure
+        if: always()
+        run: |
+          echo "step 2 running despite the earlier failure"
+          echo "FATAL: second failure" >&2
+          exit 2
+      - name: Third failure
+        if: always()
+        run: |
+          echo "step 3 running despite the earlier failures"
+          echo "panic: third failure" >&2
+          exit 3
+      - name: A passing step among failures
+        if: always()
+        run: echo "this step succeeds to mix things up"

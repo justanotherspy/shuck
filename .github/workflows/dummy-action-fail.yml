@@ -1,0 +1,23 @@
+# Scenario: a MARKETPLACE action that fails.
+# The failing step is `uses: actions/github-script@v7`, so its log group header is
+# `Run actions/github-script@v7` — exercising shuck's KindAction classification
+# (a single-line owner/action@ref command) rather than a shell run.
+name: Dummy Action Fail
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  marketplace-action-fail:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Failing marketplace action (github-script)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.info("about to throw from a marketplace action");
+            core.error("ERROR: marketplace action failure injected for shuck testing");
+            throw new Error("marketplace action boom");

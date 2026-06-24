@@ -1,0 +1,29 @@
+# Scenario: one job with MIXED step kinds failing — a shell run and a marketplace
+# action — plus a passing action up front. Exercises shuck pairing failed steps of
+# different Kind (KindBash then KindAction) within the same job.
+name: Dummy Mixed Fail
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  mixed-kinds:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (passes)
+        uses: actions/checkout@v4
+      - name: Failing shell step
+        run: |
+          echo "shell step about to fail"
+          echo "ERROR: shell failure in mixed job" >&2
+          exit 6
+      - name: Failing marketplace action
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.error("ERROR: action failure in mixed job");
+            throw new Error("mixed job action boom");
