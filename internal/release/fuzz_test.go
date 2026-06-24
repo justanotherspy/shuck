@@ -11,9 +11,20 @@ import (
 	"testing"
 )
 
-// fuzzMaxArchive caps fuzzed archive inputs so a crafted gzip cannot expand
-// into an allocation large enough to disturb the fuzzing process itself.
-const fuzzMaxArchive = 32 << 10
+// fuzzMaxArchive caps fuzzed archive inputs to keep the zip/tar parsers' own
+// work bounded. It does NOT bound the decompressed output — DEFLATE expands up
+// to ~1032:1, so a 32 KiB input can inflate to ~33 MiB. fuzzMaxBinary is what
+// actually keeps each execution cheap, capping the extracted bytes so neither a
+// successful read nor an over-limit rejection touches more than a few KiB.
+// Without it a deflate bomb decompresses tens of MiB per execution, and the
+// resulting allocation churn stalls the fuzzing workers until the run's deadline
+// trips ("context deadline exceeded"). It is deliberately far below the
+// production maxBinarySize: the goal here is to exercise extraction's cap logic
+// on adversarial input, not to validate the production ceiling's value.
+const (
+	fuzzMaxArchive = 32 << 10
+	fuzzMaxBinary  = 64 << 10
+)
 
 // FuzzExtractTarGz exercises the tar.gz binary extractor with arbitrary bytes.
 // It must never panic, and a successful extraction must come from an archive
@@ -29,7 +40,7 @@ func FuzzExtractTarGz(f *testing.F) {
 		if len(data) > fuzzMaxArchive {
 			return
 		}
-		bin, err := extractTarGz(data, binName)
+		bin, err := extractTarGz(data, binName, fuzzMaxBinary)
 		if err == nil && bin == nil {
 			t.Fatalf("extractTarGz returned no error and no binary for %q", binName)
 		}
@@ -48,7 +59,7 @@ func FuzzExtractZip(f *testing.F) {
 		if len(data) > fuzzMaxArchive {
 			return
 		}
-		bin, err := extractZip(data, binName)
+		bin, err := extractZip(data, binName, fuzzMaxBinary)
 		if err == nil && bin == nil {
 			t.Fatalf("extractZip returned no error and no binary for %q", binName)
 		}

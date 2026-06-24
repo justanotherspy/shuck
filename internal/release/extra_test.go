@@ -44,7 +44,7 @@ func TestPathBase(t *testing.T) {
 func TestExtractZipMissingBinary(t *testing.T) {
 	// A zip with a differently named entry: the binary is not found.
 	archive := makeZip(t, "notshuck", []byte("x"))
-	if _, err := extractZip(archive, "shuck.exe"); err == nil ||
+	if _, err := extractZip(archive, "shuck.exe", maxBinarySize); err == nil ||
 		!strings.Contains(err.Error(), "not found") {
 		t.Errorf("expected not-found error, got %v", err)
 	}
@@ -53,7 +53,7 @@ func TestExtractZipMissingBinary(t *testing.T) {
 func TestExtractZipNestedPath(t *testing.T) {
 	// The binary lives under a directory prefix; pathBase must still match it.
 	archive := makeZip(t, "shuck_1.0.0_windows_amd64/shuck.exe", []byte("MZ payload"))
-	got, err := extractZip(archive, "shuck.exe")
+	got, err := extractZip(archive, "shuck.exe", maxBinarySize)
 	if err != nil {
 		t.Fatalf("extractZip: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestExtractZipSkipsDirEntry(t *testing.T) {
 	if err := zw.Close(); err != nil {
 		t.Fatal(err)
 	}
-	got, err := extractZip(buf.Bytes(), "shuck.exe")
+	got, err := extractZip(buf.Bytes(), "shuck.exe", maxBinarySize)
 	if err != nil {
 		t.Fatalf("extractZip: %v", err)
 	}
@@ -90,14 +90,66 @@ func TestExtractZipSkipsDirEntry(t *testing.T) {
 }
 
 func TestExtractZipCorruptData(t *testing.T) {
-	if _, err := extractZip([]byte("not a zip at all"), "shuck.exe"); err == nil {
+	if _, err := extractZip([]byte("not a zip at all"), "shuck.exe", maxBinarySize); err == nil {
 		t.Error("expected error opening corrupt zip")
 	}
 }
 
 func TestExtractTarGzCorruptData(t *testing.T) {
-	if _, err := extractTarGz([]byte("not gzip"), "shuck"); err == nil {
+	if _, err := extractTarGz([]byte("not gzip"), "shuck", maxBinarySize); err == nil {
 		t.Error("expected error opening corrupt gzip")
+	}
+}
+
+// TestExtractRejectsDecompressionBomb is the regression for the FuzzExtractZip
+// "context deadline exceeded" finding: a tiny archive whose entry inflates past
+// the cap must be rejected, never read into an unbounded buffer. The same cap
+// guards the tar.gz path. Each bomb's compressed form is a few KiB, but it
+// decompresses to four times the limit.
+func TestExtractRejectsDecompressionBomb(t *testing.T) {
+	const limit = 1 << 20
+	payload := make([]byte, limit*4) // zeros compress tiny but inflate past the cap
+
+	zipBomb := makeZip(t, "shuck.exe", payload)
+	if int64(len(zipBomb)) > limit {
+		t.Fatalf("zip bomb is %d bytes compressed; test assumes it stays under the limit", len(zipBomb))
+	}
+	if _, err := extractZip(zipBomb, "shuck.exe", limit); err == nil ||
+		!strings.Contains(err.Error(), "limit") {
+		t.Errorf("extractZip: expected a size-limit error, got %v", err)
+	}
+
+	tgzBomb := makeTarGz(t, "shuck", payload)
+	if int64(len(tgzBomb)) > limit {
+		t.Fatalf("tar.gz bomb is %d bytes compressed; test assumes it stays under the limit", len(tgzBomb))
+	}
+	if _, err := extractTarGz(tgzBomb, "shuck", limit); err == nil ||
+		!strings.Contains(err.Error(), "limit") {
+		t.Errorf("extractTarGz: expected a size-limit error, got %v", err)
+	}
+}
+
+// TestExtractAllowsBinaryAtCap proves the cap is an inclusive ceiling: a binary
+// of exactly maxBytes is still extracted, so the bomb guard never rejects a
+// legitimately large release binary by one byte.
+func TestExtractAllowsBinaryAtCap(t *testing.T) {
+	const limit = 8 << 10
+	payload := bytes.Repeat([]byte("MZ"), limit/2) // exactly limit bytes
+
+	got, err := extractZip(makeZip(t, "shuck.exe", payload), "shuck.exe", limit)
+	if err != nil {
+		t.Fatalf("extractZip at cap: %v", err)
+	}
+	if len(got) != limit {
+		t.Errorf("extractZip returned %d bytes, want %d", len(got), limit)
+	}
+
+	got, err = extractTarGz(makeTarGz(t, "shuck", payload), "shuck", limit)
+	if err != nil {
+		t.Fatalf("extractTarGz at cap: %v", err)
+	}
+	if len(got) != limit {
+		t.Errorf("extractTarGz returned %d bytes, want %d", len(got), limit)
 	}
 }
 

@@ -104,7 +104,7 @@ func (c *Client) Download(ctx context.Context, tag, goos, goarch string) ([]byte
 	if err := verifyChecksum(archive, archiveBytes, sums); err != nil {
 		return nil, err
 	}
-	return extractBinary(archive, archiveBytes, binName)
+	return extractBinary(archive, archiveBytes, binName, maxBinarySize)
 }
 
 func (c *Client) get(ctx context.Context, url string) (io.ReadCloser, error) {
@@ -152,15 +152,26 @@ func verifyChecksum(archive string, data, checksums []byte) error {
 	return fmt.Errorf("%s not listed in checksums.txt", archive)
 }
 
-// extractBinary pulls the named binary out of a .tar.gz or .zip archive.
-func extractBinary(archive string, data []byte, binName string) ([]byte, error) {
+// maxBinarySize bounds how many bytes extraction will read out of a release
+// archive. Archive members are compressed, so a tiny deflate stream can inflate
+// enormously (DEFLATE expands up to ~1032:1); without a ceiling a crafted or
+// corrupt archive could drive extraction into an unbounded allocation. The real
+// shuck binary is ~16 MiB, so 256 MiB is generous headroom for growth while
+// still firmly capping a decompression bomb. Exceeding the cap is treated as a
+// bad archive (see readCapped), never a silent truncation — a truncated binary
+// would be unrunnable.
+const maxBinarySize = 256 << 20
+
+// extractBinary pulls the named binary out of a .tar.gz or .zip archive, reading
+// at most maxBytes of the decompressed entry.
+func extractBinary(archive string, data []byte, binName string, maxBytes int64) ([]byte, error) {
 	if strings.HasSuffix(archive, ".zip") {
-		return extractZip(data, binName)
+		return extractZip(data, binName, maxBytes)
 	}
-	return extractTarGz(data, binName)
+	return extractTarGz(data, binName, maxBytes)
 }
 
-func extractTarGz(data []byte, binName string) ([]byte, error) {
+func extractTarGz(data []byte, binName string, maxBytes int64) ([]byte, error) {
 	gz, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("open gzip: %w", err)
@@ -180,13 +191,13 @@ func extractTarGz(data []byte, binName string) ([]byte, error) {
 		// like the binary must not be followed: its tar body is empty, which would
 		// otherwise overwrite the running binary with a zero-byte file.
 		if pathBase(hdr.Name) == binName && hdr.FileInfo().Mode().IsRegular() {
-			return io.ReadAll(tr)
+			return readCapped(tr, maxBytes)
 		}
 	}
 	return nil, fmt.Errorf("%s not found in archive", binName)
 }
 
-func extractZip(data []byte, binName string) ([]byte, error) {
+func extractZip(data []byte, binName string, maxBytes int64) ([]byte, error) {
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return nil, fmt.Errorf("open zip: %w", err)
@@ -201,11 +212,27 @@ func extractZip(data []byte, binName string) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		b, err := io.ReadAll(rc)
+		b, err := readCapped(rc, maxBytes)
 		_ = rc.Close()
 		return b, err
 	}
 	return nil, fmt.Errorf("%s not found in archive", binName)
+}
+
+// readCapped reads all of r but never more than maxBytes. It reads one byte past
+// the limit so it can tell "exactly maxBytes" from "more than maxBytes", and
+// returns an error when the stream exceeds the limit. This bounds the allocation
+// (to maxBytes+1) so a decompression bomb cannot exhaust memory, and fails
+// closed rather than returning a truncated, unrunnable binary.
+func readCapped(r io.Reader, maxBytes int64) ([]byte, error) {
+	b, err := io.ReadAll(io.LimitReader(r, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > maxBytes {
+		return nil, fmt.Errorf("decompressed binary exceeds %d-byte limit", maxBytes)
+	}
+	return b, nil
 }
 
 // pathBase returns the final element of an archive entry path. Archive members
