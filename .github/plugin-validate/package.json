@@ -4,6 +4,6 @@
   "private": true,
   "description": "Pinned install of the Claude Code CLI for the plugin-validate CI job (see .github/workflows/ci.yml)",
   "devDependencies": {
-    "@anthropic-ai/claude-code": "2.1.195"
+    "@anthropic-ai/claude-code": "2.1.196"
   }
 }
