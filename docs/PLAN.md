@@ -204,7 +204,8 @@ re-parsing the excerpt. Both are additive to the `--json` schema (no
      and excerpt with deliberate precedence — operational causes first
      (timeout/oom/infra ⇒ likely a re-run), then the command's tool, then
      excerpt keywords. Errs toward unclassified rather than guessing wrong.
-   - Computed in `cli.buildFailedSteps` (the single step↔section chokepoint), so
+   - Computed in `distil.CIFailure` (the single step↔section chokepoint,
+     extracted from `cli.buildFailedSteps` for JUS-85), so
      both the PR and run/job paths get it. JSON adds `failed_steps[].class`
      (omitted when unclassified); text appends a `[class]` tag to the step head.
 

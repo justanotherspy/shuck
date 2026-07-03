@@ -1,0 +1,10 @@
+{
+  "name": "typecheck",
+  "conclusion": "failure",
+  "steps": [
+    {"number": 1, "name": "Checkout", "status": "completed", "conclusion": "success"},
+    {"number": 2, "name": "Install dependencies", "status": "completed", "conclusion": "success"},
+    {"number": 3, "name": "Type check", "status": "completed", "conclusion": "failure"},
+    {"number": 4, "name": "Unit tests", "status": "completed", "conclusion": "skipped"}
+  ]
+}

@@ -101,6 +101,7 @@ render → update cache.
 | `internal/gh` | go-github (v88) wrappers: PR head, Actions runs/jobs/logs, checks, security alerts, compliance reads (repo settings, branch protection incl. rulesets, Actions policy), the recursive Git Trees file listing (`RepoTree`, for dependabot ecosystem detection), GHCR Packages API. Plus two hand-rolled clients: GraphQL for reviews (`reviews.go`) and anonymous OCI registry-v2 (`registry.go`). |
 | `internal/cache` | On-disk cache under `~/.cache/shuck/…`: per-PR reports + whole raw job logs, action tag lists, security reports, image listings. `Purge(ttl, keep)` sweeps stale entries on every run. |
 | `internal/logs` | Parse a job log into `##[group]`-delimited sections; extract the high-signal error excerpt. |
+| `internal/distil` | The shared distillation core (`CIFailure`): raw job log + Actions-API step metadata → per-step failure detail (`FailedSteps`) + an agent-ready `Summary`. Pure — layers on `logs` / `classify` / `model`; backs `cli`/`mcp` today, shuck v2 workers next (JUS-84). |
 | `internal/render` | Format a `model.Report` to text. |
 | `internal/model` | Shared domain types (imports nothing internal). |
 
@@ -108,11 +109,16 @@ render → update cache.
 
 - **Step commands come from the logs**, not workflow YAML
   (`logs.Section.Command` / `Kind`).
-- **Step↔section matching** (`cli.buildFailedSteps`) is the trickiest part:
-  failed API steps are paired with `##[error]`-bearing log sections by order,
-  with a whole-log fallback. Cancelled jobs are drilled the same way,
-  best-effort, and never flip the exit code. Cover changes here with fixtures
-  in `internal/logs/testdata`.
+- **Step↔section matching** (`distil.CIFailure`; `cli.buildFailedSteps` is a
+  thin wrapper) is the trickiest part: failed API steps are paired with
+  `##[error]`-bearing log sections by order, with a whole-log fallback.
+  Cancelled jobs are drilled the same way, best-effort, and never flip the
+  exit code. Cover changes here with corpus cases in
+  `internal/distil/testdata` (each case: `log.txt` + `job.json` +
+  `result.golden.json`, also rendered to CLI goldens in
+  `internal/cli/testdata/golden`); regenerate goldens with
+  `go test ./internal/distil ./internal/cli -run Golden -update` — only when
+  the output is *meant* to change.
 - **Exit codes are operational, gating is opt-in**: report commands exit `0`
   whenever a report is produced (even one showing failures) and `2` on an
   operational error; `--exit-code` makes failures exit `1` for CI gating.
@@ -176,7 +182,8 @@ render → update cache.
   (`COVER_EXCLUDE`) — the numbers reflect `internal/` only. CI renders the
   report on PRs and gates at 80% (`make cover-check`).
 - Every parser of untrusted input is fuzzed: `fuzz_test.go` in `logs`,
-  `semver`, `action`, `image`, `target`, `compliance`, and `release`. Targets
+  `distil`, `semver`, `action`, `image`, `target`, `compliance`, and
+  `release`. Targets
   assert semantic invariants (round-trips, selection contracts, fail-closed
   verification), not just panic-safety. Seed corpora run under `make test`;
   the nightly `fuzz.yml` runs `make fuzz-all`. Keep fuzz-target names unique

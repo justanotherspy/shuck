@@ -1,0 +1,24 @@
+octo/hello PR #42 — Add feature   (commit 0123456)
+
+Summary: 1 cancelled
+
+Workflow: CI (.github/workflows/ci.yml)
+Job: race-tests  [cancelled]
+Steps:
+  1. Checkout (success)
+  2. Run race tests (cancelled)
+  3. Upload coverage (cancelled)
+  4. Notify (cancelled)
+
+  ▸ Step 2 — Run race tests (cancelled) [test]
+    Step command:
+      * bash run:
+        ```
+        go test -race ./...
+        ```
+    logs before cancellation:
+      ```
+      ok   example.com/hello/pkg/a  4.512s
+      ok   example.com/hello/pkg/b  12.303s
+      ##[error]The operation was canceled.
+      ```

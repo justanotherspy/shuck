@@ -1,0 +1,7 @@
+{
+  "name": "e2e",
+  "conclusion": "failure",
+  "steps": [
+    {"number": 1, "name": "Run e2e suite", "status": "completed", "conclusion": "failure"}
+  ]
+}

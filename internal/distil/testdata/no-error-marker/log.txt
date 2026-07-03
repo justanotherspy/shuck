@@ -1,0 +1,7 @@
+2024-08-02T09:30:00.0000001Z ##[group]Run make e2e
+2024-08-02T09:30:00.0000002Z make e2e
+2024-08-02T09:30:00.0000003Z shell: /usr/bin/bash -e {0}
+2024-08-02T09:30:00.0000004Z ##[endgroup]
+2024-08-02T09:30:01.0000000Z spinning up fixtures
+2024-08-02T09:30:05.0000000Z fixtures ready, running suite
+2024-08-02T09:30:42.0000000Z suite aborted: runner lost contact with the docker daemon

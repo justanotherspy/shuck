@@ -1,0 +1,150 @@
+2024-09-15T11:20:30.0000000Z ##[group]Run actions/checkout@v4
+2024-09-15T11:20:30.1000000Z with:
+2024-09-15T11:20:30.2000000Z   repository: octo/rustlib
+2024-09-15T11:20:30.3000000Z ##[endgroup]
+2024-09-15T11:20:30.4000000Z Syncing repository: octo/rustlib
+2024-09-15T11:20:30.5000000Z ##[group]Run cargo build --workspace --locked
+2024-09-15T11:20:30.6000000Z cargo build --workspace --locked
+2024-09-15T11:20:30.7000000Z shell: /usr/bin/bash -e {0}
+2024-09-15T11:20:30.8000000Z ##[endgroup]
+2024-09-15T11:20:30.9000000Z    Compiling rustlib v0.4.2 (/home/runner/work/rustlib/rustlib)
+2024-09-15T11:20:31.0000000Z     Finished `dev` profile [unoptimized + debuginfo] target(s) in 22.41s
+2024-09-15T11:20:31.1000000Z ##[group]Run cargo test --workspace --locked
+2024-09-15T11:20:31.2000000Z cargo test --workspace --locked
+2024-09-15T11:20:31.3000000Z shell: /usr/bin/bash -e {0}
+2024-09-15T11:20:31.4000000Z ##[endgroup]
+2024-09-15T11:20:31.5000000Z    Compiling rustlib v0.4.2 (/home/runner/work/rustlib/rustlib)
+2024-09-15T11:20:31.6000000Z     Finished `test` profile [unoptimized + debuginfo] target(s) in 8.02s
+2024-09-15T11:20:31.7000000Z      Running unittests src/lib.rs (target/debug/deps/rustlib-9f3a1c2b4d5e6f70)
+2024-09-15T11:20:31.8000000Z 
+2024-09-15T11:20:31.9000000Z running 108 tests
+2024-09-15T11:20:32.0000000Z test tests::case_001 ... ok
+2024-09-15T11:20:32.1000000Z test tests::case_002 ... ok
+2024-09-15T11:20:32.2000000Z test tests::case_003 ... ok
+2024-09-15T11:20:32.3000000Z test tests::case_004 ... ok
+2024-09-15T11:20:32.4000000Z test tests::case_005 ... ok
+2024-09-15T11:20:32.5000000Z test tests::case_006 ... ok
+2024-09-15T11:20:32.6000000Z test tests::case_007 ... ok
+2024-09-15T11:20:32.7000000Z test tests::case_008 ... ok
+2024-09-15T11:20:32.8000000Z test tests::case_009 ... ok
+2024-09-15T11:20:32.9000000Z test tests::case_010 ... ok
+2024-09-15T11:20:33.0000000Z test tests::case_011 ... ok
+2024-09-15T11:20:33.1000000Z test tests::case_012 ... ok
+2024-09-15T11:20:33.2000000Z test tests::case_013 ... ok
+2024-09-15T11:20:33.3000000Z test tests::case_014 ... ok
+2024-09-15T11:20:33.4000000Z test tests::case_015 ... ok
+2024-09-15T11:20:33.5000000Z test tests::case_016 ... ok
+2024-09-15T11:20:33.6000000Z test tests::case_017 ... ok
+2024-09-15T11:20:33.7000000Z test tests::case_018 ... ok
+2024-09-15T11:20:33.8000000Z test tests::case_019 ... ok
+2024-09-15T11:20:33.9000000Z test tests::case_020 ... ok
+2024-09-15T11:20:34.0000000Z test tests::case_021 ... ok
+2024-09-15T11:20:34.1000000Z test tests::case_022 ... ok
+2024-09-15T11:20:34.2000000Z test tests::case_023 ... ok
+2024-09-15T11:20:34.3000000Z test tests::case_024 ... ok
+2024-09-15T11:20:34.4000000Z test tests::case_025 ... ok
+2024-09-15T11:20:34.5000000Z test tests::case_026 ... ok
+2024-09-15T11:20:34.6000000Z test tests::case_027 ... ok
+2024-09-15T11:20:34.7000000Z test tests::case_028 ... ok
+2024-09-15T11:20:34.8000000Z test tests::case_029 ... ok
+2024-09-15T11:20:34.9000000Z test tests::case_030 ... ok
+2024-09-15T11:20:35.0000000Z test tests::case_031 ... ok
+2024-09-15T11:20:35.1000000Z test tests::case_032 ... ok
+2024-09-15T11:20:35.2000000Z test tests::case_033 ... ok
+2024-09-15T11:20:35.3000000Z test tests::case_034 ... ok
+2024-09-15T11:20:35.4000000Z test tests::case_035 ... ok
+2024-09-15T11:20:35.5000000Z test tests::case_036 ... ok
+2024-09-15T11:20:35.6000000Z test tests::case_037 ... ok
+2024-09-15T11:20:35.7000000Z test tests::case_038 ... ok
+2024-09-15T11:20:35.8000000Z test tests::case_039 ... ok
+2024-09-15T11:20:35.9000000Z test tests::case_040 ... ok
+2024-09-15T11:20:36.0000000Z test tests::case_041 ... ok
+2024-09-15T11:20:36.1000000Z test tests::case_042 ... ok
+2024-09-15T11:20:36.2000000Z test tests::case_043 ... ok
+2024-09-15T11:20:36.3000000Z test tests::case_044 ... ok
+2024-09-15T11:20:36.4000000Z test tests::case_045 ... ok
+2024-09-15T11:20:36.5000000Z test tests::case_046 ... ok
+2024-09-15T11:20:36.6000000Z test tests::case_047 ... ok
+2024-09-15T11:20:36.7000000Z test tests::case_048 ... ok
+2024-09-15T11:20:36.8000000Z test tests::case_049 ... ok
+2024-09-15T11:20:36.9000000Z test tests::case_050 ... ok
+2024-09-15T11:20:37.0000000Z test tests::case_051 ... ok
+2024-09-15T11:20:37.1000000Z test tests::case_052 ... ok
+2024-09-15T11:20:37.2000000Z test tests::case_053 ... ok
+2024-09-15T11:20:37.3000000Z test tests::case_054 ... ok
+2024-09-15T11:20:37.4000000Z test tests::case_055 ... ok
+2024-09-15T11:20:37.5000000Z test tests::case_056 ... ok
+2024-09-15T11:20:37.6000000Z test tests::case_057 ... ok
+2024-09-15T11:20:37.7000000Z test tests::case_058 ... ok
+2024-09-15T11:20:37.8000000Z test tests::case_059 ... ok
+2024-09-15T11:20:37.9000000Z test tests::case_060 ... ok
+2024-09-15T11:20:38.0000000Z test tests::case_061 ... ok
+2024-09-15T11:20:38.1000000Z test tests::case_062 ... ok
+2024-09-15T11:20:38.2000000Z test tests::case_063 ... ok
+2024-09-15T11:20:38.3000000Z test tests::case_064 ... ok
+2024-09-15T11:20:38.4000000Z test tests::case_065 ... ok
+2024-09-15T11:20:38.5000000Z test tests::case_066 ... ok
+2024-09-15T11:20:38.6000000Z test tests::case_067 ... ok
+2024-09-15T11:20:38.7000000Z test tests::case_068 ... ok
+2024-09-15T11:20:38.8000000Z test tests::case_069 ... ok
+2024-09-15T11:20:38.9000000Z test tests::case_070 ... ok
+2024-09-15T11:20:39.0000000Z test tests::case_071 ... ok
+2024-09-15T11:20:39.1000000Z test tests::case_072 ... ok
+2024-09-15T11:20:39.2000000Z test tests::case_073 ... ok
+2024-09-15T11:20:39.3000000Z test tests::case_074 ... ok
+2024-09-15T11:20:39.4000000Z test tests::case_075 ... ok
+2024-09-15T11:20:39.5000000Z test tests::case_076 ... ok
+2024-09-15T11:20:39.6000000Z test tests::case_077 ... ok
+2024-09-15T11:20:39.7000000Z test tests::case_078 ... ok
+2024-09-15T11:20:39.8000000Z test tests::case_079 ... ok
+2024-09-15T11:20:39.9000000Z test tests::case_080 ... ok
+2024-09-15T11:20:40.0000000Z test tests::case_081 ... ok
+2024-09-15T11:20:40.1000000Z test tests::case_082 ... ok
+2024-09-15T11:20:40.2000000Z test tests::case_083 ... ok
+2024-09-15T11:20:40.3000000Z test tests::case_084 ... ok
+2024-09-15T11:20:40.4000000Z test tests::case_085 ... ok
+2024-09-15T11:20:40.5000000Z test tests::case_086 ... ok
+2024-09-15T11:20:40.6000000Z test tests::case_087 ... ok
+2024-09-15T11:20:40.7000000Z test tests::case_088 ... ok
+2024-09-15T11:20:40.8000000Z test tests::case_089 ... ok
+2024-09-15T11:20:40.9000000Z test tests::case_090 ... ok
+2024-09-15T11:20:41.0000000Z test tests::case_091 ... ok
+2024-09-15T11:20:41.1000000Z test tests::case_092 ... ok
+2024-09-15T11:20:41.2000000Z test tests::case_093 ... ok
+2024-09-15T11:20:41.3000000Z test tests::case_094 ... ok
+2024-09-15T11:20:41.4000000Z test tests::case_095 ... ok
+2024-09-15T11:20:41.5000000Z test tests::case_096 ... ok
+2024-09-15T11:20:41.6000000Z test tests::case_097 ... ok
+2024-09-15T11:20:41.7000000Z test tests::case_098 ... ok
+2024-09-15T11:20:41.8000000Z test tests::case_099 ... ok
+2024-09-15T11:20:41.9000000Z test tests::case_100 ... ok
+2024-09-15T11:20:42.0000000Z test tests::case_101 ... ok
+2024-09-15T11:20:42.1000000Z test tests::case_102 ... ok
+2024-09-15T11:20:42.2000000Z test tests::case_103 ... ok
+2024-09-15T11:20:42.3000000Z test tests::case_104 ... ok
+2024-09-15T11:20:42.4000000Z test tests::parse_empty ... ok
+2024-09-15T11:20:42.5000000Z test tests::parse_nested ... FAILED
+2024-09-15T11:20:42.6000000Z test tests::render_wide ... ok
+2024-09-15T11:20:42.7000000Z test tests::round_trip ... FAILED
+2024-09-15T11:20:42.8000000Z 
+2024-09-15T11:20:42.9000000Z failures:
+2024-09-15T11:20:43.0000000Z 
+2024-09-15T11:20:43.1000000Z ---- tests::parse_nested stdout ----
+2024-09-15T11:20:43.2000000Z thread 'tests::parse_nested' panicked at src/parser.rs:214:9:
+2024-09-15T11:20:43.3000000Z assertion `left == right` failed
+2024-09-15T11:20:43.4000000Z   left: Node::List([Node::Atom("a")])
+2024-09-15T11:20:43.5000000Z  right: Node::List([])
+2024-09-15T11:20:43.6000000Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+2024-09-15T11:20:43.7000000Z 
+2024-09-15T11:20:43.8000000Z ---- tests::round_trip stdout ----
+2024-09-15T11:20:43.9000000Z thread 'tests::round_trip' panicked at src/parser.rs:301:5:
+2024-09-15T11:20:44.0000000Z round-trip mismatch: expected `(a (b))`, got `(a)`
+2024-09-15T11:20:44.1000000Z 
+2024-09-15T11:20:44.2000000Z failures:
+2024-09-15T11:20:44.3000000Z     tests::parse_nested
+2024-09-15T11:20:44.4000000Z     tests::round_trip
+2024-09-15T11:20:44.5000000Z 
+2024-09-15T11:20:44.6000000Z test result: FAILED. 106 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.34s
+2024-09-15T11:20:44.7000000Z 
+2024-09-15T11:20:44.8000000Z error: test failed, to rerun pass `--lib`
+2024-09-15T11:20:44.9000000Z ##[error]Process completed with exit code 101.

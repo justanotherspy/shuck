@@ -1,0 +1,12 @@
+{
+  "failed_steps": [
+    {
+      "number": 1,
+      "name": "Run e2e suite",
+      "command": "",
+      "kind": "",
+      "excerpt": "spinning up fixtures\nfixtures ready, running suite\nsuite aborted: runner lost contact with the docker daemon"
+    }
+  ],
+  "summary": "e2e: failure — 1 failed step(s)\n- Run e2e suite (step 1): spinning up fixtures"
+}

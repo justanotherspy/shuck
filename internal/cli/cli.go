@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/justanotherspy/shuck/internal/cache"
-	"github.com/justanotherspy/shuck/internal/classify"
+	"github.com/justanotherspy/shuck/internal/distil"
 	"github.com/justanotherspy/shuck/internal/gh"
 	"github.com/justanotherspy/shuck/internal/jsonout"
 	"github.com/justanotherspy/shuck/internal/logs"
@@ -819,62 +819,23 @@ func (a *app) drill(ctx context.Context, owner, repo string, job *model.JobResul
 	return raw
 }
 
-// buildFailedSteps pairs the API's failed (or interrupted) steps with the log's
-// error-bearing sections (by order) to recover each step's command and error
-// excerpt. For a cancelled job the interrupted step carries an
-// "##[error]The operation was canceled." marker, so the same pairing applies.
+// buildFailedSteps is a thin wrapper over distil.CIFailure — the shared
+// step↔section pairing and excerpt-distillation core — feeding it the app's
+// extraction flags.
 func (a *app) buildFailedSteps(job model.JobResult, raw string) []model.FailedStep {
-	sections := logs.Parse(raw)
-	errSecs := logs.ErrorSections(sections)
-
-	var failedSteps []model.StepOverview
-	for _, s := range job.Steps {
-		if model.IsDrillableConclusion(s.Conclusion) {
-			failedSteps = append(failedSteps, s)
-		}
+	res, err := distil.CIFailure(distil.Input{
+		JobName:       job.Name,
+		JobConclusion: job.Conclusion,
+		Steps:         job.Steps,
+		RawLog:        raw,
+		Options:       distil.Options{Extract: a.opts, MaxCommandLines: a.maxCommandLines},
+	})
+	if err != nil {
+		// Unreachable: inspectWith pre-validates the extraction knobs via
+		// buildExtractOptions, and distil rejects nothing else.
+		return []model.FailedStep{{Name: "(distil error)", Excerpt: err.Error()}}
 	}
-
-	if len(errSecs) == 0 {
-		var all []string
-		for _, sec := range sections {
-			all = append(all, sec.Body...)
-		}
-		fs := model.FailedStep{Name: "(job log)", Excerpt: logs.Extract(all, a.opts)}
-		if len(failedSteps) > 0 {
-			fs.Name = failedSteps[0].Name
-			fs.Number = failedSteps[0].Number
-		}
-		fs.Class = classify.Classify(fs, job.Conclusion)
-		return []model.FailedStep{fs}
-	}
-
-	n := max(len(errSecs), len(failedSteps))
-	if model.IsCancelledConclusion(job.Conclusion) {
-		// A cancelled job often marks every not-yet-run step "cancelled", but
-		// only the step that was actually interrupted has an error section.
-		// Cap at the sections found so the queued steps don't each emit a
-		// noisy "(no matching error log section found)" entry.
-		n = len(errSecs)
-	}
-	out := make([]model.FailedStep, 0, n)
-	for i := range n {
-		fs := model.FailedStep{Name: "(unnamed step)"}
-		if i < len(failedSteps) {
-			fs.Number = failedSteps[i].Number
-			fs.Name = failedSteps[i].Name
-		}
-		if i < len(errSecs) {
-			sec := errSecs[i]
-			fs.Command = logs.ClampCommand(sec.FullCommand(), a.maxCommandLines)
-			fs.Kind = sec.Kind()
-			fs.Excerpt = logs.Extract(sec.Body, a.opts)
-			fs.Class = classify.Classify(fs, job.Conclusion)
-		} else {
-			fs.Excerpt = "(no matching error log section found)"
-		}
-		out = append(out, fs)
-	}
-	return out
+	return res.FailedSteps
 }
 
 func buildExtractOptions(o options) (logs.Options, error) {

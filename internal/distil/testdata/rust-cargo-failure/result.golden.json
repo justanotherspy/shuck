@@ -1,0 +1,13 @@
+{
+  "failed_steps": [
+    {
+      "number": 3,
+      "name": "Test",
+      "command": "cargo test --workspace --locked",
+      "kind": "bash",
+      "class": "test",
+      "excerpt": "… (100 lines omitted) …\ntest tests::case_096 ... ok\ntest tests::case_097 ... ok\ntest tests::case_098 ... ok\ntest tests::case_099 ... ok\ntest tests::case_100 ... ok\ntest tests::case_101 ... ok\ntest tests::case_102 ... ok\ntest tests::case_103 ... ok\ntest tests::case_104 ... ok\ntest tests::parse_empty ... ok\ntest tests::parse_nested ... FAILED\ntest tests::render_wide ... ok\ntest tests::round_trip ... FAILED\n\nfailures:\n\n---- tests::parse_nested stdout ----\nthread 'tests::parse_nested' panicked at src/parser.rs:214:9:\nassertion `left == right` failed\n  left: Node::List([Node::Atom(\"a\")])\n right: Node::List([])\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n---- tests::round_trip stdout ----\nthread 'tests::round_trip' panicked at src/parser.rs:301:5:\nround-trip mismatch: expected `(a (b))`, got `(a)`\n\nfailures:\n    tests::parse_nested\n    tests::round_trip\n\ntest result: FAILED. 106 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.34s\n\nerror: test failed, to rerun pass `--lib`\n##[error]Process completed with exit code 101."
+    }
+  ],
+  "summary": "rust-ci: failure — 1 failed step(s)\n- Test (step 3) [test]: test tests::parse_nested ... FAILED"
+}
