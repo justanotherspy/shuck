@@ -44,6 +44,9 @@ linters:
       # and the model's exported field names; renaming it would break consumers.
       ignore-rules:
         - cancelled
+        # "distil" is the parser-core package's deliberate name (internal/distil,
+        # named in the shuck v2 design, JUS-85); not a typo of "distill".
+        - distil
     nolintlint:
       require-explanation: true
       require-specific: true

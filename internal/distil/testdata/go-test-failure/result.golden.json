@@ -1,0 +1,13 @@
+{
+  "failed_steps": [
+    {
+      "number": 2,
+      "name": "Run tests",
+      "command": "go test ./...",
+      "kind": "bash",
+      "class": "test",
+      "excerpt": "ok   example.com/hello/pkg/a  0.012s\nok   example.com/hello/pkg/b  0.020s\n--- FAIL: TestThing (0.00s)\n    thing_test.go:42: expected 1 got 2\nFAIL\nFAIL\texample.com/hello/pkg/c\t0.031s\n##[error]Process completed with exit code 1."
+    }
+  ],
+  "summary": "build-and-test: failure — 1 failed step(s)\n- Run tests (step 2) [test]: --- FAIL: TestThing (0.00s)"
+}

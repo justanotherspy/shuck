@@ -1,0 +1,13 @@
+{
+  "failed_steps": [
+    {
+      "number": 2,
+      "name": "Run race tests",
+      "command": "go test -race ./...",
+      "kind": "bash",
+      "class": "test",
+      "excerpt": "ok   example.com/hello/pkg/a  4.512s\nok   example.com/hello/pkg/b  12.303s\n##[error]The operation was canceled."
+    }
+  ],
+  "summary": "race-tests: cancelled — 1 failed step(s)\n- Run race tests (step 2) [test]: ##[error]The operation was canceled."
+}
