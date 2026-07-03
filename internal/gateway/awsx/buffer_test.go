@@ -164,6 +164,28 @@ func TestBufferAfterQueriesEventRange(t *testing.T) {
 	}
 }
 
+func TestBufferAfterRejectsMalformedRows(t *testing.T) {
+	for name, item := range map[string]map[string]types.AttributeValue{
+		"missing seq":  {"pr": &types.AttributeValueMemberN{Value: "7"}},
+		"zero pr":      eventItem("3", "ev-3"),
+		"oversized pr": eventItem("3", "ev-3"),
+	} {
+		switch name {
+		case "zero pr":
+			item["pr"] = &types.AttributeValueMemberN{Value: "0"}
+		case "oversized pr":
+			item["pr"] = &types.AttributeValueMemberN{Value: "4294967296"}
+		}
+		fake := &fakeDynamo{queryFn: func(*dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+			return &dynamodb.QueryOutput{Items: []map[string]types.AttributeValue{item}}, nil
+		}}
+		buf := NewDynamoEventBuffer(fake, "buffer", time.Hour)
+		if _, err := buf.After(context.Background(), testSub, 0); err == nil {
+			t.Fatalf("%s: malformed row accepted", name)
+		}
+	}
+}
+
 func TestBufferSeqOfAndAck(t *testing.T) {
 	fake := &fakeDynamo{
 		getFn: func(in *dynamodb.GetItemInput) (*dynamodb.GetItemOutput, error) {

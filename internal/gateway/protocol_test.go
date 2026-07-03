@@ -108,3 +108,18 @@ func TestPRRefString(t *testing.T) {
 		t.Fatalf("PRRef.String = %q", got)
 	}
 }
+
+func TestParsePRRef(t *testing.T) {
+	ref, err := ParsePRRef("octo/repo#7")
+	if err != nil {
+		t.Fatalf("ParsePRRef: %v", err)
+	}
+	if ref != (PRRef{Repo: "octo/repo", PR: 7}) {
+		t.Fatalf("ref = %+v", ref)
+	}
+	for _, bad := range []string{"", "octo/repo", "#7", "octo/repo#", "octo/repo#zero", "octo/repo#0", "octo/repo#-1"} {
+		if _, err := ParsePRRef(bad); err == nil {
+			t.Fatalf("ParsePRRef(%q) accepted", bad)
+		}
+	}
+}

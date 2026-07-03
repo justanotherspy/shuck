@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"time"
 
@@ -240,6 +241,9 @@ func eventFromItem(item map[string]types.AttributeValue) (gateway.Event, error) 
 	pr, err := numberAttr(item, "pr")
 	if err != nil {
 		return gateway.Event{}, err
+	}
+	if pr <= 0 || pr > math.MaxInt32 {
+		return gateway.Event{}, fmt.Errorf("invalid pr %d", pr)
 	}
 	return gateway.Event{
 		ID:      stringAttr(item, "event_id"),
