@@ -11,6 +11,12 @@ compliance policy, audits a repo's Dependabot config against the ecosystems it
 uses, and SHA-pins GitHub Actions / GHCR images. Results are cached under
 `~/.cache/shuck`.
 
+The v2 self-hosted event router (JUS-84) is planned in `docs/V2.md`. It is
+strictly opt-in: the portable CLI/MCP + GitHub-token mode above stays the
+default, the two modes work independently (and compose), and v2 work must
+never change or break the existing CLI/MCP behaviour — see the compatibility
+contract in that doc.
+
 ## Dogfood shuck
 
 This repo bakes its own tool in for agents: the `shuck` skill
