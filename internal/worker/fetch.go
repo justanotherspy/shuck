@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 
 	"github.com/justanotherspy/shuck/internal/gh"
@@ -47,7 +48,7 @@ func (f *GHFetcher) FetchRun(ctx context.Context, token string, env ingest.Envel
 		return RunFailure{}, err
 	}
 
-	drillable := append(failed, cancelled...)
+	drillable := slices.Concat(failed, cancelled)
 	if maxJobs := f.maxJobs(); maxJobs > 0 && len(drillable) > maxJobs {
 		f.log().Warn("capping drillable jobs", "repo", env.Repo, "run", env.RunID,
 			"jobs", len(drillable), "max", maxJobs)

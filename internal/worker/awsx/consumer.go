@@ -58,7 +58,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 		out, err := c.Client.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
 			QueueUrl:            aws.String(c.QueueURL),
 			MaxNumberOfMessages: c.batch(),
-			WaitTimeSeconds:     int32(c.waitTime() / time.Second),
+			WaitTimeSeconds:     c.waitSeconds(),
 		})
 		if err != nil {
 			if ctx.Err() != nil {
@@ -104,11 +104,22 @@ func (c *Consumer) pause(ctx context.Context) {
 	}
 }
 
-func (c *Consumer) waitTime() time.Duration {
-	if c.WaitTime <= 0 {
-		return DefaultWaitTime
+// waitSeconds converts WaitTime to SQS's long-poll parameter, clamped to
+// the API's valid [1, 20] second range.
+func (c *Consumer) waitSeconds() int32 {
+	wait := c.WaitTime
+	if wait <= 0 {
+		wait = DefaultWaitTime
 	}
-	return c.WaitTime
+	secs := wait / time.Second
+	switch {
+	case secs < 1:
+		return 1
+	case secs > 20:
+		return 20
+	default:
+		return int32(secs)
+	}
 }
 
 func (c *Consumer) batch() int32 {

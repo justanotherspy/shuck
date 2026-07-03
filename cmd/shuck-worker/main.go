@@ -1,7 +1,7 @@
 // Command shuck-worker is the CI-failure worker of shuck's opt-in
 // self-hosted mode (JUS-87): it consumes queue envelopes, mints GitHub App
-// installation tokens, fetches a failed run's jobs and logs, distils them
-// with the shared parser, and delivers the capped summary to the gateway.
+// installation tokens, fetches a failed run's jobs and logs, runs the
+// shared parser, and delivers the capped summary to the gateway.
 // It runs either as an SQS long-poll loop (container mode) or as a Lambda
 // behind an SQS event source mapping — the same core backs both, chosen by
 // auto-detecting the Lambda runtime. The Lambda event source mapping must
@@ -34,6 +34,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
@@ -69,7 +70,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 	if deliverURL == "" || deliverSecret == "" {
 		return fmt.Errorf("SHUCK_DELIVER_URL and SHUCK_DELIVER_SECRET are required")
 	}
-	summaryLimit := 0 // 0 = distil.DefaultSummaryLimit
+	summaryLimit := 0 // the Processor turns zero into distil.DefaultSummaryLimit
 	if v := os.Getenv("SHUCK_SUMMARY_LIMIT"); v != "" {
 		if summaryLimit, err = strconv.Atoi(v); err != nil {
 			return fmt.Errorf("parse SHUCK_SUMMARY_LIMIT: %w", err)
@@ -153,7 +154,7 @@ func loadPrivateKey() ([]byte, error) {
 		return []byte(v), nil
 	}
 	if path := os.Getenv("SHUCK_GITHUB_APP_PRIVATE_KEY_FILE"); path != "" {
-		key, err := os.ReadFile(path)
+		key, err := os.ReadFile(filepath.Clean(path))
 		if err != nil {
 			return nil, fmt.Errorf("read SHUCK_GITHUB_APP_PRIVATE_KEY_FILE: %w", err)
 		}
@@ -176,7 +177,8 @@ func serveHealthz(ctx context.Context, log *slog.Logger) {
 	server := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// Detached from ctx (already done) but keeps its values.
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
 	}()

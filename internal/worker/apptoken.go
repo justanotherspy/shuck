@@ -163,7 +163,7 @@ func parseRSAKey(pemBytes []byte) (*rsa.PrivateKey, error) {
 	}
 	key, ok := parsed.(*rsa.PrivateKey)
 	if !ok {
-		return nil, fmt.Errorf("App private key is %T, want RSA", parsed)
+		return nil, fmt.Errorf("private key is %T, want RSA", parsed)
 	}
 	return key, nil
 }

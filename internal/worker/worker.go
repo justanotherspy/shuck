@@ -202,7 +202,7 @@ func (p *Processor) processCIFailure(ctx context.Context, env ingest.Envelope) e
 	return nil
 }
 
-// distilRun archives and distils each job, returning the joined summary and
+// distilRun archives and parses each job, returning the joined summary and
 // the archive directory URL of the last stored log ("" when none was).
 func (p *Processor) distilRun(ctx context.Context, env ingest.Envelope, run RunFailure) (summary, archiveDir string, err error) {
 	if len(run.Jobs) == 0 {

@@ -134,7 +134,7 @@ func TestConsumerStopsWhenCancelled(t *testing.T) {
 
 func TestConsumerDefaults(t *testing.T) {
 	c := &Consumer{}
-	if c.waitTime() != DefaultWaitTime || c.batch() != DefaultBatch {
-		t.Errorf("defaults: wait=%v batch=%d", c.waitTime(), c.batch())
+	if c.waitSeconds() != 20 || c.batch() != DefaultBatch {
+		t.Errorf("defaults: wait=%v batch=%d", c.waitSeconds(), c.batch())
 	}
 }
