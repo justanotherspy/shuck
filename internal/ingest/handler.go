@@ -43,9 +43,9 @@ type SubscriptionChecker interface {
 	HasSubscriber(ctx context.Context, repo string, pr int) (bool, error)
 }
 
-// AllowAll is the SubscriptionChecker used until the JUS-88 subscription
-// table exists: every repo#pr is assumed subscribed, making the pre-filter
-// a no-op that can be tightened without touching the handler.
+// AllowAll is the SubscriptionChecker used when no subscription table is
+// configured: every repo#pr is assumed subscribed, making the pre-filter a
+// no-op. The real table-backed checker is awsx.DynamoSubscriptionChecker.
 type AllowAll struct{}
 
 // HasSubscriber always reports true.

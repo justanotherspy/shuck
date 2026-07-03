@@ -8,11 +8,13 @@
 // Configuration is environment-only (deploy tooling injects secrets;
 // JUS-92/93 own that wiring):
 //
-//	SHUCK_WEBHOOK_SECRET  GitHub App webhook secret (required)
-//	SHUCK_QUEUE_URL       SQS queue URL for envelopes (required)
-//	SHUCK_DEDUPE_TABLE    DynamoDB dedupe table name (required)
-//	SHUCK_DEDUPE_TTL      dedupe row retention (default 1h)
-//	SHUCK_ADDR            HTTP listen address (default :8080; server mode)
+//	SHUCK_WEBHOOK_SECRET       GitHub App webhook secret (required)
+//	SHUCK_QUEUE_URL            SQS queue URL for envelopes (required)
+//	SHUCK_DEDUPE_TABLE         DynamoDB dedupe table name (required)
+//	SHUCK_DEDUPE_TTL           dedupe row retention (default 1h)
+//	SHUCK_SUBSCRIPTION_TABLE   gateway subscription table for the pre-filter
+//	                           (optional; unset means every event is enqueued)
+//	SHUCK_ADDR                 HTTP listen address (default :8080; server mode)
 //
 // This binary is part of the self-hosted backend only. The portable shuck
 // CLI does not link it and is unaffected by it (see docs/V2.md).
@@ -63,11 +65,16 @@ func run(ctx context.Context, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("load AWS config: %w", err)
 	}
+	ddb := dynamodb.NewFromConfig(awsCfg)
+	var subs ingest.SubscriptionChecker = ingest.AllowAll{}
+	if subTable := os.Getenv("SHUCK_SUBSCRIPTION_TABLE"); subTable != "" {
+		subs = awsx.NewDynamoSubscriptionChecker(ddb, subTable)
+	}
 	handler := &ingest.Handler{
 		Secret:  []byte(secret),
-		Dedupe:  awsx.NewDynamoDeduper(dynamodb.NewFromConfig(awsCfg), table, ttl),
+		Dedupe:  awsx.NewDynamoDeduper(ddb, table, ttl),
 		Queue:   awsx.NewSQSEnqueuer(sqs.NewFromConfig(awsCfg), queueURL),
-		Subs:    ingest.AllowAll{}, // tighten once the JUS-88 subscription table exists
+		Subs:    subs,
 		Log:     log,
 		Metrics: &ingest.Metrics{},
 	}
