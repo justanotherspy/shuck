@@ -127,7 +127,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if seen {
 		h.count(func(m *Metrics) { m.Deduped.Add(1) })
-		h.done(w, delivery, event, "duplicate delivery")
+		h.done(w, delivery, event, "duplicate delivery", "duplicate delivery")
 		return
 	}
 
@@ -140,7 +140,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if !dec.Enqueue {
 		h.count(func(m *Metrics) { m.Dropped.Add(1) })
-		h.done(w, delivery, event, dec.Reason)
+		h.done(w, delivery, event, dec.Reason, "ignored")
 		return
 	}
 	env := dec.Envelope
@@ -152,7 +152,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"delivery", delivery, "repo", env.Repo, "pr", env.PR, "err", err)
 	} else if !ok {
 		h.count(func(m *Metrics) { m.Unsubscribed.Add(1) })
-		h.done(w, delivery, event, "no subscriber")
+		h.done(w, delivery, event, "no subscriber", "no subscriber")
 		return
 	}
 
@@ -172,21 +172,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, "enqueued")
 }
 
-// plainText pins the response to text/plain with sniffing disabled: drop
-// reasons echo payload-derived strings (event/action names), and without an
-// explicit content type a browser could be tricked into rendering them as
-// HTML (reflected XSS).
+// plainText pins the response to text/plain with sniffing disabled, so
+// nothing this handler writes can ever be rendered as HTML.
 func plainText(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 }
 
 // done acknowledges a delivery that produced no work with a 200 so GitHub
-// does not retry it.
-func (h *Handler) done(w http.ResponseWriter, delivery, event, reason string) {
+// does not retry it. reason (which may embed payload-derived strings) goes
+// to the log only; response must be a static string — request-derived text
+// is never reflected back to the caller (CodeQL: reflected XSS).
+func (h *Handler) done(w http.ResponseWriter, delivery, event, reason, response string) {
 	h.log().Info("dropped", "delivery", delivery, "event", event, "reason", reason)
 	plainText(w)
-	fmt.Fprintln(w, reason)
+	fmt.Fprintln(w, response)
 }
 
 // fail reports an operational failure with a 500 so the delivery shows as

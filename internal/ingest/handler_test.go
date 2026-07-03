@@ -178,15 +178,23 @@ func TestHandlerDropsFilteredEvent(t *testing.T) {
 	}
 }
 
-func TestHandlerResponsesArePlainText(t *testing.T) {
-	// Drop reasons echo payload-derived strings (event/action names); the
-	// response must pin text/plain + nosniff so they can never be rendered
-	// as HTML (CodeQL: reflected XSS).
+func TestHandlerResponsesArePlainTextAndStatic(t *testing.T) {
+	// Payload-derived strings (event/action names) must never be reflected
+	// into the response — they go to the log only — and every response pins
+	// text/plain + nosniff, so nothing can be rendered as HTML (CodeQL:
+	// reflected XSS).
 	q := &fakeQueue{}
 	h := newHandler(&fakeDedupe{}, q, nil)
-	dropped := post(t, h, "not_a_real_event", "d-1", `{"repository":{"full_name":"o/r"}}`, nil)
+	tainted := "<script>alert(1)</script>"
+	dropped := post(t, h, tainted, "d-1", `{"action":"`+tainted+`","repository":{"full_name":"o/r"}}`, nil)
 	enqueued := post(t, h, "workflow_run", "d-2", workflowRunFailure, nil)
+	if body := dropped.Body.String(); body != "ignored\n" {
+		t.Errorf("dropped response body = %q, want the static %q", body, "ignored\n")
+	}
 	for name, rr := range map[string]*httptest.ResponseRecorder{"dropped": dropped, "enqueued": enqueued} {
+		if strings.Contains(rr.Body.String(), tainted) {
+			t.Errorf("%s response reflects request-derived text: %q", name, rr.Body)
+		}
 		if ct := rr.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
 			t.Errorf("%s response Content-Type = %q", name, ct)
 		}
