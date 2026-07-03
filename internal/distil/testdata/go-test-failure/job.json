@@ -1,0 +1,9 @@
+{
+  "name": "build-and-test",
+  "conclusion": "failure",
+  "steps": [
+    {"number": 1, "name": "Checkout", "status": "completed", "conclusion": "success"},
+    {"number": 2, "name": "Run tests", "status": "completed", "conclusion": "failure"},
+    {"number": 3, "name": "Upload coverage", "status": "completed", "conclusion": "success"}
+  ]
+}

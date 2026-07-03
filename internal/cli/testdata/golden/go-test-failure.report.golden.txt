@@ -1,0 +1,27 @@
+octo/hello PR #42 — Add feature   (commit 0123456)
+
+Summary: 1 failed
+
+Workflow: CI (.github/workflows/ci.yml)
+Job: build-and-test  [failure]
+Steps:
+  1. Checkout (success)
+  2. Run tests (failure)
+  3. Upload coverage (success)
+
+  ▸ Step 2 — Run tests (failed) [test]
+    Step command:
+      * bash run:
+        ```
+        go test ./...
+        ```
+    error logs:
+      ```
+      ok   example.com/hello/pkg/a  0.012s
+      ok   example.com/hello/pkg/b  0.020s
+      --- FAIL: TestThing (0.00s)
+          thing_test.go:42: expected 1 got 2
+      FAIL
+      FAIL	example.com/hello/pkg/c	0.031s
+      ##[error]Process completed with exit code 1.
+      ```

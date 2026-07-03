@@ -1,0 +1,25 @@
+octo/hello PR #42 — Add feature   (commit 0123456)
+
+Summary: 1 failed
+
+Workflow: CI (.github/workflows/ci.yml)
+Job: typecheck  [failure]
+Steps:
+  1. Checkout (success)
+  2. Install dependencies (success)
+  3. Type check (failure)
+  4. Unit tests (skipped)
+
+  ▸ Step 3 — Type check (failed) [build]
+    Step command:
+      * bash run:
+        ```
+        npx tsc --noEmit
+        ```
+    error logs:
+      ```
+      src/api/client.ts(87,31): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+        Type 'undefined' is not assignable to type 'string'.
+      src/components/Table.tsx(142,9): error TS2322: Type 'number' is not assignable to type 'string'.
+      ##[error]Process completed with exit code 2.
+      ```

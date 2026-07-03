@@ -1,0 +1,56 @@
+octo/hello PR #42 — Add feature   (commit 0123456)
+
+Summary: 1 failed
+
+Workflow: CI (.github/workflows/ci.yml)
+Job: rust-ci  [failure]
+Steps:
+  1. Checkout (success)
+  2. Build (success)
+  3. Test (failure)
+
+  ▸ Step 3 — Test (failed) [test]
+    Step command:
+      * bash run:
+        ```
+        cargo test --workspace --locked
+        ```
+    error logs:
+      ```
+      … (100 lines omitted) …
+      test tests::case_096 ... ok
+      test tests::case_097 ... ok
+      test tests::case_098 ... ok
+      test tests::case_099 ... ok
+      test tests::case_100 ... ok
+      test tests::case_101 ... ok
+      test tests::case_102 ... ok
+      test tests::case_103 ... ok
+      test tests::case_104 ... ok
+      test tests::parse_empty ... ok
+      test tests::parse_nested ... FAILED
+      test tests::render_wide ... ok
+      test tests::round_trip ... FAILED
+      
+      failures:
+      
+      ---- tests::parse_nested stdout ----
+      thread 'tests::parse_nested' panicked at src/parser.rs:214:9:
+      assertion `left == right` failed
+        left: Node::List([Node::Atom("a")])
+       right: Node::List([])
+      note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+      
+      ---- tests::round_trip stdout ----
+      thread 'tests::round_trip' panicked at src/parser.rs:301:5:
+      round-trip mismatch: expected `(a (b))`, got `(a)`
+      
+      failures:
+          tests::parse_nested
+          tests::round_trip
+      
+      test result: FAILED. 106 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.34s
+      
+      error: test failed, to rerun pass `--lib`
+      ##[error]Process completed with exit code 101.
+      ```

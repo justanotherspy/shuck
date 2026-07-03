@@ -1,0 +1,12 @@
+2024-07-20T14:00:00.0000001Z ##[group]Run actions/checkout@v4
+2024-07-20T14:00:00.0000002Z with:
+2024-07-20T14:00:00.0000003Z   repository: octo/hello
+2024-07-20T14:00:00.0000004Z ##[endgroup]
+2024-07-20T14:00:01.0000000Z Syncing repository: octo/hello
+2024-07-20T14:00:02.0000000Z ##[group]Run go test -race ./...
+2024-07-20T14:00:02.0000001Z go test -race ./...
+2024-07-20T14:00:02.0000002Z shell: /usr/bin/bash -e {0}
+2024-07-20T14:00:02.0000003Z ##[endgroup]
+2024-07-20T14:00:10.0000000Z ok   example.com/hello/pkg/a  4.512s
+2024-07-20T14:00:25.0000000Z ok   example.com/hello/pkg/b  12.303s
+2024-07-20T14:01:02.0000000Z ##[error]The operation was canceled.

@@ -1,0 +1,22 @@
+2024-06-10T08:15:00.0000001Z ##[group]Run actions/checkout@v4
+2024-06-10T08:15:00.0000002Z with:
+2024-06-10T08:15:00.0000003Z   repository: octo/webapp
+2024-06-10T08:15:00.0000004Z ##[endgroup]
+2024-06-10T08:15:01.0000000Z Syncing repository: octo/webapp
+2024-06-10T08:15:02.0000000Z ##[group]Run npm ci
+2024-06-10T08:15:02.0000001Z npm ci
+2024-06-10T08:15:02.0000002Z shell: /usr/bin/bash -e {0}
+2024-06-10T08:15:02.0000003Z ##[endgroup]
+2024-06-10T08:15:20.0000000Z added 812 packages in 18s
+2024-06-10T08:15:21.0000000Z ##[group]Run npx tsc --noEmit
+2024-06-10T08:15:21.0000001Z npx tsc --noEmit
+2024-06-10T08:15:21.0000002Z shell: /usr/bin/bash -e {0}
+2024-06-10T08:15:21.0000003Z ##[endgroup]
+2024-06-10T08:15:29.0000000Z src/api/client.ts(87,31): error TS2345: Argument of type 'string | undefined' is not assignable to parameter of type 'string'.
+2024-06-10T08:15:29.1000000Z   Type 'undefined' is not assignable to type 'string'.
+2024-06-10T08:15:29.2000000Z src/components/Table.tsx(142,9): error TS2322: Type 'number' is not assignable to type 'string'.
+2024-06-10T08:15:29.5000000Z ##[error]Process completed with exit code 2.
+2024-06-10T08:15:30.0000000Z ##[group]Run npx jest --ci
+2024-06-10T08:15:30.0000001Z npx jest --ci
+2024-06-10T08:15:30.0000002Z shell: /usr/bin/bash -e {0}
+2024-06-10T08:15:30.0000003Z ##[endgroup]

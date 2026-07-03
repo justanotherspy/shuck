@@ -1,0 +1,16 @@
+octo/hello PR #42 — Add feature   (commit 0123456)
+
+Summary: 1 failed
+
+Workflow: CI (.github/workflows/ci.yml)
+Job: e2e  [failure]
+Steps:
+  1. Run e2e suite (failure)
+
+  ▸ Step 1 — Run e2e suite (failed)
+    error logs:
+      ```
+      spinning up fixtures
+      fixtures ready, running suite
+      suite aborted: runner lost contact with the docker daemon
+      ```

@@ -1,0 +1,10 @@
+{
+  "name": "race-tests",
+  "conclusion": "cancelled",
+  "steps": [
+    {"number": 1, "name": "Checkout", "status": "completed", "conclusion": "success"},
+    {"number": 2, "name": "Run race tests", "status": "completed", "conclusion": "cancelled"},
+    {"number": 3, "name": "Upload coverage", "status": "completed", "conclusion": "cancelled"},
+    {"number": 4, "name": "Notify", "status": "completed", "conclusion": "cancelled"}
+  ]
+}
