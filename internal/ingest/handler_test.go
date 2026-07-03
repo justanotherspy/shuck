@@ -178,6 +178,24 @@ func TestHandlerDropsFilteredEvent(t *testing.T) {
 	}
 }
 
+func TestHandlerResponsesArePlainText(t *testing.T) {
+	// Drop reasons echo payload-derived strings (event/action names); the
+	// response must pin text/plain + nosniff so they can never be rendered
+	// as HTML (CodeQL: reflected XSS).
+	q := &fakeQueue{}
+	h := newHandler(&fakeDedupe{}, q, nil)
+	dropped := post(t, h, "not_a_real_event", "d-1", `{"repository":{"full_name":"o/r"}}`, nil)
+	enqueued := post(t, h, "workflow_run", "d-2", workflowRunFailure, nil)
+	for name, rr := range map[string]*httptest.ResponseRecorder{"dropped": dropped, "enqueued": enqueued} {
+		if ct := rr.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
+			t.Errorf("%s response Content-Type = %q", name, ct)
+		}
+		if opt := rr.Header().Get("X-Content-Type-Options"); opt != "nosniff" {
+			t.Errorf("%s response X-Content-Type-Options = %q", name, opt)
+		}
+	}
+}
+
 func TestHandlerRejectsMalformedPayload(t *testing.T) {
 	h := newHandler(&fakeDedupe{}, &fakeQueue{}, nil)
 	rr := post(t, h, "workflow_run", "d-1", "{not json", nil)

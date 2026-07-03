@@ -167,14 +167,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.count(func(m *Metrics) { m.Enqueued.Add(1) })
 	h.log().Info("enqueued", "delivery", delivery, "event", event,
 		"kind", env.Kind, "repo", env.Repo, "pr", env.PR)
+	plainText(w)
 	w.WriteHeader(http.StatusAccepted)
 	fmt.Fprintln(w, "enqueued")
+}
+
+// plainText pins the response to text/plain with sniffing disabled: drop
+// reasons echo payload-derived strings (event/action names), and without an
+// explicit content type a browser could be tricked into rendering them as
+// HTML (reflected XSS).
+func plainText(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 }
 
 // done acknowledges a delivery that produced no work with a 200 so GitHub
 // does not retry it.
 func (h *Handler) done(w http.ResponseWriter, delivery, event, reason string) {
 	h.log().Info("dropped", "delivery", delivery, "event", event, "reason", reason)
+	plainText(w)
 	fmt.Fprintln(w, reason)
 }
 
