@@ -35,9 +35,9 @@ jobs:
       - name: Portable binary stays lean (no backend deps)
         # The compatibility contract (docs/V2.md): the root shuck binary
         # must never link the self-hosted backend — no AWS SDK, no
-        # WebSocket library, no ingest/gateway packages.
+        # WebSocket library, no ingest/gateway/worker packages.
         run: |
-          leaks=$(go list -deps . | grep -E 'aws-sdk-go|aws-lambda-go|coder/websocket|justanotherspy/shuck/internal/(ingest|gateway)' || true)
+          leaks=$(go list -deps . | grep -E 'aws-sdk-go|aws-lambda-go|coder/websocket|justanotherspy/shuck/internal/(ingest|gateway|worker)' || true)
           if [ -n "$leaks" ]; then
             echo "portable shuck binary links backend packages:" >&2
             echo "$leaks" >&2
