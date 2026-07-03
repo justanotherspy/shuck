@@ -19,7 +19,8 @@
       "mcp__shuck__audit_dependabot",
       "mcp__shuck__inspect_action",
       "mcp__shuck__inspect_images",
-      "mcp__Linear__save_comment"
+      "mcp__Linear__save_comment",
+      "mcp__Linear__list_comments"
     ]
   }
 }
