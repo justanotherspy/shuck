@@ -68,7 +68,7 @@ Run `make help` for the full list. The essentials:
 
 ```sh
 make tools           # install the pinned dev tools (lint, releaser, gopls…)
-make build           # build ./bin/shuck
+make build           # build ./bin/shuck (+ ./bin/shuck-ingest)
 make test            # go test -race + coverage (coverage.out; main.go excluded)
 make lint            # golangci-lint run
 make fmt             # gofmt + goimports via golangci-lint
@@ -108,6 +108,8 @@ render → update cache.
 | `internal/cache` | On-disk cache under `~/.cache/shuck/…`: per-PR reports + whole raw job logs, action tag lists, security reports, image listings. `Purge(ttl, keep)` sweeps stale entries on every run. |
 | `internal/logs` | Parse a job log into `##[group]`-delimited sections; extract the high-signal error excerpt. |
 | `internal/distil` | The shared distillation core (`CIFailure`): raw job log + Actions-API step metadata → per-step failure detail (`FailedSteps`) + an agent-ready `Summary`. Pure — layers on `logs` / `classify` / `model`; backs `cli`/`mcp` today, shuck v2 workers next (JUS-84). |
+| `internal/ingest` | v2 self-hosted webhook ingest core (JUS-86): constant-time HMAC verify, delivery-GUID dedupe, event→envelope filter (`ci_failure` / `pr_closed`), subscription pre-filter (allow-all until JUS-88), and the versioned queue `Envelope` contract workers consume. Pure — AWS adapters (DynamoDB dedupe, SQS enqueue, Lambda function-URL adapter) live in `ingest/awsx`; only `cmd/shuck-ingest` links them, never the `shuck` binary. |
+| `cmd/shuck-ingest` | The self-hosted ingest binary: one `ingest.Handler` served as a plain HTTP server or a Lambda (auto-detected), env-configured. Opt-in backend only. |
 | `internal/render` | Format a `model.Report` to text. |
 | `internal/model` | Shared domain types (imports nothing internal). |
 

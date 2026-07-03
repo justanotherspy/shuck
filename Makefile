@@ -55,12 +55,13 @@ BENCHFILE   ?= bench-new.txt
 PROFPKG     ?= ./internal/logs
 PROFILE_DIR ?= profiles
 
-# Coverage filter & threshold. main.go is a thin entrypoint with no unit tests,
-# so it is dropped from coverage.out — the numbers (and the gate below) reflect
-# the internal/ packages only. COVER_EXCLUDE is an extended regexp matched
-# against coverage.out paths; COVER_THRESHOLD is the minimum total coverage
-# percentage `make cover-check` accepts (CI fails below it).
-COVER_EXCLUDE   ?= ^github\.com/justanotherspy/shuck/main\.go:
+# Coverage filter & threshold. main.go and the cmd/ entrypoints are thin
+# mains with no unit tests, so they are dropped from coverage.out — the
+# numbers (and the gate below) reflect the internal/ packages only.
+# COVER_EXCLUDE is an extended regexp matched against coverage.out paths;
+# COVER_THRESHOLD is the minimum total coverage percentage `make cover-check`
+# accepts (CI fails below it).
+COVER_EXCLUDE   ?= ^github\.com/justanotherspy/shuck/(main\.go:|cmd/)
 COVER_THRESHOLD ?= 80
 
 # ==============================================================================
@@ -308,9 +309,10 @@ pprof-mem: ## Open the memory profile in the pprof web UI
 
 # ---- Build / run ------------------------------------------------------------
 .PHONY: build
-build: ## Build the binary into ./bin
+build: ## Build the binaries into ./bin (shuck + the self-hosted ingest)
 	@mkdir -p $(BIN_DIR)
 	$(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/$(BINARY) $(MAIN_PKG)
+	$(GO) build -trimpath -ldflags '-s -w' -o $(BIN_DIR)/shuck-ingest ./cmd/shuck-ingest
 
 .PHONY: install
 install: ## go install the binary
