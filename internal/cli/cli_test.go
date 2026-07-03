@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -27,164 +28,38 @@ const failLog = `2024-05-01T10:00:00.0000000Z ##[group]Run actions/checkout@v4
 2024-05-01T10:00:04.0000000Z ##[error]Process completed with exit code 1.
 `
 
-func TestBuildFailedStepsAssociatesErrorSection(t *testing.T) {
-	a := &app{opts: logs.DefaultOptions()}
+// The step↔section pairing itself is covered in internal/distil; this test
+// only proves the wrapper wires the app's extraction flags through.
+func TestBuildFailedStepsWiresOptions(t *testing.T) {
 	job := model.JobResult{Steps: []model.StepOverview{
 		{Number: 1, Name: "Checkout", Conclusion: "success"},
 		{Number: 2, Name: "Run tests", Conclusion: "failure"},
 	}}
+
+	a := &app{opts: logs.DefaultOptions()}
 	fs := a.buildFailedSteps(job, failLog)
-	if len(fs) != 1 {
-		t.Fatalf("got %d failed steps, want 1: %+v", len(fs), fs)
-	}
-	if fs[0].Name != "Run tests" || fs[0].Number != 2 {
-		t.Errorf("step name/number = %q/%d", fs[0].Name, fs[0].Number)
-	}
-	if fs[0].Command != "go test ./..." || fs[0].Kind != model.KindBash {
-		t.Errorf("command/kind = %q/%q", fs[0].Command, fs[0].Kind)
-	}
-	if fs[0].Class != model.ClassTest {
-		t.Errorf("class = %q, want %q", fs[0].Class, model.ClassTest)
+	if len(fs) != 1 || fs[0].Name != "Run tests" || fs[0].Number != 2 {
+		t.Fatalf("unexpected steps: %+v", fs)
 	}
 	if !strings.Contains(fs[0].Excerpt, "--- FAIL: TestThing") {
 		t.Errorf("excerpt missing failure: %q", fs[0].Excerpt)
 	}
-}
 
-// cancelLog is a job that was cancelled mid-test-run: GitHub marks the
-// interrupted step's section with "##[error]The operation was canceled." and
-// the API marks that step (and every queued one after it) "cancelled".
-const cancelLog = `2024-05-01T10:00:00.0000000Z ##[group]Run actions/checkout@v4
-2024-05-01T10:00:00.0000001Z ##[endgroup]
-2024-05-01T10:00:01.0000000Z Synced
-2024-05-01T10:00:02.0000000Z ##[group]Run go test ./...
-2024-05-01T10:00:02.0000001Z go test ./...
-2024-05-01T10:00:02.0000002Z ##[endgroup]
-2024-05-01T10:00:03.0000000Z ok   pkg/a  0.5s
-2024-05-01T10:00:04.0000000Z ##[error]The operation was canceled.
-`
-
-func TestBuildFailedStepsCancelledJob(t *testing.T) {
-	a := &app{opts: logs.DefaultOptions()}
-	job := model.JobResult{
-		Conclusion: "cancelled",
-		Steps: []model.StepOverview{
-			{Number: 1, Name: "Checkout", Conclusion: "success"},
-			{Number: 2, Name: "Run tests", Conclusion: "cancelled"},
-			{Number: 3, Name: "Upload coverage", Conclusion: "cancelled"},
-			{Number: 4, Name: "Notify", Conclusion: "cancelled"},
-		},
-	}
-	fs := a.buildFailedSteps(job, cancelLog)
-
-	// Only the step with an error section is reported; the queued-but-never-run
-	// cancelled steps must not each emit a "(no matching section)" entry.
-	if len(fs) != 1 {
-		t.Fatalf("got %d steps, want 1: %+v", len(fs), fs)
-	}
-	if fs[0].Name != "Run tests" || fs[0].Number != 2 {
-		t.Errorf("step name/number = %q/%d, want Run tests/2", fs[0].Name, fs[0].Number)
-	}
-	if fs[0].Command != "go test ./..." {
-		t.Errorf("command = %q", fs[0].Command)
-	}
-	if !strings.Contains(fs[0].Excerpt, "The operation was canceled.") {
-		t.Errorf("excerpt missing cancellation marker: %q", fs[0].Excerpt)
-	}
-}
-
-func TestBuildFailedStepsCancelledJobNoErrorMarker(t *testing.T) {
-	// A cancelled job whose log carries no ##[error] marker still gets the
-	// whole-log fallback excerpt, named after the interrupted step.
-	a := &app{opts: logs.DefaultOptions()}
-	raw := "2024-05-01T10:00:00.0000000Z ##[group]Run make e2e\n2024-05-01T10:00:00.0000001Z ##[endgroup]\n2024-05-01T10:00:01.0000000Z spinning up fixtures\n"
-	job := model.JobResult{
-		Conclusion: "cancelled",
-		Steps:      []model.StepOverview{{Number: 1, Name: "Run e2e", Conclusion: "cancelled"}},
-	}
-	fs := a.buildFailedSteps(job, raw)
-	if len(fs) != 1 {
-		t.Fatalf("got %d steps, want 1", len(fs))
-	}
-	if fs[0].Name != "Run e2e" {
-		t.Errorf("fallback should use the interrupted step name, got %q", fs[0].Name)
-	}
-	if !strings.Contains(fs[0].Excerpt, "spinning up fixtures") {
-		t.Errorf("fallback excerpt should contain the log body: %q", fs[0].Excerpt)
-	}
-}
-
-func TestBuildFailedStepsFallbackNoErrorMarker(t *testing.T) {
-	a := &app{opts: logs.DefaultOptions()}
-	raw := "2024-05-01T10:00:00.0000000Z ##[group]Run go build\n2024-05-01T10:00:00.0000001Z ##[endgroup]\n2024-05-01T10:00:01.0000000Z some output\n"
-	job := model.JobResult{Steps: []model.StepOverview{{Number: 1, Name: "Build", Conclusion: "failure"}}}
-	fs := a.buildFailedSteps(job, raw)
-	if len(fs) != 1 {
-		t.Fatalf("got %d failed steps, want 1", len(fs))
-	}
-	if fs[0].Name != "Build" {
-		t.Errorf("fallback should use the failed step name, got %q", fs[0].Name)
-	}
-	if !strings.Contains(fs[0].Excerpt, "some output") {
-		t.Errorf("fallback excerpt should contain the log body: %q", fs[0].Excerpt)
-	}
-}
-
-// multiStepLog is a job whose failing step ran a multi-line shell script, so the
-// echoed command spans several Pre lines before the shell: metadata.
-const multiStepLog = `2024-05-01T10:00:00.0000000Z ##[group]Run echo line1
-2024-05-01T10:00:00.0000001Z echo line1
-2024-05-01T10:00:00.0000002Z echo line2
-2024-05-01T10:00:00.0000003Z echo line3
-2024-05-01T10:00:00.0000004Z exit 1
-2024-05-01T10:00:00.0000005Z shell: /usr/bin/bash -e {0}
-2024-05-01T10:00:00.0000006Z ##[endgroup]
-2024-05-01T10:00:01.0000000Z some output
-2024-05-01T10:00:02.0000000Z ##[error]Process completed with exit code 1.
-`
-
-func TestBuildFailedStepsFullCommand(t *testing.T) {
-	job := model.JobResult{Steps: []model.StepOverview{{Number: 1, Name: "Run script", Conclusion: "failure"}}}
-
-	// maxCommandLines = 0 (no limit): the full multi-line script is recovered.
-	a := &app{opts: logs.DefaultOptions(), maxCommandLines: 0}
-	fs := a.buildFailedSteps(job, multiStepLog)
-	wantFull := "echo line1\necho line2\necho line3\nexit 1"
-	if len(fs) != 1 || fs[0].Command != wantFull {
-		t.Fatalf("full command = %q, want %q", fs[0].Command, wantFull)
+	// maxCommandLines flows into distil: a cap of 1 clamps the command.
+	a = &app{opts: logs.DefaultOptions(), maxCommandLines: 1}
+	multiLine := strings.ReplaceAll(failLog, "go test ./...\n2024-05-01T10:00:02.0000002Z ##[endgroup]",
+		"go test ./...\n2024-05-01T10:00:02.0000002Z echo done\n2024-05-01T10:00:02.0000003Z ##[endgroup]")
+	fs = a.buildFailedSteps(job, multiLine)
+	if want := "go test ./...\n… (1 more lines) …"; fs[0].Command != want {
+		t.Errorf("clamped command = %q, want %q", fs[0].Command, want)
 	}
 
-	// A small cap truncates and reports how many lines were dropped.
-	a = &app{opts: logs.DefaultOptions(), maxCommandLines: 2}
-	fs = a.buildFailedSteps(job, multiStepLog)
-	wantClamped := "echo line1\necho line2\n… (2 more lines) …"
-	if fs[0].Command != wantClamped {
-		t.Errorf("clamped command = %q, want %q", fs[0].Command, wantClamped)
-	}
-}
-
-// actionLog is a job whose failing step invoked an action, so GitHub echoed the
-// step's with:/env: inputs into the group before the error.
-const actionLog = `2024-05-01T10:00:00.0000000Z ##[group]Run actions/github-script@v7
-2024-05-01T10:00:00.0000001Z with:
-2024-05-01T10:00:00.0000002Z   script: throw new Error("boom")
-2024-05-01T10:00:00.0000003Z   github-token: ***
-2024-05-01T10:00:00.0000004Z env:
-2024-05-01T10:00:00.0000005Z   NODE_ENV: test
-2024-05-01T10:00:00.0000006Z ##[endgroup]
-2024-05-01T10:00:01.0000000Z ##[error]Error: boom
-`
-
-func TestBuildFailedStepsActionInputs(t *testing.T) {
-	a := &app{opts: logs.DefaultOptions(), maxCommandLines: 0}
-	job := model.JobResult{Steps: []model.StepOverview{{Number: 1, Name: "Run script action", Conclusion: "failure"}}}
-	fs := a.buildFailedSteps(job, actionLog)
-	if len(fs) != 1 || fs[0].Kind != model.KindAction {
-		t.Fatalf("kind = %q, want action", fs[0].Kind)
-	}
-	want := "actions/github-script@v7\nwith:\n  script: throw new Error(\"boom\")\n  github-token: ***\nenv:\n  NODE_ENV: test"
-	if fs[0].Command != want {
-		t.Errorf("action command = %q, want %q", fs[0].Command, want)
+	// opts flows into distil: a never-matching pattern with Tail=1 keeps only
+	// the last body line.
+	a = &app{opts: logs.Options{ShortThreshold: 0, Context: 0, Tail: 1, Pattern: regexp.MustCompile(`\bzzz-never\b`)}}
+	fs = a.buildFailedSteps(job, failLog)
+	if strings.Contains(fs[0].Excerpt, "--- FAIL: TestThing") {
+		t.Errorf("Tail=1 excerpt should have dropped earlier lines: %q", fs[0].Excerpt)
 	}
 }
 
