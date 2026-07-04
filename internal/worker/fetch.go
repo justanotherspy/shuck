@@ -102,7 +102,8 @@ func (f *GHFetcher) log() *slog.Logger {
 
 // Interface conformance is part of the package contract.
 var (
-	_ RunFetcher  = (*GHFetcher)(nil)
-	_ TokenSource = (*AppTokenSource)(nil)
-	_ Deliverer   = (*HTTPDeliverer)(nil)
+	_ RunFetcher    = (*GHFetcher)(nil)
+	_ ReviewFetcher = (*GHFetcher)(nil)
+	_ TokenSource   = (*AppTokenSource)(nil)
+	_ Deliverer     = (*HTTPDeliverer)(nil)
 )

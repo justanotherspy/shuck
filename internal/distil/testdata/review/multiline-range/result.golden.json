@@ -1,0 +1,6 @@
+{
+  "reviewer": "alice",
+  "path": "cmd/serve/main.go",
+  "lines": "5–8",
+  "summary": "Reviewer alice commented on cmd/serve/main.go:5–8:\nExtract this block into a helper — it repeats below.\n\nDiff hunk:\n@@ -2,8 +2,10 @@\n func run() error {\n+\tcfg, err := load()\n+\tif err != nil {\n+\t\treturn err\n+\t}\n\nFile context at head (±2 lines):\n 3 | func run() error {\n 4 | \tcfg, err := load()\n 5 | \tif err != nil {\n 6 | \t\treturn err\n 7 | \t}\n 8 | \tsrv := newServer(cfg)\n 9 | \treturn srv.ListenAndServe()\n10 | }"
+}

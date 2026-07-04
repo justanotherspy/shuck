@@ -1,0 +1,12 @@
+{
+  "comment": {
+    "Reviewer": "alice",
+    "Path": "internal/foo/foo.go",
+    "Line": 12,
+    "Side": "RIGHT",
+    "Body": "This swallows the error — return it instead of logging.",
+    "DiffHunk": "@@ -8,7 +8,9 @@ func Load(path string) (*Config, error) {\n \tf, err := os.Open(path)\n \tif err != nil {\n-\t\treturn nil, err\n+\t\tlog.Printf(\"open %s: %v\", path, err)\n+\t\treturn nil, nil\n \t}",
+    "FileContent": "package foo\n\nimport (\n\t\"log\"\n\t\"os\"\n)\n\nfunc Load(path string) (*Config, error) {\n\tf, err := os.Open(path)\n\tif err != nil {\n\t\tlog.Printf(\"open %s: %v\", path, err)\n\t\treturn nil, nil\n\t}\n\tdefer f.Close()\n\treturn parse(f)\n}\n",
+    "ContextLines": 4
+  }
+}

@@ -1,8 +1,9 @@
-// Package worker implements the CI-failure worker core of shuck's opt-in
-// self-hosted mode (JUS-87): consume a queue envelope (internal/ingest's
-// contract), mint a GitHub App installation token, fetch the failed run's
-// jobs and logs, distil them with the shared parser (internal/distil), and
-// deliver the capped summary to the gateway's /internal/deliver endpoint
+// Package worker implements the event-worker core of shuck's opt-in
+// self-hosted mode (JUS-87, JUS-91): consume a queue envelope
+// (internal/ingest's contract), mint a GitHub App installation token, fetch
+// the failed run's jobs and logs — or a review comment / submitted review
+// with its context — distil them with the shared parser (internal/distil),
+// and deliver the capped summary to the gateway's /internal/deliver endpoint
 // (internal/gateway's contract). The package is pure Go with narrow
 // interfaces for everything that touches the outside world — the AWS
 // adapters live in worker/awsx and the binary in cmd/shuck-worker — so the
@@ -79,8 +80,18 @@ type Processor struct {
 	Tokens  TokenSource
 	Fetch   RunFetcher
 	Deliver Deliverer
+	// Reviews fetches review-kind envelopes' material (JUS-91); nil fails
+	// review envelopes with a config error.
+	Reviews ReviewFetcher
 	// Logs may be nil, which disables raw-log archiving.
 	Logs LogStore
+	// IgnoreAuthors is the bot-loop guard: review events authored by a
+	// listed identity are dropped before any fetch. Zero value ignores
+	// nobody.
+	IgnoreAuthors IgnoreAuthors
+	// ContextLines is how many file lines surround a review comment in its
+	// summary; 0 means distil.DefaultContextLines.
+	ContextLines int
 	// SummaryLimit caps the delivered summary in bytes; 0 means
 	// distil.DefaultSummaryLimit, negative means unlimited.
 	SummaryLimit int
@@ -116,6 +127,10 @@ func (p *Processor) Process(ctx context.Context, env ingest.Envelope) error {
 		return p.processPRClosed(ctx, env)
 	case ingest.KindCIFailure:
 		return p.processCIFailure(ctx, env)
+	case ingest.KindReviewComment:
+		return p.processReviewComment(ctx, env)
+	case ingest.KindReview:
+		return p.processReview(ctx, env)
 	default:
 		// ParseEnvelope rejects unknown kinds; this only guards direct calls.
 		p.count(func(m *Metrics) { m.Invalid.Add(1) })

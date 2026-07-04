@@ -20,18 +20,29 @@ const EnvelopeSchema = 1
 // Kind is the type of work an envelope requests from a worker.
 type Kind string
 
-// The envelope kinds produced by the v1 filter. JUS-91 adds the review
-// kinds.
+// The envelope kinds the filter produces. Values match the gateway's
+// EventKind strings.
 const (
 	// KindCIFailure asks a worker to fetch and distil a failed workflow run.
 	KindCIFailure Kind = "ci_failure"
 	// KindPRClosed needs no fetch: the worker passes it straight to the
 	// gateway so subscriptions for the PR are cleaned up (JUS-88).
 	KindPRClosed Kind = "pr_closed"
+	// KindReviewComment asks a worker to fetch and distil one PR review
+	// comment (JUS-91).
+	KindReviewComment Kind = "review_comment"
+	// KindReview asks a worker to fetch and distil one submitted PR review
+	// with its inline comments (JUS-91).
+	KindReview Kind = "review"
 )
 
 // Envelope is the slim message enqueued for workers — identifiers only,
-// never the raw webhook payload. It is the contract JUS-87 consumes.
+// never the raw webhook payload. It is the contract JUS-87 consumes. The
+// review-kind author identifiers are the one exception to identifiers-only:
+// the webhook payload is the authoritative source of the author (numeric ID
+// first), and carrying it lets the worker's bot-loop guard drop an envelope
+// before minting a token. Keep every field a comparable scalar — tests and
+// fuzz targets compare envelopes with ==.
 type Envelope struct {
 	Schema         int    `json:"schema"`
 	DeliveryID     string `json:"delivery_id"`
@@ -41,6 +52,15 @@ type Envelope struct {
 	RunID          int64  `json:"run_id,omitempty"`
 	HeadSHA        string `json:"head_sha,omitempty"`
 	InstallationID int64  `json:"installation_id,omitempty"`
+	// CommentID identifies the review comment to fetch (review_comment).
+	CommentID int64 `json:"comment_id,omitempty"`
+	// ReviewID identifies the submitted review to fetch (review).
+	ReviewID int64 `json:"review_id,omitempty"`
+	// AuthorID and AuthorLogin identify the comment/review author for the
+	// gateway's self-authored suppression and the worker's bot guard
+	// (review kinds only; the numeric ID is authoritative).
+	AuthorID    int64  `json:"author_id,omitempty"`
+	AuthorLogin string `json:"author_login,omitempty"`
 }
 
 // Encode marshals the envelope to its queue wire form.
@@ -66,6 +86,20 @@ func (e Envelope) Validate() error {
 			return fmt.Errorf("ci_failure envelope has invalid run_id %d", e.RunID)
 		}
 	case KindPRClosed:
+	case KindReviewComment:
+		if e.CommentID <= 0 {
+			return fmt.Errorf("review_comment envelope has invalid comment_id %d", e.CommentID)
+		}
+		if e.AuthorID <= 0 {
+			return fmt.Errorf("review_comment envelope has invalid author_id %d", e.AuthorID)
+		}
+	case KindReview:
+		if e.ReviewID <= 0 {
+			return fmt.Errorf("review envelope has invalid review_id %d", e.ReviewID)
+		}
+		if e.AuthorID <= 0 {
+			return fmt.Errorf("review envelope has invalid author_id %d", e.AuthorID)
+		}
 	default:
 		return fmt.Errorf("unknown envelope kind %q", e.Kind)
 	}

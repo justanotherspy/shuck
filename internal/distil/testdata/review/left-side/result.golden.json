@@ -1,0 +1,6 @@
+{
+  "reviewer": "alice",
+  "path": "internal/foo/foo.go",
+  "lines": "7",
+  "summary": "Reviewer alice commented on internal/foo/foo.go:7:\nWhy was this validation removed?\n\nDiff hunk:\n@@ -5,6 +5,4 @@\n func parse(r io.Reader) (*Config, error) {\n-\tif r == nil {\n-\t\treturn nil, errNilReader\n-\t}"
+}

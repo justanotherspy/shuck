@@ -24,6 +24,22 @@ const prClosed = `{
 	"installation": {"id": 77}
 }`
 
+const reviewCommentCreated = `{
+	"action": "created",
+	"repository": {"full_name": "octo/repo"},
+	"installation": {"id": 77},
+	"pull_request": {"number": 42, "head": {"sha": "abc123"}},
+	"comment": {"id": 9001, "user": {"id": 555, "login": "octocat"}}
+}`
+
+const reviewSubmitted = `{
+	"action": "submitted",
+	"repository": {"full_name": "octo/repo"},
+	"installation": {"id": 77},
+	"pull_request": {"number": 42, "head": {"sha": "abc123"}},
+	"review": {"id": 314, "user": {"id": 555, "login": "octocat"}}
+}`
+
 func TestFilterWorkflowRunFailure(t *testing.T) {
 	dec, err := Filter("workflow_run", []byte(workflowRunFailure))
 	if err != nil {
@@ -69,6 +85,64 @@ func TestFilterPRClosed(t *testing.T) {
 	}
 	if dec.Envelope != want {
 		t.Fatalf("envelope = %+v, want %+v", dec.Envelope, want)
+	}
+}
+
+func TestFilterReviewComment(t *testing.T) {
+	dec, err := Filter("pull_request_review_comment", []byte(reviewCommentCreated))
+	if err != nil {
+		t.Fatalf("Filter: %v", err)
+	}
+	if !dec.Enqueue {
+		t.Fatalf("expected enqueue, dropped: %s", dec.Reason)
+	}
+	want := Envelope{
+		Schema:         EnvelopeSchema,
+		Kind:           KindReviewComment,
+		Repo:           "octo/repo",
+		PR:             42,
+		HeadSHA:        "abc123",
+		InstallationID: 77,
+		CommentID:      9001,
+		AuthorID:       555,
+		AuthorLogin:    "octocat",
+	}
+	if dec.Envelope != want {
+		t.Fatalf("envelope = %+v, want %+v", dec.Envelope, want)
+	}
+	env := dec.Envelope
+	env.DeliveryID = "guid"
+	if err := env.Validate(); err != nil {
+		t.Fatalf("stamped envelope invalid: %v", err)
+	}
+}
+
+func TestFilterReview(t *testing.T) {
+	dec, err := Filter("pull_request_review", []byte(reviewSubmitted))
+	if err != nil {
+		t.Fatalf("Filter: %v", err)
+	}
+	if !dec.Enqueue {
+		t.Fatalf("expected enqueue, dropped: %s", dec.Reason)
+	}
+	want := Envelope{
+		Schema:         EnvelopeSchema,
+		Kind:           KindReview,
+		Repo:           "octo/repo",
+		PR:             42,
+		HeadSHA:        "abc123",
+		InstallationID: 77,
+		ReviewID:       314,
+		AuthorID:       555,
+		AuthorLogin:    "octocat",
+	}
+	if dec.Envelope != want {
+		t.Fatalf("envelope = %+v, want %+v", dec.Envelope, want)
+	}
+	env := dec.Envelope
+	env.DeliveryID = "guid"
+	if err := env.Validate(); err != nil {
+		t.Fatalf("stamped envelope invalid: %v", err)
 	}
 }
 
@@ -120,6 +194,54 @@ func TestFilterDrops(t *testing.T) {
 			"pull_request",
 			strings.Replace(prClosed, `"number": 42,`, ``, 1),
 			"no number",
+		},
+		{
+			"review comment edited",
+			"pull_request_review_comment",
+			strings.Replace(reviewCommentCreated, `"created"`, `"edited"`, 1),
+			`action "edited"`,
+		},
+		{
+			"review comment without PR number",
+			"pull_request_review_comment",
+			strings.Replace(reviewCommentCreated, `"number": 42, `, ``, 1),
+			"no pull request number",
+		},
+		{
+			"review comment without comment id",
+			"pull_request_review_comment",
+			strings.Replace(reviewCommentCreated, `"id": 9001, `, ``, 1),
+			"no comment id",
+		},
+		{
+			"review comment without author id",
+			"pull_request_review_comment",
+			strings.Replace(reviewCommentCreated, `"id": 555, `, ``, 1),
+			"no author id",
+		},
+		{
+			"review dismissed",
+			"pull_request_review",
+			strings.Replace(reviewSubmitted, `"submitted"`, `"dismissed"`, 1),
+			`action "dismissed"`,
+		},
+		{
+			"review without PR number",
+			"pull_request_review",
+			strings.Replace(reviewSubmitted, `"number": 42, `, ``, 1),
+			"no pull request number",
+		},
+		{
+			"review without review id",
+			"pull_request_review",
+			strings.Replace(reviewSubmitted, `"id": 314, `, ``, 1),
+			"no review id",
+		},
+		{
+			"review without author id",
+			"pull_request_review",
+			strings.Replace(reviewSubmitted, `"id": 555, `, ``, 1),
+			"no author id",
 		},
 		{
 			"unrouted event",

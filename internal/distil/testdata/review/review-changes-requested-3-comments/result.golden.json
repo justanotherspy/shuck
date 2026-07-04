@@ -1,0 +1,6 @@
+{
+  "reviewer": "alice",
+  "verdict": "changes_requested",
+  "comments": 3,
+  "summary": "Reviewer alice requested changes — 3 inline comment(s)\nDirection is right, but the error handling needs work before this merges.\n\ninternal/foo/foo.go:12:\nThis swallows the error.\n\nDiff hunk:\n@@ -10,3 +10,4 @@\n \tif err != nil {\n-\t\treturn nil, err\n+\t\tlog.Print(err)\n+\t\treturn nil, nil\n\ninternal/foo/foo.go:20–24:\nSame pattern here — please fix both.\n\nDiff hunk:\n@@ -18,6 +18,8 @@\n \tdata, err := io.ReadAll(f)\n \tif err != nil {\n-\t\treturn nil, err\n+\t\tlog.Print(err)\n+\t\treturn nil, nil\n \t}\n\ninternal/foo/foo_test.go:8:\nAdd a case for the missing-file path.\n\nIn reply to 1 earlier comment(s) in this thread:\n\u003e bob: Covered by TestLoadMissing?\n\nDiff hunk:\n@@ -5,4 +5,6 @@\n func TestLoad(t *testing.T) {\n+\tt.Parallel()"
+}

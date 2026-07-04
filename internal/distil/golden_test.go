@@ -34,6 +34,10 @@ func TestCIFailureGolden(t *testing.T) {
 		if !e.IsDir() {
 			continue
 		}
+		if _, err := os.Stat(filepath.Join("testdata", e.Name(), "log.txt")); os.IsNotExist(err) {
+			// Not a CI-failure corpus case (e.g. testdata/review, testdata/fuzz).
+			continue
+		}
 		t.Run(e.Name(), func(t *testing.T) {
 			raw, err := os.ReadFile(filepath.Join("testdata", e.Name(), "log.txt"))
 			if err != nil {
