@@ -55,7 +55,7 @@ func FuzzPortalSessionCodec(f *testing.F) {
 		}
 
 		// Any single-byte mutation fails closed.
-		if mutateBy != 0 && len(value) > 0 {
+		if mutateBy != 0 && value != "" {
 			i := ((mutateAt % len(value)) + len(value)) % len(value)
 			mutated := []byte(value)
 			mutated[i] ^= mutateBy
@@ -104,7 +104,7 @@ func FuzzPortalCallbackParams(f *testing.F) {
 		h.Register(mux)
 
 		q := url.Values{"state": {state}, "code": {code}}
-		req := httptest.NewRequest(http.MethodGet, path+"?"+q.Encode(), nil)
+		req := httptest.NewRequest(http.MethodGet, path+"?"+q.Encode(), http.NoBody)
 		if cookie != "" {
 			req.Header.Set("Cookie", SessionCookie+"="+cookie)
 		}

@@ -121,7 +121,7 @@ func (f *fakeGitHub) Exchange(_ context.Context, code, _ string) (string, error)
 	return "gh-user-token", nil
 }
 
-func (f *fakeGitHub) User(_ context.Context, _ string) (int64, string, error) {
+func (f *fakeGitHub) User(_ context.Context, _ string) (id int64, login string, err error) {
 	if f.userErr != nil {
 		return 0, "", f.userErr
 	}

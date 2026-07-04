@@ -74,14 +74,16 @@ func (g *GitHubOAuth) Exchange(ctx context.Context, code, redirectURI string) (s
 		"code":          {code},
 		"redirect_uri":  {redirectURI},
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+	// The exchange URL derives only from operator config (SHUCK_GITHUB_URL
+	// or the github.com default), never from request input.
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, //nolint:gosec // G704: operator-configured host
 		g.web()+"/login/oauth/access_token", strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", fmt.Errorf("build exchange request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
-	resp, err := g.client().Do(req)
+	resp, err := g.client().Do(req) //nolint:gosec // G704: operator-configured host
 	if err != nil {
 		return "", fmt.Errorf("exchange code: %w", err)
 	}
@@ -112,7 +114,7 @@ func (g *GitHubOAuth) Exchange(ctx context.Context, code, redirectURI string) (s
 }
 
 // User resolves the token's identity: immutable numeric ID plus login.
-func (g *GitHubOAuth) User(ctx context.Context, accessToken string) (int64, string, error) {
+func (g *GitHubOAuth) User(ctx context.Context, accessToken string) (id int64, login string, err error) {
 	client, err := gh.NewEnterprise(accessToken, g.APIBase)
 	if err != nil {
 		return 0, "", err

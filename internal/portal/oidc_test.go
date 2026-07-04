@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"maps"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -62,9 +63,7 @@ func newFakeIssuer(t *testing.T) *fakeIssuer {
 	mux.HandleFunc("POST /token", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		claims := jwt.MapClaims{}
-		for k, v := range f.claims {
-			claims[k] = v
-		}
+		maps.Copy(claims, f.claims)
 		signKey := f.signKey
 		f.mu.Unlock()
 		tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)

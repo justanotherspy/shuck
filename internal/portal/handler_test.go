@@ -453,4 +453,3 @@ func TestLoginWhenAuthenticatedRedirectsHome(t *testing.T) {
 		t.Fatalf("authenticated /login → %v", loc)
 	}
 }
-

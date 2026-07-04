@@ -211,4 +211,3 @@ func TestScanErrors(t *testing.T) {
 		t.Fatal("malformed row accepted")
 	}
 }
-

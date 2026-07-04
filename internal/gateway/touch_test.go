@@ -32,7 +32,7 @@ func TestHelloTouchesToken(t *testing.T) {
 	srv := startGateway(t, hub)
 
 	c := hello(t, srv, "tok-a", "s1", "")
-	defer c.CloseNow()
+	defer c.CloseNow() //nolint:errcheck // test teardown
 
 	select {
 	case hash := <-toucher.calls:
@@ -54,7 +54,7 @@ func TestHelloTouchFailureDoesNotAffectConnection(t *testing.T) {
 	srv := startGateway(t, hub)
 
 	c := hello(t, srv, "tok-a", "s1", "")
-	defer c.CloseNow()
+	defer c.CloseNow() //nolint:errcheck // test teardown
 	<-toucher.calls
 
 	// The connection still works: a subscribe lands in the store.
@@ -75,7 +75,7 @@ func TestRejectedHelloDoesNotTouch(t *testing.T) {
 	srv := startGateway(t, hub)
 
 	c := hello(t, srv, "unknown-token", "s1", "")
-	defer c.CloseNow()
+	defer c.CloseNow() //nolint:errcheck // test teardown
 
 	select {
 	case <-toucher.calls:
