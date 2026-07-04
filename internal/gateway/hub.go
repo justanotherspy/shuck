@@ -37,6 +37,8 @@ type Hub struct {
 	Subs     SubscriptionStore
 	Buffer   EventBuffer
 	Presence PresenceStore
+	// Toucher may be nil, which disables last-used stamping on hello.
+	Toucher TokenToucher
 	// Registry may be nil, which means a process-local NewMemRegistry.
 	Registry Registry
 	// Log may be nil, which means slog.Default().
@@ -144,7 +146,8 @@ func (h *Hub) handshake(ctx context.Context, ws *websocket.Conn) (key Subscriber
 		h.reject(ws, "first frame is not a valid hello")
 		return SubscriberKey{}, 0, false
 	}
-	rec, err := h.Tokens.Lookup(hctx, HashToken(frame.Token))
+	hash := HashToken(frame.Token)
+	rec, err := h.Tokens.Lookup(hctx, hash)
 	switch {
 	case errors.Is(err, ErrTokenNotFound):
 		h.reject(ws, "unknown token")
@@ -156,6 +159,7 @@ func (h *Hub) handshake(ctx context.Context, ws *websocket.Conn) (key Subscriber
 		_ = ws.Close(websocket.StatusInternalError, "token lookup failed")
 		return SubscriberKey{}, 0, false
 	}
+	h.touchToken(hash)
 	key = SubscriberKey{
 		UserID:    strconv.FormatInt(rec.GitHubUserID, 10),
 		SessionID: frame.SessionID,
@@ -174,6 +178,22 @@ func (h *Hub) handshake(ctx context.Context, ws *websocket.Conn) (key Subscriber
 		// replays; the shim dedupes by event id.
 	}
 	return key, cursor, true
+}
+
+// touchToken stamps the token row's last_used asynchronously. Best-effort by
+// design: hello never waits on it, and a failure is only logged.
+func (h *Hub) touchToken(hash string) {
+	if h.Toucher == nil {
+		return
+	}
+	at := h.clock()()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := h.Toucher.TouchToken(ctx, hash, at); err != nil {
+			h.log().Warn("token touch failed", "err", err)
+		}
+	}()
 }
 
 func (h *Hub) reject(ws *websocket.Conn, reason string) {

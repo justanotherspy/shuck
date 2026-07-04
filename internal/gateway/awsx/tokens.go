@@ -2,8 +2,10 @@ package awsx
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -46,6 +48,30 @@ func (s *DynamoTokenStore) Lookup(ctx context.Context, tokenHash string) (gatewa
 		GitHubUserID: userID,
 		GitHubLogin:  stringAttr(out.Item, "github_login"),
 	}, nil
+}
+
+// TouchToken implements gateway.TokenToucher: stamp the row's last_used
+// epoch. The attribute_exists condition keeps a touch racing a revocation
+// from resurrecting the deleted row as a stub; that race is swallowed as a
+// no-op.
+func (s *DynamoTokenStore) TouchToken(ctx context.Context, tokenHash string, at time.Time) error {
+	_, err := s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:           aws.String(s.table),
+		Key:                 map[string]types.AttributeValue{"pk": &types.AttributeValueMemberS{Value: tokenHash}},
+		UpdateExpression:    aws.String("SET last_used = :t"),
+		ConditionExpression: aws.String("attribute_exists(pk)"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":t": &types.AttributeValueMemberN{Value: strconv.FormatInt(at.Unix(), 10)},
+		},
+	})
+	var conditional *types.ConditionalCheckFailedException
+	if errors.As(err, &conditional) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("token touch: %w", err)
+	}
+	return nil
 }
 
 // stringAttr reads an optional string attribute.
