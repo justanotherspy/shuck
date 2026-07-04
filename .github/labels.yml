@@ -15,6 +15,9 @@
 - name: docker
   color: 2496ed
   description: Docker / container images
+- name: plugin
+  color: 8250df
+  description: Claude Code plugins (plugins/*)
 
 # --- release-drafter categories ---
 - name: feature

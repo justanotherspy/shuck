@@ -1,0 +1,13 @@
+{
+  "name": "shuck-channel",
+  "version": "0.1.0",
+  "description": "Channel shim for shuck's self-hosted event router: a per-session stdio MCP server that holds one outbound WebSocket to your shuck gateway and pushes distilled CI-failure / PR events into the session as channel notifications. Adds shuck_subscribe / shuck_unsubscribe tools. Strictly opt-in: without SHUCK_CHANNEL_GATEWAY_URL and SHUCK_CHANNEL_TOKEN configured it connects to nothing and stays silent. Independent of (and composable with) the shuck plugin's pull-based tools.",
+  "author": {
+    "name": "justanotherspy",
+    "email": "daniel.schwartz@hey.com"
+  },
+  "homepage": "https://github.com/justanotherspy/shuck",
+  "repository": "https://github.com/justanotherspy/shuck",
+  "license": "MIT",
+  "keywords": ["ci", "github-actions", "channel", "notifications", "websocket", "mcp", "self-hosted"]
+}

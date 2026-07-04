@@ -74,6 +74,25 @@ updates:
     open-pull-requests-limit: 10
     commit-message:
       prefix: chore
+  # Channel shim plugin (bun.lock-pinned, exact versions).
+  - package-ecosystem: bun
+    directory: /plugins/shuck-channel
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - plugin
+    assignees:
+      - justanotherspy
+    groups:
+      bun:
+        patterns:
+          - "*"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: chore
   # Lockfile-pinned Claude Code CLI used by the plugin-validate CI job.
   - package-ecosystem: npm
     directory: /.github/plugin-validate

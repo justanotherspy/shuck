@@ -191,10 +191,18 @@ shellcheck: ## Run shellcheck over the repo's shell scripts
 	find . -type f -name '*.sh' -print0 | xargs -0 -r shellcheck
 
 .PHONY: plugin-validate
-plugin-validate: ## Validate the Claude Code plugin manifest (requires the claude CLI)
+plugin-validate: ## Validate the plugin + marketplace manifests (requires the claude CLI)
 	@command -v claude >/dev/null 2>&1 || { \
 		echo ">> claude CLI not found; install with: npm install -g @anthropic-ai/claude-code"; exit 1; }
 	claude plugin validate --strict ./plugins/shuck
+	claude plugin validate --strict ./plugins/shuck-channel
+	claude plugin validate --strict .claude-plugin/marketplace.json
+
+.PHONY: shim-check
+shim-check: ## Typecheck + test the channel shim plugin (requires bun)
+	@command -v bun >/dev/null 2>&1 || { \
+		echo ">> bun not found; install from https://bun.sh"; exit 1; }
+	cd plugins/shuck-channel && bun install --frozen-lockfile && bun run typecheck && bun test
 
 # ---- Tests ------------------------------------------------------------------
 # Drop excluded files from the profile in place, preserving the leading
