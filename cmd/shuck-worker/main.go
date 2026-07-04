@@ -1,7 +1,8 @@
-// Command shuck-worker is the CI-failure worker of shuck's opt-in
-// self-hosted mode (JUS-87): it consumes queue envelopes, mints GitHub App
-// installation tokens, fetches a failed run's jobs and logs, runs the
-// shared parser, and delivers the capped summary to the gateway.
+// Command shuck-worker is the event worker of shuck's opt-in self-hosted
+// mode (JUS-87, JUS-91): it consumes queue envelopes, mints GitHub App
+// installation tokens, fetches a failed run's jobs and logs — or a review
+// comment / submitted review with its context — runs the shared parser,
+// and delivers the capped summary to the gateway.
 // It runs either as an SQS long-poll loop (container mode) or as a Lambda
 // behind an SQS event source mapping — the same core backs both, chosen by
 // auto-detecting the Lambda runtime. The Lambda event source mapping must
@@ -19,6 +20,12 @@
 //	SHUCK_RAW_LOG_BUCKET             S3 bucket for raw job logs (optional;
 //	                                 unset disables archiving)
 //	SHUCK_SUMMARY_LIMIT              summary byte cap (default 16384)
+//	SHUCK_IGNORE_AUTHORS             comma-separated bot identities (numeric
+//	                                 GitHub user IDs and/or logins) whose
+//	                                 review events are dropped (optional;
+//	                                 the bot-loop guard)
+//	SHUCK_REVIEW_CONTEXT_LINES       file lines around a review comment
+//	                                 (default 10)
 //	SHUCK_GITHUB_API_URL             GitHub API base (optional; GHES)
 //	SHUCK_ADDR                       healthz listen address (default :8080;
 //	                                 poll mode)
@@ -88,13 +95,24 @@ func run(ctx context.Context, log *slog.Logger) error {
 		tokens.BaseURL = apiBase
 	}
 
+	contextLines := 0 // the Processor turns zero into distil.DefaultContextLines
+	if v := os.Getenv("SHUCK_REVIEW_CONTEXT_LINES"); v != "" {
+		if contextLines, err = strconv.Atoi(v); err != nil {
+			return fmt.Errorf("parse SHUCK_REVIEW_CONTEXT_LINES: %w", err)
+		}
+	}
+
+	fetch := &worker.GHFetcher{APIBase: apiBase, Log: log}
 	processor := &worker.Processor{
-		Tokens:       tokens,
-		Fetch:        &worker.GHFetcher{APIBase: apiBase, Log: log},
-		Deliver:      &worker.HTTPDeliverer{URL: deliverURL, Secret: deliverSecret, Log: log, Metrics: metrics},
-		SummaryLimit: summaryLimit,
-		Log:          log,
-		Metrics:      metrics,
+		Tokens:        tokens,
+		Fetch:         fetch,
+		Reviews:       fetch,
+		Deliver:       &worker.HTTPDeliverer{URL: deliverURL, Secret: deliverSecret, Log: log, Metrics: metrics},
+		SummaryLimit:  summaryLimit,
+		IgnoreAuthors: worker.ParseIgnoreAuthors(os.Getenv("SHUCK_IGNORE_AUTHORS")),
+		ContextLines:  contextLines,
+		Log:           log,
+		Metrics:       metrics,
 	}
 
 	awsCfg, err := config.LoadDefaultConfig(ctx)
@@ -201,6 +219,11 @@ func logMetrics(ctx context.Context, log *slog.Logger, m *worker.Metrics) {
 				"received", m.Received.Load(),
 				"invalid", m.Invalid.Load(),
 				"pr_closed", m.PRClosed.Load(),
+				"review_comments", m.ReviewComments.Load(),
+				"reviews", m.Reviews.Load(),
+				"bot_dropped", m.BotDropped.Load(),
+				"dup_skipped", m.DupSkipped.Load(),
+				"review_gone", m.ReviewGone.Load(),
 				"token_mints", m.TokenMints.Load(),
 				"token_cache_hits", m.TokenCacheHits.Load(),
 				"token_errors", m.TokenErrors.Load(),
