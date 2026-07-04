@@ -1,0 +1,14 @@
+{{template "header"}}
+{{if .Regenerated}}
+<p>Your token was regenerated. The previous token is revoked: sessions
+still using it will stop at their next reconnect.</p>
+{{else}}
+<p>Your token is ready.</p>
+{{end}}
+<p class="warn">This is the only time it will be shown. Copy it now.</p>
+<code class="token">{{.Token}}</code>
+<p class="muted">Put it in <code>SHUCK_CHANNEL_TOKEN</code> (or
+<code>~/.config/shuck/channel.json</code>) and restart your Claude Code
+session.</p>
+<p><a href="/">Back</a></p>
+{{template "footer"}}
