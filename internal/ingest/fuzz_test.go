@@ -45,6 +45,8 @@ func FuzzIngestVerify(f *testing.F) {
 func FuzzIngestFilter(f *testing.F) {
 	f.Add("workflow_run", workflowRunFailure)
 	f.Add("pull_request", prClosed)
+	f.Add("pull_request_review_comment", reviewCommentCreated)
+	f.Add("pull_request_review", reviewSubmitted)
 	f.Add("star", `{"action":"created"}`)
 	f.Add("workflow_run", `{}`)
 	f.Fuzz(func(t *testing.T, event, body string) {
@@ -79,6 +81,8 @@ func FuzzIngestEnvelope(f *testing.F) {
 	}
 	f.Add(string(seed))
 	f.Add(`{"schema":1,"delivery_id":"d","kind":"pr_closed","repo":"o/r","pr":1}`)
+	f.Add(`{"schema":1,"delivery_id":"d","kind":"review_comment","repo":"o/r","pr":1,"head_sha":"abc","comment_id":9,"author_id":5,"author_login":"octocat"}`)
+	f.Add(`{"schema":1,"delivery_id":"d","kind":"review","repo":"o/r","pr":1,"review_id":3,"author_id":5}`)
 	f.Add(`{"schema":9}`)
 	f.Add(`not json`)
 	f.Fuzz(func(t *testing.T, data string) {

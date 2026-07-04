@@ -46,7 +46,33 @@ func TestEnvelopeValidate(t *testing.T) {
 		{"missing repo", func(e *Envelope) { e.Repo = "" }, "repo"},
 		{"bad pr", func(e *Envelope) { e.PR = 0 }, "invalid pr"},
 		{"ci_failure without run", func(e *Envelope) { e.RunID = 0 }, "run_id"},
-		{"unknown kind", func(e *Envelope) { e.Kind = "review_comment" }, "unknown envelope kind"},
+		{"valid review_comment", func(e *Envelope) {
+			e.Kind = KindReviewComment
+			e.CommentID = 9001
+			e.AuthorID = 555
+		}, ""},
+		{"review_comment without comment id", func(e *Envelope) {
+			e.Kind = KindReviewComment
+			e.AuthorID = 555
+		}, "comment_id"},
+		{"review_comment without author id", func(e *Envelope) {
+			e.Kind = KindReviewComment
+			e.CommentID = 9001
+		}, "author_id"},
+		{"valid review", func(e *Envelope) {
+			e.Kind = KindReview
+			e.ReviewID = 314
+			e.AuthorID = 555
+		}, ""},
+		{"review without review id", func(e *Envelope) {
+			e.Kind = KindReview
+			e.AuthorID = 555
+		}, "review_id"},
+		{"review without author id", func(e *Envelope) {
+			e.Kind = KindReview
+			e.ReviewID = 314
+		}, "author_id"},
+		{"unknown kind", func(e *Envelope) { e.Kind = "deployment_status" }, "unknown envelope kind"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

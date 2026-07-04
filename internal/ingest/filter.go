@@ -37,6 +37,29 @@ type webhookPayload struct {
 			Number int `json:"number"`
 		} `json:"pull_requests"`
 	} `json:"workflow_run"`
+	// PullRequest is the nested PR object review events carry (their PR
+	// number is NOT the top-level "number" field).
+	PullRequest struct {
+		Number int `json:"number"`
+		Head   struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
+	} `json:"pull_request"`
+	Comment struct {
+		ID   int64       `json:"id"`
+		User webhookUser `json:"user"`
+	} `json:"comment"`
+	Review struct {
+		ID   int64       `json:"id"`
+		User webhookUser `json:"user"`
+	} `json:"review"`
+}
+
+// webhookUser is the author of a review comment or review. The numeric ID
+// is the authoritative identity (logins are mutable).
+type webhookUser struct {
+	ID    int64  `json:"id"`
+	Login string `json:"login"`
 }
 
 // drillableConclusions are the workflow_run conclusions that become
@@ -50,9 +73,8 @@ var drillableConclusions = map[string]bool{
 
 // Filter decides whether a verified delivery becomes work. event is the
 // X-GitHub-Event header; body is the raw payload. The event table is the
-// extension point for new kinds (JUS-91 adds the review events here). An
-// unparseable payload is an error; everything the table doesn't match is a
-// silent drop with a reason.
+// extension point for new kinds. An unparseable payload is an error;
+// everything the table doesn't match is a silent drop with a reason.
 func Filter(event string, body []byte) (Decision, error) {
 	var p webhookPayload
 	if err := json.Unmarshal(body, &p); err != nil {
@@ -66,6 +88,10 @@ func Filter(event string, body []byte) (Decision, error) {
 		return filterWorkflowRun(p), nil
 	case "pull_request":
 		return filterPullRequest(p), nil
+	case "pull_request_review_comment":
+		return filterReviewComment(p), nil
+	case "pull_request_review":
+		return filterReview(p), nil
 	default:
 		return drop(fmt.Sprintf("event %q not routed", event)), nil
 	}
@@ -123,6 +149,70 @@ func filterPullRequest(p webhookPayload) Decision {
 			Repo:           p.Repository.FullName,
 			PR:             p.Number,
 			InstallationID: p.Installation.ID,
+		},
+	}
+}
+
+// filterReviewComment routes pull_request_review_comment.created. Edits and
+// deletions are ignored: the created comment is the notification, and the
+// worker re-fetches the live object anyway. Missing identifiers fail closed —
+// the deliver contract requires author.github_user_id on review kinds.
+func filterReviewComment(p webhookPayload) Decision {
+	if p.Action != "created" {
+		return drop(fmt.Sprintf("pull_request_review_comment action %q ignored", p.Action))
+	}
+	if p.PullRequest.Number <= 0 {
+		return drop("pull_request_review_comment payload has no pull request number")
+	}
+	if p.Comment.ID <= 0 {
+		return drop("pull_request_review_comment payload has no comment id")
+	}
+	if p.Comment.User.ID <= 0 {
+		return drop("pull_request_review_comment payload has no author id")
+	}
+	return Decision{
+		Enqueue: true,
+		Envelope: Envelope{
+			Schema:         EnvelopeSchema,
+			Kind:           KindReviewComment,
+			Repo:           p.Repository.FullName,
+			PR:             p.PullRequest.Number,
+			HeadSHA:        p.PullRequest.Head.SHA,
+			InstallationID: p.Installation.ID,
+			CommentID:      p.Comment.ID,
+			AuthorID:       p.Comment.User.ID,
+			AuthorLogin:    p.Comment.User.Login,
+		},
+	}
+}
+
+// filterReview routes pull_request_review.submitted. Dismissals and edits
+// are ignored. Missing identifiers fail closed, as for review comments.
+func filterReview(p webhookPayload) Decision {
+	if p.Action != "submitted" {
+		return drop(fmt.Sprintf("pull_request_review action %q ignored", p.Action))
+	}
+	if p.PullRequest.Number <= 0 {
+		return drop("pull_request_review payload has no pull request number")
+	}
+	if p.Review.ID <= 0 {
+		return drop("pull_request_review payload has no review id")
+	}
+	if p.Review.User.ID <= 0 {
+		return drop("pull_request_review payload has no author id")
+	}
+	return Decision{
+		Enqueue: true,
+		Envelope: Envelope{
+			Schema:         EnvelopeSchema,
+			Kind:           KindReview,
+			Repo:           p.Repository.FullName,
+			PR:             p.PullRequest.Number,
+			HeadSHA:        p.PullRequest.Head.SHA,
+			InstallationID: p.Installation.ID,
+			ReviewID:       p.Review.ID,
+			AuthorID:       p.Review.User.ID,
+			AuthorLogin:    p.Review.User.Login,
 		},
 	}
 }
