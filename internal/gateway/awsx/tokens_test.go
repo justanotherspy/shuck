@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -46,6 +47,50 @@ func TestTokenLookupNotFound(t *testing.T) {
 	_, err := store.Lookup(context.Background(), "missing")
 	if !errors.Is(err, gateway.ErrTokenNotFound) {
 		t.Fatalf("err = %v, want ErrTokenNotFound", err)
+	}
+}
+
+func TestTouchToken(t *testing.T) {
+	fake := &fakeDynamo{}
+	store := NewDynamoTokenStore(fake, "tokens")
+	if err := store.TouchToken(context.Background(), "abc123", time.Unix(1_000_000, 0)); err != nil {
+		t.Fatalf("TouchToken: %v", err)
+	}
+	in := fake.updates[0]
+	if *in.TableName != "tokens" {
+		t.Fatalf("table = %q", *in.TableName)
+	}
+	if got := in.Key["pk"].(*types.AttributeValueMemberS).Value; got != "abc123" {
+		t.Fatalf("pk = %q", got)
+	}
+	if *in.UpdateExpression != "SET last_used = :t" {
+		t.Fatalf("update expression = %q", *in.UpdateExpression)
+	}
+	if *in.ConditionExpression != "attribute_exists(pk)" {
+		t.Fatal("touch must not resurrect revoked rows")
+	}
+	if got := in.ExpressionAttributeValues[":t"].(*types.AttributeValueMemberN).Value; got != "1000000" {
+		t.Fatalf("last_used = %q", got)
+	}
+}
+
+func TestTouchTokenRevokedIsNoOp(t *testing.T) {
+	fake := &fakeDynamo{updateFn: func(*dynamodb.UpdateItemInput) (*dynamodb.UpdateItemOutput, error) {
+		return nil, &types.ConditionalCheckFailedException{}
+	}}
+	store := NewDynamoTokenStore(fake, "tokens")
+	if err := store.TouchToken(context.Background(), "gone", time.Unix(1, 0)); err != nil {
+		t.Fatalf("touching a revoked token must be a no-op, got %v", err)
+	}
+}
+
+func TestTouchTokenError(t *testing.T) {
+	fake := &fakeDynamo{updateFn: func(*dynamodb.UpdateItemInput) (*dynamodb.UpdateItemOutput, error) {
+		return nil, errors.New("throttled")
+	}}
+	store := NewDynamoTokenStore(fake, "tokens")
+	if err := store.TouchToken(context.Background(), "abc", time.Unix(1, 0)); err == nil {
+		t.Fatal("store failure must surface")
 	}
 }
 

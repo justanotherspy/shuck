@@ -52,6 +52,17 @@ type TokenStore interface {
 	Lookup(ctx context.Context, tokenHash string) (TokenRecord, error)
 }
 
+// TokenToucher optionally records when a token was last used, so the JUS-90
+// portal can show it. Best-effort: the hub fires it asynchronously after a
+// successful hello and only logs failures — it never gates or delays the
+// handshake.
+type TokenToucher interface {
+	// TouchToken stamps the token row's last_used attribute. Touching a
+	// concurrently revoked (deleted) token must be a no-op, never a
+	// resurrection.
+	TouchToken(ctx context.Context, tokenHash string, at time.Time) error
+}
+
 // PRRef names one pull request.
 type PRRef struct {
 	Repo string // owner/name

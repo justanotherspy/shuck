@@ -91,8 +91,10 @@ func run(ctx context.Context, log *slog.Logger) error {
 	}
 	ddb := dynamodb.NewFromConfig(awsCfg)
 	metrics := &gateway.Metrics{}
+	tokens := awsx.NewDynamoTokenStore(ddb, tokenTable)
 	hub := &gateway.Hub{
-		Tokens:    awsx.NewDynamoTokenStore(ddb, tokenTable),
+		Tokens:    tokens,
+		Toucher:   tokens,
 		Subs:      awsx.NewDynamoSubscriptionStore(ddb, subTable),
 		Buffer:    awsx.NewDynamoEventBuffer(ddb, bufferTable, bufferTTL),
 		Presence:  awsx.NewDynamoPresenceStore(ddb, bufferTable),
