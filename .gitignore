@@ -30,6 +30,12 @@ bench-*.txt
 # Plugin-managed binary (downloaded on demand by the shuck plugin's installer)
 /plugins/shuck/bin/
 
+# Channel shim plugin dependencies (bun install at session start)
+/plugins/shuck-channel/node_modules/
+
+# Pinned Claude Code CLI installed by make plugin-validate / CI
+/.github/plugin-validate/node_modules/
+
 # Dependency directories (remove the comment below to include it)
 # vendor/
 

@@ -1,0 +1,23 @@
+{
+  "name": "shuck",
+  "owner": {
+    "name": "justanotherspy",
+    "email": "daniel.schwartz@hey.com"
+  },
+  "metadata": {
+    "description": "shuck plugins: failing-CI-log inspection tools and the self-hosted event-router channel shim",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "shuck",
+      "source": "./plugins/shuck",
+      "description": "Failing CI step logs, PR reviews, security alerts, compliance and Dependabot audits, and Action/image SHA-pinning via the shuck CLI: a skill, an MCP server, and a prereq-checking hook."
+    },
+    {
+      "name": "shuck-channel",
+      "source": "./plugins/shuck-channel",
+      "description": "Channel shim for shuck's self-hosted event router: pushes distilled CI-failure and PR events from your shuck gateway into the session. Requires an operator-deployed gateway and a minted token; inert without them."
+    }
+  ]
+}
