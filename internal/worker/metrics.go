@@ -10,6 +10,12 @@ type Metrics struct {
 	Invalid  atomic.Int64 // unparseable/unprocessable envelopes (poison)
 	PRClosed atomic.Int64 // pr_closed pass-throughs delivered
 
+	ReviewComments atomic.Int64 // review_comment events delivered
+	Reviews        atomic.Int64 // review events delivered
+	BotDropped     atomic.Int64 // review events dropped by the bot guard
+	DupSkipped     atomic.Int64 // review events skipped by the standalone rule
+	ReviewGone     atomic.Int64 // review objects deleted before the fetch
+
 	TokenMints     atomic.Int64 // installation tokens minted from GitHub
 	TokenCacheHits atomic.Int64 // token requests served from cache
 	TokenErrors    atomic.Int64 // token mints that failed
