@@ -309,11 +309,12 @@ pprof-mem: ## Open the memory profile in the pprof web UI
 
 # ---- Build / run ------------------------------------------------------------
 .PHONY: build
-build: ## Build the binaries into ./bin (shuck + the self-hosted ingest & gateway)
+build: ## Build the binaries into ./bin (shuck + the self-hosted ingest, gateway & worker)
 	@mkdir -p $(BIN_DIR)
 	$(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/$(BINARY) $(MAIN_PKG)
 	$(GO) build -trimpath -ldflags '-s -w' -o $(BIN_DIR)/shuck-ingest ./cmd/shuck-ingest
 	$(GO) build -trimpath -ldflags '-s -w' -o $(BIN_DIR)/shuck-gateway ./cmd/shuck-gateway
+	$(GO) build -trimpath -ldflags '-s -w' -o $(BIN_DIR)/shuck-worker ./cmd/shuck-worker
 
 .PHONY: install
 install: ## go install the binary
