@@ -1,0 +1,6 @@
+{
+  "reviewer": "alice",
+  "path": "internal/foo/foo.go",
+  "lines": "12",
+  "summary": "Reviewer alice commented on internal/foo/foo.go:12:\nThis swallows the error — return it instead of logging.\n\nDiff hunk:\n@@ -8,7 +8,9 @@ func Load(path string) (*Config, error) {\n \tf, err := os.Open(path)\n \tif err != nil {\n-\t\treturn nil, err\n+\t\tlog.Printf(\"open %s: %v\", path, err)\n+\t\treturn nil, nil\n \t}\n\nFile context at head (±4 lines):\n 8 | func Load(path string) (*Config, error) {\n 9 | \tf, err := os.Open(path)\n10 | \tif err != nil {\n11 | \t\tlog.Printf(\"open %s: %v\", path, err)\n12 | \t\treturn nil, nil\n13 | \t}\n14 | \tdefer f.Close()\n15 | \treturn parse(f)\n16 | }"
+}

@@ -1,0 +1,13 @@
+{
+  "comment": {
+    "Reviewer": "alice",
+    "Path": "cmd/serve/main.go",
+    "StartLine": 5,
+    "Line": 8,
+    "Side": "RIGHT",
+    "Body": "Extract this block into a helper — it repeats below.",
+    "DiffHunk": "@@ -2,8 +2,10 @@\n func run() error {\n+\tcfg, err := load()\n+\tif err != nil {\n+\t\treturn err\n+\t}",
+    "FileContent": "package main\n\nfunc run() error {\n\tcfg, err := load()\n\tif err != nil {\n\t\treturn err\n\t}\n\tsrv := newServer(cfg)\n\treturn srv.ListenAndServe()\n}\n",
+    "ContextLines": 2
+  }
+}

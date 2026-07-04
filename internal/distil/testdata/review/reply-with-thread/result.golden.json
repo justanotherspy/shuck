@@ -1,0 +1,6 @@
+{
+  "reviewer": "carol",
+  "path": "internal/foo/foo.go",
+  "lines": "9",
+  "summary": "Reviewer carol commented on internal/foo/foo.go:9:\nAgreed — and the wrapped error should name the path.\n\nIn reply to 2 earlier comment(s) in this thread:\n\u003e alice: Should this wrap the error with context?\n\u003e bob: Yes.\n\u003e Use fmt.Errorf with %w.\n\nDiff hunk:\n@@ -6,4 +6,6 @@\n func Load(path string) (*Config, error) {\n \tf, err := os.Open(path)\n+\tif err != nil {\n+\t\treturn nil, err\n+\t}\n\nFile context at head (±2 lines):\n 7 | \n 8 | func Load(path string) (*Config, error) {\n 9 | \tf, err := os.Open(path)\n10 | \tif err != nil {\n11 | \t\treturn nil, err"
+}

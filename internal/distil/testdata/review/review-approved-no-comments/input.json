@@ -1,0 +1,7 @@
+{
+  "review": {
+    "Reviewer": "bob",
+    "State": "APPROVED",
+    "Body": "LGTM — nice test coverage."
+  }
+}

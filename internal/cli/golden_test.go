@@ -41,6 +41,10 @@ func TestRenderedReportGoldenCorpus(t *testing.T) {
 		if !e.IsDir() {
 			continue
 		}
+		if _, err := os.Stat(filepath.Join(corpusDir, e.Name(), "log.txt")); os.IsNotExist(err) {
+			// Not a CI-failure corpus case (e.g. testdata/review, testdata/fuzz).
+			continue
+		}
 		t.Run(e.Name(), func(t *testing.T) {
 			rawBytes, err := os.ReadFile(filepath.Join(corpusDir, e.Name(), "log.txt"))
 			if err != nil {

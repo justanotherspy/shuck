@@ -1,0 +1,6 @@
+{
+  "reviewer": "bob",
+  "path": "internal/bar/bar.go",
+  "lines": "42",
+  "summary": "Reviewer bob commented on internal/bar/bar.go:42:\nOff-by-one: the loop skips the last element.\n\nDiff hunk:\n@@ -40,5 +40,5 @@ func sum(xs []int) int {\n-\tfor i := 0; i \u003c len(xs)-1; i++ {\n+\tfor i := 0; i \u003c len(xs); i++ {"
+}

@@ -1,0 +1,16 @@
+{
+  "comment": {
+    "Reviewer": "carol",
+    "Path": "internal/foo/foo.go",
+    "Line": 9,
+    "Side": "RIGHT",
+    "Body": "Agreed — and the wrapped error should name the path.",
+    "DiffHunk": "@@ -6,4 +6,6 @@\n func Load(path string) (*Config, error) {\n \tf, err := os.Open(path)\n+\tif err != nil {\n+\t\treturn nil, err\n+\t}",
+    "Thread": [
+      {"Author": "alice", "Body": "Should this wrap the error with context?"},
+      {"Author": "bob", "Body": "Yes.\nUse fmt.Errorf with %w."}
+    ],
+    "FileContent": "package foo\n\nimport (\n\t\"fmt\"\n\t\"os\"\n)\n\nfunc Load(path string) (*Config, error) {\n\tf, err := os.Open(path)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tdefer f.Close()\n\treturn parse(f)\n}\n",
+    "ContextLines": 2
+  }
+}
