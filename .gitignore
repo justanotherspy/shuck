@@ -49,3 +49,13 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Terraform (deploy/terraform): local state, providers, and built Lambda
+# artifacts never belong in the repo.
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+deploy/terraform/build/
