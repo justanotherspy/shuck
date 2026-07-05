@@ -81,7 +81,9 @@ make ci              # exactly what CI runs
 
 `make fix` / `fix-check` alias `modernize` / `modernize-check`. Also there:
 `vet`, `tidy`, `bench`, `profile` / `pprof-cpu` / `pprof-mem`, `docker-build`,
-`snapshot` (local goreleaser), and `hooks` (pre-commit).
+`snapshot` (local goreleaser), `hooks` (pre-commit), and the deploy-surface
+gates `shim-check`, `terraform-check`, and `helm-check` (each mirrors its own
+CI job; `make ci` stays Go-only).
 
 ## Architecture
 
@@ -117,6 +119,7 @@ render → update cache.
 | `cmd/shuck-portal` | The self-hosted portal binary: env-configured HTTP server (org XOR personal-account validation mode) or Lambda (auto-detected; `SHUCK_PORTAL_ROLE=sweep` for scheduled re-validation); `shuck-portal sweep` runs one re-validation pass and exits for cron scheduling. Opt-in backend only. |
 | `internal/lambdahttp` | Adapts an `http.Handler` to Lambda function-URL / API GW v2 events — the shared Lambda-mode plumbing for ingest, the gateway deliver role, and the portal. Backend-only; never linked by the root binary. |
 | `deploy/terraform` | JUS-92 serverless deployment target: one `terraform apply` deploys the whole opt-in backend (4 DynamoDB tables, SQS+DLQ, lifecycle bucket, 7 Lambdas, WS + HTTP APIs, EventBridge sweeps, per-function IAM; secrets generated in-stack and env-injected). `make terraform-check` gates fmt+validate — its own CI job; `make ci` stays Go-only. |
+| `deploy/helm/shuck` | JUS-93 Kubernetes deployment target: the resident binaries (gateway server, worker poll loop, portal + sweep CronJob, in-cluster or lambda-mode ingest) with split public/private ingress, a worker-before-ingest deploy-order initContainer gate, and opt-in HPA/KEDA/NetworkPolicy/ExternalSecrets; per-component IRSA ServiceAccounts. Backend images build from `Dockerfile.backend` via the `docker.yml` matrix (`ghcr.io/justanotherspy/shuck-<component>`); releases also push the chart to `oci://ghcr.io/justanotherspy/charts/shuck`. `make helm-check` gates lint+template and a kind smoke job installs it — their own CI jobs; `make ci` stays Go-only. |
 | `internal/render` | Format a `model.Report` to text. |
 | `internal/model` | Shared domain types (imports nothing internal). |
 
