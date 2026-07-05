@@ -8,8 +8,12 @@
 // revokes the old token. A daily sweep re-validates every token's user
 // against current org membership and revokes departed members.
 //
-// It runs as a plain HTTP server; `shuck-portal sweep` instead runs one
-// sweep pass and exits, for a CronJob or scheduled Lambda (JUS-92/93).
+// It runs as a plain HTTP server, or — auto-detected — as a Lambda behind a
+// function URL (the JUS-92 serverless deployment; function URLs terminate
+// TLS, which the Secure session cookies require). `shuck-portal sweep`
+// instead runs one sweep pass and exits, for a CronJob; in Lambda mode
+// SHUCK_PORTAL_ROLE=sweep does the same per invocation for an EventBridge
+// schedule.
 //
 // Configuration is environment-only (deploy tooling injects secrets;
 // JUS-92/93 own that wiring):
@@ -43,9 +47,14 @@
 //	SHUCK_GITHUB_URL            GitHub web origin (GHES; default
 //	                            https://github.com)
 //	SHUCK_GITHUB_API_URL        GitHub API base (GHES)
-//	SHUCK_SWEEP_INTERVAL        re-validation interval (default 24h)
+//	SHUCK_SWEEP_INTERVAL        re-validation interval (default 24h;
+//	                            server mode — Lambda mode schedules the
+//	                            sweep role externally)
 //	SHUCK_SESSION_TTL           session lifetime (default 1h)
-//	SHUCK_ADDR                  listen address (default :8080)
+//	SHUCK_ADDR                  listen address (default :8080; server mode)
+//	SHUCK_PORTAL_ROLE           Lambda mode only: unset serves the portal;
+//	                            "sweep" runs one re-validation pass per
+//	                            invocation (EventBridge schedule)
 //
 // This binary is part of the self-hosted backend only. The portable shuck
 // CLI does not link it and is unaffected by it (see docs/V2.md).
@@ -64,10 +73,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 
 	"github.com/justanotherspy/shuck/internal/gh"
+	"github.com/justanotherspy/shuck/internal/lambdahttp"
 	"github.com/justanotherspy/shuck/internal/portal"
 	"github.com/justanotherspy/shuck/internal/portal/awsx"
 	"github.com/justanotherspy/shuck/internal/worker"
@@ -106,6 +117,29 @@ func run(ctx context.Context, log *slog.Logger) error {
 	if len(os.Args) > 1 && os.Args[1] == "sweep" {
 		revoked := sweeper.Sweep(ctx)
 		log.Info("sweep pass finished", "revoked", revoked)
+		return nil
+	}
+
+	if os.Getenv("AWS_LAMBDA_RUNTIME_API") != "" {
+		if os.Getenv("SHUCK_PORTAL_ROLE") == "sweep" {
+			log.Info("starting in Lambda mode", "role", "sweep")
+			lambda.StartWithOptions(func(ctx context.Context) error {
+				revoked := sweeper.Sweep(ctx)
+				log.Info("sweep pass finished", "revoked", revoked)
+				return nil
+			}, lambda.WithContext(ctx))
+			return nil
+		}
+		handler, err := buildHandler(ctx, store, validator, log)
+		if err != nil {
+			return err
+		}
+		mux := http.NewServeMux()
+		handler.Register(mux)
+		// No in-process sweeper here: Lambda freezes between invocations,
+		// so re-validation runs as the separately scheduled sweep role.
+		log.Info("starting in Lambda mode", "role", "serve", "oidc", handler.OIDC != nil)
+		lambda.StartWithOptions(lambdahttp.FunctionURLHandler(mux), lambda.WithContext(ctx))
 		return nil
 	}
 

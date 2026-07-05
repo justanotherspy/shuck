@@ -14,6 +14,7 @@ func FuzzGatewayClientFrame(f *testing.F) {
 	f.Add([]byte(`{"type":"subscribe","repo":"octo/repo","pr":7}`))
 	f.Add([]byte(`{"type":"unsubscribe","repo":"octo/repo","pr":7}`))
 	f.Add([]byte(`{"type":"ack","id":"ev-1"}`))
+	f.Add([]byte(`{"type":"ping"}`))
 	f.Add([]byte(`{"type":"event"}`))
 	f.Add([]byte(`{}`))
 	f.Add([]byte(`{nope`))
@@ -35,6 +36,8 @@ func FuzzGatewayClientFrame(f *testing.F) {
 			if frame.ID == "" {
 				t.Fatalf("accepted ack missing id: %+v", frame)
 			}
+		case FramePing:
+			// No required fields.
 		default:
 			t.Fatalf("accepted unknown frame type %q", frame.Type)
 		}

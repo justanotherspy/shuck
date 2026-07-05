@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"io"
@@ -18,12 +19,19 @@ const DeliverSecretHeader = "X-Shuck-Deliver-Secret" //nolint:gosec // header na
 // generous headroom.
 const DefaultDeliverMaxBody = 1 << 20
 
+// EventDeliverer fans one worker event out to its subscribers. The resident
+// Hub and the serverless gateway both implement it, so the one deliver
+// endpoint (and its secret discipline) fronts either.
+type EventDeliverer interface {
+	Deliver(ctx context.Context, req DeliverRequest) (DeliverResult, error)
+}
+
 // DeliverHandler is the POST /internal/deliver http.Handler.
 type DeliverHandler struct {
 	// Secrets holds one or two accepted values; the second exists so a
 	// rotation can roll workers without a hard cutover.
 	Secrets [][]byte
-	Hub     *Hub
+	Hub     EventDeliverer
 	// Log may be nil, which means slog.Default().
 	Log *slog.Logger
 	// Metrics may be nil, which disables counting.

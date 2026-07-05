@@ -1,4 +1,4 @@
-package awsx
+package lambdahttp
 
 import (
 	"encoding/base64"
