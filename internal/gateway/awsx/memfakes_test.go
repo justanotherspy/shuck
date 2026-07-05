@@ -74,7 +74,7 @@ type memBuffer struct {
 	seq    map[string]int64
 }
 
-func (m *memBuffer) Append(_ context.Context, sub gateway.SubscriberKey, ev gateway.Event) (int64, bool, error) {
+func (m *memBuffer) Append(_ context.Context, sub gateway.SubscriberKey, ev gateway.Event) (seq int64, duplicate bool, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.events == nil {
@@ -105,7 +105,7 @@ func (m *memBuffer) After(_ context.Context, sub gateway.SubscriberKey, afterSeq
 	return out, nil
 }
 
-func (m *memBuffer) SeqOf(_ context.Context, sub gateway.SubscriberKey, eventID string) (int64, bool, error) {
+func (m *memBuffer) SeqOf(_ context.Context, sub gateway.SubscriberKey, eventID string) (seq int64, ok bool, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, ev := range m.events[sub.String()] {
@@ -204,10 +204,10 @@ func (m *memRegistryStore) Set(_ context.Context, sub gateway.SubscriberKey, con
 	return prev, nil
 }
 
-func (m *memRegistryStore) Get(_ context.Context, sub gateway.SubscriberKey) (string, bool, error) {
+func (m *memRegistryStore) Get(_ context.Context, sub gateway.SubscriberKey) (connID string, ok bool, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	connID, ok := m.forward[sub]
+	connID, ok = m.forward[sub]
 	return connID, ok, nil
 }
 

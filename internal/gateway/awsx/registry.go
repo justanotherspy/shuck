@@ -91,7 +91,7 @@ func (s *DynamoRegistryStore) Set(ctx context.Context, sub gateway.SubscriberKey
 
 // Get returns sub's current connection, if any. The read is consistent —
 // a just-replaced connection must not be pushed to.
-func (s *DynamoRegistryStore) Get(ctx context.Context, sub gateway.SubscriberKey) (string, bool, error) {
+func (s *DynamoRegistryStore) Get(ctx context.Context, sub gateway.SubscriberKey) (connID string, ok bool, err error) {
 	out, err := s.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName:      aws.String(s.table),
 		Key:            registryForwardKey(sub),
@@ -100,7 +100,7 @@ func (s *DynamoRegistryStore) Get(ctx context.Context, sub gateway.SubscriberKey
 	if err != nil {
 		return "", false, fmt.Errorf("registry get %s: %w", sub.String(), err)
 	}
-	connID := stringAttr(out.Item, "conn")
+	connID = stringAttr(out.Item, "conn")
 	return connID, connID != "", nil
 }
 

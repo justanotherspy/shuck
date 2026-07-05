@@ -292,11 +292,11 @@ func (f *fakeRegistry) Set(_ context.Context, sub gateway.SubscriberKey, connID 
 	return prev, nil
 }
 
-func (f *fakeRegistry) Get(_ context.Context, sub gateway.SubscriberKey) (string, bool, error) {
+func (f *fakeRegistry) Get(_ context.Context, sub gateway.SubscriberKey) (connID string, ok bool, err error) {
 	if f.getErr != nil {
 		return "", false, f.getErr
 	}
-	connID, ok := f.forward[sub]
+	connID, ok = f.forward[sub]
 	return connID, ok, nil
 }
 
