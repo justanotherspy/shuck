@@ -1,0 +1,36 @@
+{{- /*
+Private ingress for the portal. TLS is mandatory in practice: the session
+cookies are Secure, so a plain-HTTP portal cannot log anyone in.
+*/ -}}
+{{- if and .Values.portal.enabled .Values.portal.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "shuck.fullname" . }}-portal
+  labels:
+    {{- include "shuck.labels" . | nindent 4 }}
+    app.kubernetes.io/component: portal
+  {{- with .Values.portal.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.portal.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.portal.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ required "portal.ingress.host is required when portal.ingress.enabled" .Values.portal.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "shuck.fullname" . }}-portal
+                port:
+                  name: http
+{{- end }}

@@ -225,6 +225,88 @@ jobs:
       - name: Validate
         run: terraform -chdir=deploy/terraform validate
 
+  helm:
+    name: Helm (deploy chart)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      # Mirrors `make helm-check` using the runner's helm (the shellcheck
+      # precedent): lint, then render the default posture and the one
+      # non-default combo. Install/upgrade runs in the kind smoke job.
+      - name: Lint
+        run: helm lint deploy/helm/shuck
+      - name: Template (default posture)
+        run: >-
+          helm template shuck deploy/helm/shuck --kube-version 1.33.0
+          -f deploy/helm/shuck/ci/smoke-values.yaml > /dev/null
+      - name: Template (non-default combo)
+        run: >-
+          helm template shuck deploy/helm/shuck --kube-version 1.33.0
+          -f deploy/helm/shuck/ci/smoke-values.yaml
+          -f deploy/helm/shuck/ci/combo-values.yaml > /dev/null
+
+  helm-smoke:
+    name: Helm smoke (kind)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      # Exact-version go install is checksum-verified by the Go module
+      # sumdb (the actionlint precedent).
+      - name: Install kind
+        run: go install sigs.k8s.io/kind@v0.32.0
+      - name: Create cluster
+        run: kind create cluster --name shuck-smoke --wait 120s
+      - name: Build backend images
+        run: |
+          for c in ingest worker gateway portal; do
+            docker build -f Dockerfile.backend --build-arg COMPONENT="$c" \
+              -t "ghcr.io/justanotherspy/shuck-$c:smoke" .
+          done
+      - name: Load images into kind
+        run: |
+          kind load docker-image --name shuck-smoke \
+            ghcr.io/justanotherspy/shuck-ingest:smoke \
+            ghcr.io/justanotherspy/shuck-worker:smoke \
+            ghcr.io/justanotherspy/shuck-gateway:smoke \
+            ghcr.io/justanotherspy/shuck-portal:smoke
+      # Defaults posture: in-cluster ingest, static worker, no NP. The
+      # ingest rollout implicitly proves the deploy-order gate resolves
+      # (its initContainer waits on the worker Deployment).
+      - name: Install (default posture)
+        run: |
+          helm install shuck deploy/helm/shuck -f deploy/helm/shuck/ci/smoke-values.yaml
+          kubectl rollout status deployment/shuck-worker --timeout=180s
+          kubectl rollout status deployment/shuck-gateway --timeout=180s
+          kubectl rollout status deployment/shuck-portal --timeout=180s
+          kubectl rollout status deployment/shuck-ingest --timeout=300s
+          kubectl get cronjob shuck-portal-sweep
+      # The one deliberately non-default combo the ticket calls for:
+      # lambda ingest + HPA + NetworkPolicy on.
+      - name: Upgrade (lambda ingest + HPA + NetworkPolicy)
+        run: |
+          helm upgrade shuck deploy/helm/shuck \
+            -f deploy/helm/shuck/ci/smoke-values.yaml \
+            -f deploy/helm/shuck/ci/combo-values.yaml
+          kubectl rollout status deployment/shuck-worker --timeout=180s
+          kubectl wait --for=delete deployment/shuck-ingest --timeout=120s || \
+            ! kubectl get deployment/shuck-ingest
+          kubectl get hpa shuck-worker
+          kubectl get networkpolicy shuck-gateway shuck-worker shuck-portal
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide || true
+          kubectl describe pods || true
+          kubectl logs -l app.kubernetes.io/instance=shuck --all-containers --tail=100 || true
+
   shim:
     name: Channel shim (Bun)
     runs-on: ubuntu-latest

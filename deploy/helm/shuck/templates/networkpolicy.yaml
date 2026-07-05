@@ -1,0 +1,139 @@
+{{- /*
+Vanilla NetworkPolicy set implementing the traffic matrix (see the chart
+README). NetworkPolicy is L4: peers allowed to the gateway's port for /ws
+can also reach /internal/deliver on the same port — the shared deliver
+secret independently rejects them (defence in depth; the acceptance case).
+Egress to AWS/GitHub is "443 anywhere" — managed-service IPs are not
+enumerable; CNI-specific FQDN policies belong in extraManifests.
+Caveat: kubelet probe traffic is exempted by most CNIs but not all —
+verify probes still pass when enabling this on an unusual CNI.
+*/ -}}
+{{- if .Values.networkPolicy.enabled }}
+{{- $dns := list (dict "ports" (list (dict "protocol" "UDP" "port" 53) (dict "protocol" "TCP" "port" 53))) }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "shuck.fullname" . }}-gateway
+  labels:
+    {{- include "shuck.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "shuck.selectorLabels" (dict "root" . "component" "gateway") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # Workers deliver; anything else reaching this port is stopped here,
+    # and by the deliver secret if it gets through another way.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "shuck.selectorLabels" (dict "root" . "component" "worker") | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 8080
+    {{- with .Values.networkPolicy.gatewayExtraFrom }}
+    # Shim WebSocket path: the (private) ingress controller.
+    - from:
+        {{- toYaml . | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 8080
+    {{- end }}
+  egress:
+    # DynamoDB.
+    - ports:
+        - protocol: TCP
+          port: 443
+    {{- toYaml $dns | nindent 4 }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "shuck.fullname" . }}-worker
+  labels:
+    {{- include "shuck.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "shuck.selectorLabels" (dict "root" . "component" "worker") | nindent 6 }}
+  # Egress only: the worker exposes nothing but its liveness endpoint.
+  policyTypes: [Egress]
+  egress:
+    # SQS, S3, GitHub.
+    - ports:
+        - protocol: TCP
+          port: 443
+    # Gateway deliver.
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "shuck.selectorLabels" (dict "root" . "component" "gateway") | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 8080
+    {{- toYaml $dns | nindent 4 }}
+{{- if eq .Values.ingest.mode "in-cluster" }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "shuck.fullname" . }}-ingest
+  labels:
+    {{- include "shuck.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingest
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "shuck.selectorLabels" (dict "root" . "component" "ingest") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  {{- with .Values.networkPolicy.ingestFrom }}
+  ingress:
+    # The public ingress controller carrying /webhook.
+    - from:
+        {{- toYaml . | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 8080
+  {{- end }}
+  egress:
+    # SQS + DynamoDB, and the kube-apiserver for the deploy-order gate.
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
+    {{- toYaml $dns | nindent 4 }}
+{{- end }}
+{{- if .Values.portal.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "shuck.fullname" . }}-portal
+  labels:
+    {{- include "shuck.labels" . | nindent 4 }}
+    app.kubernetes.io/component: portal
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "shuck.selectorLabels" (dict "root" . "component" "portal") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  {{- with .Values.networkPolicy.portalFrom }}
+  ingress:
+    # The private ingress controller carrying the portal UI.
+    - from:
+        {{- toYaml . | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 8080
+  {{- end }}
+  egress:
+    # GitHub (user auth + validation), DynamoDB, optional OIDC issuer.
+    - ports:
+        - protocol: TCP
+          port: 443
+    {{- toYaml $dns | nindent 4 }}
+{{- end }}
+{{- end }}

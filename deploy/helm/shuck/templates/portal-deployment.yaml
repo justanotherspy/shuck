@@ -1,0 +1,113 @@
+{{- /*
+The token portal (JUS-90). Must sit behind TLS (Secure session cookies) on
+a PRIVATE ingress. The in-server re-validation ticker runs too; the
+CronJob (portal-sweep-cronjob.yaml) is the explicit, observable sweep.
+*/ -}}
+{{- if .Values.portal.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "shuck.fullname" . }}-portal
+  labels:
+    {{- include "shuck.labels" . | nindent 4 }}
+    app.kubernetes.io/component: portal
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "shuck.selectorLabels" (dict "root" . "component" "portal") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "shuck.selectorLabels" (dict "root" . "component" "portal") | nindent 8 }}
+      {{- with .Values.portal.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "shuck.serviceAccountName" (dict "root" . "component" "portal") }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      securityContext:
+        {{- include "shuck.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: portal
+          image: {{ include "shuck.image" (dict "root" . "component" "portal") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- include "shuck.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: SHUCK_TOKEN_TABLE
+              value: {{ .Values.config.tokenTable | quote }}
+            - name: SHUCK_BASE_URL
+              value: {{ .Values.portal.baseUrl | quote }}
+            - name: SHUCK_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "shuck.secretName" . }}
+                  key: session-secret
+            - name: SHUCK_GITHUB_CLIENT_ID
+              value: {{ .Values.github.clientId | quote }}
+            - name: SHUCK_GITHUB_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "shuck.secretName" . }}
+                  key: github-client-secret
+            {{- include "shuck.portalValidationEnv" . | nindent 12 }}
+            {{- if .Values.portal.oidc.issuer }}
+            - name: SHUCK_OIDC_ISSUER
+              value: {{ .Values.portal.oidc.issuer | quote }}
+            - name: SHUCK_OIDC_CLIENT_ID
+              value: {{ .Values.portal.oidc.clientId | quote }}
+            - name: SHUCK_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "shuck.secretName" . }}
+                  key: oidc-client-secret
+            {{- end }}
+            {{- with .Values.portal.sessionTtl }}
+            - name: SHUCK_SESSION_TTL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.portal.sweepInterval }}
+            - name: SHUCK_SWEEP_INTERVAL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- include "shuck.ghesEnv" . | nindent 12 }}
+            {{- include "shuck.awsEnv" . | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          {{- with .Values.portal.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            {{- include "shuck.appKeyVolumeMount" . | nindent 12 }}
+      volumes:
+        {{- include "shuck.appKeyVolume" . | nindent 8 }}
+      {{- with .Values.portal.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.portal.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.portal.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

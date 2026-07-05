@@ -1,0 +1,14 @@
+{{- /*
+Raw passthrough for anything the chart doesn't template: Cilium policies,
+ServiceMonitors, KEDA TriggerAuthentications, ExternalSecret variants.
+String entries run through tpl (so they can reference .Values/.Release);
+map entries render as-is.
+*/ -}}
+{{- range .Values.extraManifests }}
+---
+{{- if kindIs "string" . }}
+{{ tpl . $ }}
+{{- else }}
+{{ toYaml . }}
+{{- end }}
+{{- end }}

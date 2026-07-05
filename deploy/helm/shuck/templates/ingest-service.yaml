@@ -1,0 +1,17 @@
+{{- if eq .Values.ingest.mode "in-cluster" }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "shuck.fullname" . }}-ingest
+  labels:
+    {{- include "shuck.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingest
+spec:
+  type: {{ .Values.ingest.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.ingest.service.port }}
+      targetPort: http
+  selector:
+    {{- include "shuck.selectorLabels" (dict "root" . "component" "ingest") | nindent 4 }}
+{{- end }}
