@@ -38,8 +38,13 @@ import (
 	"github.com/justanotherspy/shuck/internal/lambdahttp"
 )
 
+// version is stamped at build time via -X main.version (Makefile /
+// Dockerfile.backend); untagged builds report "dev".
+var version = "dev"
+
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	log.Info("shuck-ingest starting", "version", version)
 	if err := run(context.Background(), log); err != nil {
 		log.Error("shuck-ingest failed", "err", err)
 		os.Exit(1)

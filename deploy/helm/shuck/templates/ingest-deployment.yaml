@@ -1,0 +1,110 @@
+{{- /*
+The webhook ingest (JUS-86) — the only public component. Rendered only in
+in-cluster mode; lambda mode leaves ingest to the deploy/terraform module
+(same SQS queue, zero public cluster surface).
+
+Deploy order is a contract (JUS-91): shuck-worker must roll out before
+ingest serves — an old worker treats new envelope kinds as poison. The
+wait-for-worker initContainer gates every new ingest pod on the worker
+Deployment's completed rollout; kubelet's restart backoff is the retry
+loop. Rolling updates keep the old ingest pod serving while the gate holds,
+so webhook availability is preserved.
+*/ -}}
+{{- if eq .Values.ingest.mode "in-cluster" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "shuck.fullname" . }}-ingest
+  labels:
+    {{- include "shuck.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingest
+spec:
+  replicas: {{ .Values.ingest.replicas }}
+  selector:
+    matchLabels:
+      {{- include "shuck.selectorLabels" (dict "root" . "component" "ingest") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "shuck.selectorLabels" (dict "root" . "component" "ingest") | nindent 8 }}
+      {{- with .Values.ingest.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "shuck.serviceAccountName" (dict "root" . "component" "ingest") }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      securityContext:
+        {{- include "shuck.podSecurityContext" . | nindent 8 }}
+      {{- if .Values.deployOrder.enforce }}
+      initContainers:
+        - name: wait-for-worker
+          image: {{ .Values.deployOrder.kubectlImage }}
+          command:
+            - /bin/kubectl
+            - rollout
+            - status
+            - deployment/{{ include "shuck.fullname" . }}-worker
+            - --namespace={{ .Release.Namespace }}
+            - --timeout={{ .Values.deployOrder.timeoutSeconds }}s
+          securityContext:
+            {{- include "shuck.containerSecurityContext" . | nindent 12 }}
+      {{- end }}
+      containers:
+        - name: ingest
+          image: {{ include "shuck.image" (dict "root" . "component" "ingest") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- include "shuck.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: SHUCK_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "shuck.secretName" . }}
+                  key: webhook-secret
+            - name: SHUCK_QUEUE_URL
+              value: {{ .Values.config.queueUrl | quote }}
+            - name: SHUCK_DEDUPE_TABLE
+              value: {{ .Values.config.dedupeTable | quote }}
+            {{- with .Values.ingest.dedupeTtl }}
+            - name: SHUCK_DEDUPE_TTL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.ingest.subscriptionPreFilter }}
+            - name: SHUCK_SUBSCRIPTION_TABLE
+              value: {{ .Values.config.subscriptionTable | quote }}
+            {{- end }}
+            {{- include "shuck.awsEnv" . | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          {{- with .Values.ingest.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.ingest.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.ingest.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.ingest.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

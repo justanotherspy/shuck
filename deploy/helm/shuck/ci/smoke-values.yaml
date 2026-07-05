@@ -1,0 +1,39 @@
+# Values for the CI kind smoke test: DEFAULT chart posture (in-cluster
+# ingest, static worker, no NetworkPolicy) with locally-built images and
+# dummy backend wiring. The binaries never reach AWS in the smoke test —
+# the assertions are that everything renders, schedules, passes probes,
+# and the deploy-order gate resolves.
+image:
+  tag: smoke
+  pullPolicy: Never # images are `kind load`-ed, never pulled
+
+aws:
+  region: us-east-1
+
+config:
+  queueUrl: https://sqs.us-east-1.amazonaws.com/123456789012/shuck-events
+  dedupeTable: shuck-dedupe
+  tokenTable: shuck-tokens
+  subscriptionTable: shuck-subscriptions
+  bufferTable: shuck-buffer
+
+github:
+  clientId: Iv1.smoke
+  accountId: "12345"
+
+portal:
+  baseUrl: https://shuck.smoke.invalid
+
+secrets:
+  create: true
+  values:
+    webhookSecret: smoke-webhook-secret
+    deliverSecret: smoke-deliver-secret
+    # The portal requires >= 32 bytes.
+    sessionSecret: smoke-session-secret-0123456789abcdef
+    githubClientSecret: smoke-client-secret
+
+# No ingress controller in the smoke cluster.
+ingest:
+  ingress:
+    enabled: false

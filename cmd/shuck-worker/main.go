@@ -55,8 +55,13 @@ import (
 	"github.com/justanotherspy/shuck/internal/worker/awsx"
 )
 
+// version is stamped at build time via -X main.version (Makefile /
+// Dockerfile.backend); untagged builds report "dev".
+var version = "dev"
+
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	log.Info("shuck-worker starting", "version", version)
 	if err := run(context.Background(), log); err != nil {
 		log.Error("shuck-worker failed", "err", err)
 		os.Exit(1)

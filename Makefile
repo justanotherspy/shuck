@@ -204,6 +204,17 @@ shim-check: ## Typecheck + test the channel shim plugin (requires bun)
 		echo ">> bun not found; install from https://bun.sh"; exit 1; }
 	cd plugins/shuck-channel && bun install --frozen-lockfile && bun run typecheck && bun test
 
+.PHONY: helm-check
+helm-check: ## Lint + template the deploy/helm/shuck chart (requires helm)
+	@command -v helm >/dev/null 2>&1 || { \
+		echo ">> helm not found; install from https://helm.sh/docs/intro/install/"; exit 1; }
+	helm lint deploy/helm/shuck
+	helm template shuck deploy/helm/shuck --kube-version 1.33.0 \
+		-f deploy/helm/shuck/ci/smoke-values.yaml >/dev/null
+	helm template shuck deploy/helm/shuck --kube-version 1.33.0 \
+		-f deploy/helm/shuck/ci/smoke-values.yaml \
+		-f deploy/helm/shuck/ci/combo-values.yaml >/dev/null
+
 .PHONY: terraform-check
 terraform-check: ## fmt-check + validate the deploy/terraform module (requires terraform)
 	@command -v terraform >/dev/null 2>&1 || { \
@@ -324,14 +335,18 @@ pprof-mem: ## Open the memory profile in the pprof web UI
 	$(GO) tool pprof -http=: $(PROFILE_DIR)/mem.prof
 
 # ---- Build / run ------------------------------------------------------------
+# Backend mains carry their own version string (main.version), stamped the
+# same way the CLI's internal/cli.version is.
+BACKEND_LDFLAGS := -s -w -X main.version=$(VERSION)
+
 .PHONY: build
 build: ## Build the binaries into ./bin (shuck + the self-hosted ingest, gateway, worker & portal)
 	@mkdir -p $(BIN_DIR)
 	$(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/$(BINARY) $(MAIN_PKG)
-	$(GO) build -trimpath -ldflags '-s -w' -o $(BIN_DIR)/shuck-ingest ./cmd/shuck-ingest
-	$(GO) build -trimpath -ldflags '-s -w' -o $(BIN_DIR)/shuck-gateway ./cmd/shuck-gateway
-	$(GO) build -trimpath -ldflags '-s -w' -o $(BIN_DIR)/shuck-worker ./cmd/shuck-worker
-	$(GO) build -trimpath -ldflags '-s -w' -o $(BIN_DIR)/shuck-portal ./cmd/shuck-portal
+	$(GO) build -trimpath -ldflags '$(BACKEND_LDFLAGS)' -o $(BIN_DIR)/shuck-ingest ./cmd/shuck-ingest
+	$(GO) build -trimpath -ldflags '$(BACKEND_LDFLAGS)' -o $(BIN_DIR)/shuck-gateway ./cmd/shuck-gateway
+	$(GO) build -trimpath -ldflags '$(BACKEND_LDFLAGS)' -o $(BIN_DIR)/shuck-worker ./cmd/shuck-worker
+	$(GO) build -trimpath -ldflags '$(BACKEND_LDFLAGS)' -o $(BIN_DIR)/shuck-portal ./cmd/shuck-portal
 
 .PHONY: install
 install: ## go install the binary

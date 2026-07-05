@@ -1,0 +1,284 @@
+# Default values for the shuck self-hosted backend chart (JUS-93).
+#
+# The chart deploys the four resident backend binaries — shuck-gateway
+# (WebSocket event delivery), shuck-worker (SQS consumer), shuck-portal
+# (token minting) and, in the default in-cluster mode, shuck-ingest (the
+# public webhook endpoint). AWS managed dependencies (SQS queue, DynamoDB
+# tables, S3 raw-log bucket) are NOT created by the chart: provision them
+# with the deploy/terraform module (the table schemas are frozen in
+# docs/V2.md § JUS-88) or by hand, and grant pod access via IRSA
+# (serviceAccounts.*.annotations).
+#
+# Portable mode stays the default way to use shuck — installing this chart
+# is the operator's opt-in to self-hosted mode and changes nothing for
+# CLI/MCP users.
+
+image:
+  registry: ghcr.io
+  owner: justanotherspy
+  # One tag for all four backend images; empty falls back to the chart's
+  # appVersion (published charts pin the release semver; in-repo it is
+  # "edge"). NOTE: first-push GHCR packages are private — make the
+  # shuck-{ingest,worker,gateway,portal} packages public once, or configure
+  # pullSecrets.
+  tag: ""
+  pullPolicy: IfNotPresent
+  # Names of pre-created image pull Secrets, e.g. for private GHCR packages.
+  pullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# Extra labels stamped on every rendered resource.
+commonLabels: {}
+
+aws:
+  # Injected as AWS_REGION on every component. Credentials always come from
+  # IRSA or the node role — never from chart values.
+  region: ""
+
+# Non-secret backend wiring, shared across components. All of these map 1:1
+# onto the env-var contracts documented in the cmd/shuck-*/main.go doc
+# comments (the authoritative tables).
+config:
+  # SQS queue URL between ingest and the workers (the JUS-86 envelope queue).
+  queueUrl: ""
+  # DynamoDB table names — the frozen JUS-88 schemas.
+  dedupeTable: ""
+  tokenTable: ""
+  subscriptionTable: ""
+  bufferTable: ""
+  # S3 bucket for raw job logs (optional; empty disables archiving).
+  rawLogBucket: ""
+
+github:
+  # GitHub App identity. appId + the private key (secrets) are used by the
+  # worker always, and by the portal in org-validation mode.
+  appId: ""
+  installationId: ""
+  # The App's OAuth client id (portal user-authorization flow).
+  clientId: ""
+  # Portal validation mode — set exactly one: org membership (org installs)
+  # or account ownership (personal installs).
+  org: ""
+  accountId: ""
+  # GHES only; empty means github.com.
+  webUrl: ""
+  apiUrl: ""
+
+# One k8s Secret feeds every component. Three sources for the same contract:
+#   - secrets.create: true          render it from secrets.values (dev/demo —
+#                                   secrets in values files are NOT for prod)
+#   - secrets.existingSecret: name  bring your own Secret with the same keys
+#   - externalSecrets.enabled       render an ExternalSecret that produces it
+# Keys: webhook-secret, deliver-secret, deliver-secret-secondary (optional),
+# session-secret, github-client-secret, oidc-client-secret (optional),
+# github-app-private-key.pem (mounted as a file for SHUCK_*_PRIVATE_KEY_FILE).
+secrets:
+  create: true
+  existingSecret: ""
+  values:
+    webhookSecret: ""
+    deliverSecret: ""
+    deliverSecretSecondary: ""
+    sessionSecret: ""
+    githubClientSecret: ""
+    oidcClientSecret: ""
+    githubAppPrivateKey: ""
+
+# ExternalSecret manifests producing the chart's Secret via the External
+# Secrets Operator (assumed installed; the chart never installs controllers).
+externalSecrets:
+  enabled: false
+  refreshInterval: 1h
+  secretStoreRef:
+    name: ""
+    kind: ClusterSecretStore
+  # remoteRef per Secret key; property is optional (JSON-valued remotes).
+  data:
+    webhookSecret: { key: "", property: "" }
+    deliverSecret: { key: "", property: "" }
+    sessionSecret: { key: "", property: "" }
+    githubClientSecret: { key: "", property: "" }
+    oidcClientSecret: { key: "", property: "" }
+    githubAppPrivateKey: { key: "", property: "" }
+
+gateway:
+  # Keep 1 until JUS-95: the resident gateway's connection registry is
+  # in-memory, so a second replica would strand sockets.
+  replicas: 1
+  # Duration overrides; empty keeps the binary defaults (30s / 24h / 15m / 72h).
+  heartbeat: ""
+  graceWindow: ""
+  sweepInterval: ""
+  bufferTTL: ""
+  service:
+    type: ClusterIP
+    port: 8080
+  # Private ingress for the shim WebSocket endpoint (/ws). Long-lived
+  # sockets: see the README for the WS annotations (the gateway pings every
+  # 30s, so nginx's default 60s proxy-read-timeout survives, but set the
+  # timeouts deliberately).
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    host: ""
+    tls: []
+  resources: {}
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  # SIGTERM drain closes every socket with 1001 within 10s (drainTimeout in
+  # cmd/shuck-gateway); the grace period must exceed preStop + drain, and the
+  # preStop sleep lets endpoint removal propagate before sockets close.
+  terminationGracePeriodSeconds: 30
+  preStopSleepSeconds: 5
+
+portal:
+  enabled: true
+  # External portal origin for the OAuth callbacks (register
+  # <baseUrl>/github/callback on the GitHub App). Required by the binary.
+  baseUrl: ""
+  sessionTtl: ""
+  # In-server re-validation ticker interval; the CronJob below is the
+  # explicit, observable sweep — both run the same pass, harmlessly.
+  sweepInterval: ""
+  oidc:
+    # Optional SSO gate in front of the portal; all three OIDC values (these
+    # two + the oidc-client-secret key) must be set together.
+    issuer: ""
+    clientId: ""
+  service:
+    type: ClusterIP
+    port: 8080
+  # Private ingress; the portal must sit behind TLS (Secure session cookies).
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    host: ""
+    tls: []
+  # Daily token re-validation: `shuck-portal sweep` (revokes departed org
+  # members — GitHub org membership is the access-control plane).
+  sweep:
+    enabled: true
+    schedule: "17 3 * * *"
+  resources: {}
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+worker:
+  scaling:
+    # static | hpa | keda. Static single replica is correct at typical
+    # volume. HPA scales on resource metrics (documented caveat: CPU is a
+    # lagging signal for queue consumers). KEDA scales on SQS depth down to
+    # zero — requires KEDA installed (the chart only renders a ScaledObject).
+    mode: static
+    replicas: 1
+    hpa:
+      minReplicas: 1
+      maxReplicas: 5
+      targetCPUUtilizationPercentage: 75
+    keda:
+      queueLength: 5
+      minReplicaCount: 0
+      maxReplicaCount: 5
+      # Who owns the AWS identity KEDA polls SQS with: "operator" (the KEDA
+      # operator's IRSA role) or "pod" (the worker's own service account).
+      identityOwner: operator
+  # Where workers deliver; empty targets the in-cluster gateway Service.
+  deliverUrl: ""
+  # Optional worker tuning (empty keeps binary defaults).
+  summaryLimit: ""
+  # Set to the App's bot identity (e.g. "12345,shuck-app[bot]") or
+  # agent-authored comments will loop (JUS-91 bot guard).
+  ignoreAuthors: ""
+  reviewContextLines: ""
+  resources: {}
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+ingest:
+  # in-cluster: Deployment + the dedicated public /webhook Ingress below.
+  # lambda: the chart deploys no ingest at all — run the deploy/terraform
+  # module's ingest Lambda into the same SQS queue instead, and the cluster
+  # keeps zero public surface.
+  mode: in-cluster
+  replicas: 1
+  dedupeTtl: ""
+  # Wire SHUCK_SUBSCRIPTION_TABLE so unsubscribed-PR events are dropped
+  # before the queue (needs config.subscriptionTable).
+  subscriptionPreFilter: true
+  service:
+    type: ClusterIP
+    port: 8080
+  # The ONLY public route. Dedicated Ingress so WAF/rate-limit annotations
+  # attach to /webhook independently of the private gateway/portal ingress.
+  ingress:
+    enabled: true
+    className: ""
+    annotations: {}
+    host: ""
+    tls: []
+  resources: {}
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# Deploy order is a contract: shuck-worker before shuck-ingest (an old
+# worker treats new envelope kinds as poison — JUS-91). The ingest pod gates
+# on the worker Deployment's rollout with an initContainer, on install and
+# on every upgrade; SQS redelivery absorbs any residual skew.
+deployOrder:
+  enforce: true
+  kubectlImage: registry.k8s.io/kubectl:v1.33.0
+  timeoutSeconds: 300
+
+# Per-component ServiceAccounts. IRSA: set the role annotation per component
+# (least privilege — the deploy/terraform module's per-function IAM policies
+# are the reference), e.g.
+#   annotations:
+#     eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/shuck-worker
+serviceAccounts:
+  gateway:
+    create: true
+    name: ""
+    annotations: {}
+  portal:
+    create: true
+    name: ""
+    annotations: {}
+  worker:
+    create: true
+    name: ""
+    annotations: {}
+  ingest:
+    create: true
+    name: ""
+    annotations: {}
+
+# Vanilla NetworkPolicy templates (see the README's traffic matrix).
+# Cilium/CNP users: bring your own via extraManifests.
+networkPolicy:
+  enabled: false
+  # Additional `from` peers allowed to reach the gateway's port besides the
+  # worker pods — typically your (private) ingress controller, so shims can
+  # reach /ws. NetworkPolicy is L4: anything listed here can also reach
+  # /internal/deliver on the same port, where the shared secret still
+  # rejects it (defence in depth).
+  gatewayExtraFrom: []
+  # `from` peers for the public /webhook route (your public ingress
+  # controller) and the private portal ingress controller.
+  ingestFrom: []
+  portalFrom: []
+
+# Raw manifest passthrough: CiliumNetworkPolicies, ServiceMonitors,
+# TriggerAuthentications, anything. Strings are templated; maps render as-is.
+extraManifests: []

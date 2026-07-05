@@ -1,0 +1,28 @@
+shuck self-hosted backend deployed ({{ .Release.Name }} in {{ .Release.Namespace }}).
+
+Components:
+  gateway  {{ include "shuck.fullname" . }}-gateway   (WS /ws + /internal/deliver, port {{ .Values.gateway.service.port }})
+  worker   {{ include "shuck.fullname" . }}-worker    (SQS consumer, scaling mode: {{ .Values.worker.scaling.mode }})
+{{- if .Values.portal.enabled }}
+  portal   {{ include "shuck.fullname" . }}-portal    (token minting{{ if .Values.portal.sweep.enabled }} + daily sweep CronJob{{ end }})
+{{- end }}
+{{- if eq .Values.ingest.mode "in-cluster" }}
+  ingest   {{ include "shuck.fullname" . }}-ingest    (public /webhook)
+{{- else }}
+  ingest   not deployed (ingest.mode=lambda) — run the deploy/terraform
+           module's ingest Lambda into the same SQS queue; the cluster has
+           zero public surface.
+{{- end }}
+
+Next steps (full walkthrough in the chart README):
+  1. Point the GitHub App's webhook URL at the public /webhook route and
+     paste the webhook secret into the chart Secret.
+  2. Register <portal baseUrl>/github/callback on the GitHub App.
+  3. Mint a token in the portal, configure the channel shim
+     (SHUCK_CHANNEL_GATEWAY_URL=wss://<gateway host>/ws, SHUCK_CHANNEL_TOKEN),
+     subscribe to a PR, and force a CI failure.
+
+Deploy-order contract: worker rolls out before ingest serves
+({{ if .Values.deployOrder.enforce }}enforced by the wait-for-worker initContainer{{ else }}deployOrder.enforce=false — mind the order on upgrades that add envelope kinds{{ end }}).
+Portable mode is unaffected: the shuck CLI / MCP server keeps working
+without any of this.

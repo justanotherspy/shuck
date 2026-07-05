@@ -1,0 +1,26 @@
+# The ONE deliberately non-default combo the ticket calls for: lambda
+# ingest (no public cluster surface) + HPA worker scaling + NetworkPolicy
+# on. Layered on top of smoke-values.yaml in the kind smoke test (kind's
+# default CNI does not enforce NetworkPolicy — the assertion is that the
+# objects render, apply, and the workloads stay healthy).
+ingest:
+  mode: lambda
+
+worker:
+  scaling:
+    mode: hpa
+    hpa:
+      minReplicas: 1
+      maxReplicas: 3
+      targetCPUUtilizationPercentage: 75
+
+networkPolicy:
+  enabled: true
+  gatewayExtraFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+  portalFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx

@@ -2,9 +2,10 @@ name: GHCR Cleanup
 
 # Prune old container images from GHCR. docker.yml pushes a new `sha-<short>`
 # tag (plus its signature/attestation referrers and untagged multi-arch
-# children) on every push to main, so the package grows without bound.
+# children) on every push to main — for the CLI image and the four backend
+# images (JUS-93) — so each package grows without bound.
 #
-# Retention policy:
+# Retention policy (identical for every package):
 #   - `edge`, `latest`, and the semver release tags are never touched
 #     (only `sha-*` tags are deletion candidates).
 #   - The 2 most recent `sha-*` builds are kept for rollback headroom.
@@ -12,6 +13,9 @@ name: GHCR Cleanup
 #     provenance referrers, and orphaned untagged images. The action walks
 #     multi-arch indices and referrers, so deleting an image also deletes
 #     its platform children and attached artifacts.
+#
+# The `charts/shuck` Helm OCI package is deliberately not listed: it only
+# receives semver tags (one per release), which this policy never deletes.
 on:
   schedule:
     - cron: "45 4 * * 1" # weekly, Monday 04:45 UTC
@@ -25,21 +29,33 @@ on:
 permissions:
   contents: read
 
-# The cleanup action is not safe to run concurrently against the same package.
+# The cleanup action is not safe to run concurrently against the same
+# package; the matrix legs each target a distinct package, so they may run
+# in parallel, but two workflow runs must not overlap.
 concurrency:
   group: ghcr-cleanup
   cancel-in-progress: false
 
 jobs:
   cleanup:
-    name: Prune old images
+    name: Prune old images (${{ matrix.package }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - shuck
+          - shuck-ingest
+          - shuck-worker
+          - shuck-gateway
+          - shuck-portal
     permissions:
       packages: write # delete GHCR package versions
     steps:
       - name: Delete old sha-* images and untagged versions
         uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
         with:
+          packages: ${{ matrix.package }}
           # Only sha-* build tags are candidates; release tags never match.
           # exclude-tags is a second safety net on top of that.
           delete-tags: sha-*

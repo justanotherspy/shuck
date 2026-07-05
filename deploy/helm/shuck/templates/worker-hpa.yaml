@@ -1,0 +1,29 @@
+{{- /*
+Resource-metric HPA (no extra controllers required). Documented caveat:
+CPU is a lagging signal for queue consumers — a worker waiting on GitHub
+I/O burns little CPU while the queue grows. Prefer the KEDA mode when SQS
+depth should drive scaling.
+*/ -}}
+{{- if eq .Values.worker.scaling.mode "hpa" }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "shuck.fullname" . }}-worker
+  labels:
+    {{- include "shuck.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "shuck.fullname" . }}-worker
+  minReplicas: {{ .Values.worker.scaling.hpa.minReplicas }}
+  maxReplicas: {{ .Values.worker.scaling.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.worker.scaling.hpa.targetCPUUtilizationPercentage }}
+{{- end }}

@@ -1,0 +1,11 @@
+# Patterns to ignore when packaging the chart.
+.DS_Store
+.git/
+.gitignore
+*.swp
+*.bak
+*.tmp
+*.orig
+*~
+# CI value sets are repo tooling, not chart content.
+ci/
