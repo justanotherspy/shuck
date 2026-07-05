@@ -372,6 +372,17 @@ Prefer not to use the marketplace? `shuck setup` installs the same skill into
 optionally registers the MCP server at user scope (`--mcp` / `--no-mcp`).
 Re-running is safe; `--dry-run` previews.
 
+## Self-hosted event router (optional)
+
+Everything above is pull-based and needs only a GitHub token. There is also a
+strictly opt-in, self-hosted backend that *pushes* CI failures and review
+events into subscribed Claude Code sessions within seconds (GitHub App →
+webhook ingest → queue → worker → gateway → the `shuck-channel` plugin). Deploy
+it serverless to your own AWS account with one `terraform apply` — see
+[deploy/terraform/README.md](deploy/terraform/README.md) for the walkthrough
+and [docs/V2.md](docs/V2.md) for the architecture and compatibility contract.
+Not deploying it changes nothing about the CLI/MCP above.
+
 ## Development
 
 ```sh

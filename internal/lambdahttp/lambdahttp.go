@@ -1,4 +1,8 @@
-package awsx
+// Package lambdahttp adapts http.Handlers to Lambda function-URL
+// invocations, shared by the backend binaries that serve HTTP in both
+// container and Lambda modes. It is backend-only: the portable shuck CLI
+// never links it.
+package lambdahttp
 
 import (
 	"bytes"
@@ -13,9 +17,10 @@ import (
 )
 
 // FunctionURLHandler adapts an http.Handler to a Lambda function-URL
-// invocation handler, so cmd/shuck-ingest serves the exact same handler in
-// both entrypoints (the JUS-86 acceptance requirement). Function URLs use
-// the API Gateway v2 payload format.
+// invocation handler, so a backend binary serves the exact same handler in
+// both its entrypoints (the JUS-86 acceptance requirement; ingest, the
+// gateway deliver role, and the portal all use it). Function URLs use the
+// API Gateway v2 payload format.
 func FunctionURLHandler(h http.Handler) func(context.Context, events.LambdaFunctionURLRequest) (events.LambdaFunctionURLResponse, error) {
 	return func(ctx context.Context, req events.LambdaFunctionURLRequest) (events.LambdaFunctionURLResponse, error) {
 		httpReq, err := toHTTPRequest(ctx, req)

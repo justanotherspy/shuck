@@ -219,6 +219,41 @@ describe('GatewayClient', () => {
     expect(client.subscribe('o/r', 1)).rejects.toThrow(/replaced/)
   })
 
+  test('in-band unauthorized frame → stops permanently (serverless gateway)', async () => {
+    const { gw, client } = harness()
+    client.start()
+    const conn = await gw.conn(0)
+    await conn.frame(0)
+    conn.sendRaw(JSON.stringify({ type: 'unauthorized' }))
+    await until(() => client.state === 'stopped')
+    await Bun.sleep(30)
+    expect(gw.conns).toHaveLength(1)
+    expect(client.subscribe('o/r', 1)).rejects.toThrow(/token rejected/)
+  })
+
+  test('in-band replaced frame → stops permanently (serverless gateway)', async () => {
+    const { gw, client } = harness()
+    client.start()
+    const conn = await gw.conn(0)
+    await conn.frame(0)
+    conn.sendRaw(JSON.stringify({ type: 'replaced' }))
+    await until(() => client.state === 'stopped')
+    await Bun.sleep(30)
+    expect(gw.conns).toHaveLength(1)
+    expect(client.subscribe('o/r', 1)).rejects.toThrow(/replaced/)
+  })
+
+  test('application-level ping keepalive is sent on an interval', async () => {
+    const { gw, client } = harness({ appPingIntervalMs: 15 })
+    client.start()
+    const conn = await gw.conn(0)
+    await conn.frame(0)
+    const ping = await conn.frame(1)
+    expect(ping).toEqual({ type: 'ping' })
+    const again = await conn.frame(2)
+    expect(again).toEqual({ type: 'ping' })
+  })
+
   test('backoff delays grow and are capped', async () => {
     const { gw, client, logs } = harness()
     client.start()

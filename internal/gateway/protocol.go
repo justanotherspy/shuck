@@ -24,6 +24,11 @@ const (
 	FrameUnsubscribe = "unsubscribe"
 	// FrameAck confirms an event was consumed; its buffer row is deleted.
 	FrameAck = "ack"
+	// FramePing is an application-level keepalive. The serverless gateway
+	// needs it (API Gateway's idle timeout counts data frames, and Lambda
+	// handlers never see protocol pings); the resident gateway treats it as
+	// a no-op so one shim speaks to both.
+	FramePing = "ping"
 )
 
 // frameEvent is the only gateway → shim frame type.
@@ -87,6 +92,8 @@ func ParseClientFrame(data []byte) (ClientFrame, error) {
 		if f.ID == "" {
 			return ClientFrame{}, errors.New("ack frame missing id")
 		}
+	case FramePing:
+		// No required fields: a bare keepalive.
 	default:
 		return ClientFrame{}, fmt.Errorf("unknown client frame type %q", f.Type)
 	}

@@ -35,6 +35,7 @@ import (
 
 	"github.com/justanotherspy/shuck/internal/ingest"
 	"github.com/justanotherspy/shuck/internal/ingest/awsx"
+	"github.com/justanotherspy/shuck/internal/lambdahttp"
 )
 
 func main() {
@@ -87,7 +88,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 
 	if os.Getenv("AWS_LAMBDA_RUNTIME_API") != "" {
 		log.Info("starting in Lambda mode")
-		lambda.StartWithOptions(awsx.FunctionURLHandler(mux), lambda.WithContext(ctx))
+		lambda.StartWithOptions(lambdahttp.FunctionURLHandler(mux), lambda.WithContext(ctx))
 		return nil
 	}
 	addr := os.Getenv("SHUCK_ADDR")

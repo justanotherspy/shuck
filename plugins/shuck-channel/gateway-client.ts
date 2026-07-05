@@ -1,9 +1,17 @@
 // GatewayClient holds the shim's single outbound WebSocket to the shuck
-// gateway and speaks the wire protocol frozen in internal/gateway/protocol.go:
-// hello / subscribe / unsubscribe / ack out, event frames in. It owns
-// reconnection (full-jitter exponential backoff), the permanent-stop close
-// codes (4401 unauthorized, 4409 replaced), event-id dedupe across replays,
-// and a client-side liveness watchdog (Bun's non-standard ws.ping()).
+// gateway and speaks the wire protocol of internal/gateway/protocol.go:
+// hello / subscribe / unsubscribe / ack / ping out, event frames in. It owns
+// reconnection (full-jitter exponential backoff), the permanent stops —
+// close codes 4401 unauthorized / 4409 replaced from the resident gateway,
+// or the equivalent in-band "unauthorized" / "replaced" control frames from
+// the serverless (API Gateway) one, which cannot send app close codes —
+// event-id dedupe across replays, an application-level ping keepalive
+// (refreshes the serverless gateway's presence rows and defeats API
+// Gateway's 10-minute idle timeout; the resident gateway ignores it), and a
+// client-side liveness watchdog (Bun's non-standard ws.ping()). One client
+// speaks to both gateway flavors; expect the serverless one to force a
+// routine reconnect at API Gateway's two-hour connection cap, which the
+// backoff + replay path absorbs.
 //
 // stdout belongs to the MCP transport — nothing here may ever write to it.
 
@@ -33,6 +41,7 @@ export type Options = {
   stableMs?: number
   pingIntervalMs?: number
   pongTimeoutMs?: number
+  appPingIntervalMs?: number
   random?: () => number
 }
 
@@ -42,11 +51,22 @@ export const DEFAULTS = {
   stableMs: 10_000,
   pingIntervalMs: 60_000,
   pongTimeoutMs: 10_000,
+  appPingIntervalMs: 300_000,
 }
 
 // Close codes from internal/gateway/protocol.go.
 export const CLOSE_UNAUTHORIZED = 4401
 export const CLOSE_REPLACED = 4409
+
+// The serverless gateway's in-band control frames — API Gateway cannot send
+// application close codes, so these carry the same verdicts.
+export const FRAME_UNAUTHORIZED = 'unauthorized'
+export const FRAME_REPLACED = 'replaced'
+
+const STOP_UNAUTHORIZED =
+  'token rejected by the gateway (revoked or invalid); fix the token and restart the session'
+const STOP_REPLACED =
+  'replaced by a newer connection for this session (newest wins); this shim will stay disconnected'
 
 // MaxFrameSize mirrors gateway.MaxFrameSize; the gateway drops connections
 // that exceed it, so refuse to send oversized frames instead.
@@ -69,6 +89,7 @@ export class GatewayClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private pingTimer: ReturnType<typeof setInterval> | null = null
   private pongTimer: ReturnType<typeof setTimeout> | null = null
+  private appPingTimer: ReturnType<typeof setInterval> | null = null
   private openWaiters: { resolve: () => void; reject: (err: Error) => void }[] = []
 
   constructor(opts: Options) {
@@ -118,6 +139,7 @@ export class GatewayClient {
       this.state = 'open'
       this.openedAt = Date.now()
       this.startWatchdog(ws)
+      this.startAppPing(ws)
       for (const w of this.openWaiters.splice(0)) w.resolve()
     })
     ws.addEventListener('message', e => {
@@ -143,11 +165,11 @@ export class GatewayClient {
     this.stopWatchdog()
     if (this.state === 'stopped') return
     if (code === CLOSE_UNAUTHORIZED) {
-      this.halt('token rejected by the gateway (revoked or invalid); fix the token and restart the session')
+      this.halt(STOP_UNAUTHORIZED)
       return
     }
     if (code === CLOSE_REPLACED) {
-      this.halt('replaced by a newer connection for this session (newest wins); this shim will stay disconnected')
+      this.halt(STOP_REPLACED)
       return
     }
     const wasOpen = this.openedAt > 0
@@ -180,6 +202,17 @@ export class GatewayClient {
       frame = JSON.parse(String(data))
     } catch {
       return // Malformed frames are ignored; the gateway never sends them.
+    }
+    const type = frame !== null && typeof frame === 'object' ? (frame as Record<string, unknown>).type : undefined
+    if (type === FRAME_UNAUTHORIZED || type === FRAME_REPLACED) {
+      // The serverless gateway's permanent-stop verdicts arrive in-band;
+      // detach the socket first so its close event can't schedule a
+      // reconnect.
+      const ws = this.ws
+      this.ws = null
+      this.halt(type === FRAME_UNAUTHORIZED ? STOP_UNAUTHORIZED : STOP_REPLACED)
+      ws?.close(1000)
+      return
     }
     if (!isEvent(frame)) return
     if (!this.seen.has(frame.id)) {
@@ -274,6 +307,20 @@ export class GatewayClient {
     }, this.opts.pingIntervalMs)
   }
 
+  // The application-level ping is protocol traffic, not a liveness probe:
+  // it resets API Gateway's idle timer and refreshes the serverless
+  // gateway's durable presence row. The resident gateway ignores it.
+  private startAppPing(ws: BunWebSocket): void {
+    this.appPingTimer = setInterval(() => {
+      if (this.ws !== ws || ws.readyState !== WebSocket.OPEN) return
+      try {
+        this.send({ type: 'ping' })
+      } catch {
+        // Connection died mid-ping; the close handler reconnects.
+      }
+    }, this.opts.appPingIntervalMs)
+  }
+
   private stopWatchdog(): void {
     if (this.pingTimer) {
       clearInterval(this.pingTimer)
@@ -282,6 +329,10 @@ export class GatewayClient {
     if (this.pongTimer) {
       clearTimeout(this.pongTimer)
       this.pongTimer = null
+    }
+    if (this.appPingTimer) {
+      clearInterval(this.appPingTimer)
+      this.appPingTimer = null
     }
   }
 }
