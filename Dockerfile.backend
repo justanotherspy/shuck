@@ -1,0 +1,68 @@
+# syntax=docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
+#
+# Parameterized multi-stage build for the self-hosted backend binaries
+# (cmd/shuck-ingest, cmd/shuck-worker, cmd/shuck-gateway, cmd/shuck-portal):
+#
+#   docker build -f Dockerfile.backend --build-arg COMPONENT=gateway .
+#
+# One Dockerfile, four images — docker.yml's matrix supplies COMPONENT and
+# pushes each to ghcr.io/justanotherspy/shuck-<component>. The portable CLI
+# image keeps its own Dockerfile; this one never builds the root package.
+#
+# The base images are Chainguard's (minimal, low/zero-CVE, continuously
+# rebuilt), pinned by digest and kept current by the `docker` Dependabot
+# ecosystem — the digests here must stay in lockstep with ./Dockerfile.
+
+# ---- build stage ------------------------------------------------------------
+# --platform=$BUILDPLATFORM keeps the toolchain native; we cross-compile to the
+# requested TARGET* below, so no QEMU emulation is needed.
+FROM --platform=$BUILDPLATFORM cgr.dev/chainguard/go:latest@sha256:4c184878fa51edc72f3f32ee56c3dece863b8bc422d2c16a65a62df9708809c4 AS build
+
+# Run the build as root so the module cache and output path are writable; this
+# stage is discarded and never shipped.
+USER root
+
+# Which backend binary to build: ingest | worker | gateway | portal.
+ARG COMPONENT
+
+# Build metadata, injected via --build-arg (mirrors the Makefile). The backend
+# mains carry a `version` string stamped via -X main.version.
+ARG VERSION=dev
+
+# Cross-compilation targets supplied by buildx for each requested platform.
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /src
+
+# Download modules in their own layer so source-only changes don't re-fetch.
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+ENV CGO_ENABLED=0
+RUN test -n "${COMPONENT}" || { echo "COMPONENT build-arg is required (ingest|worker|gateway|portal)"; exit 1; }
+RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath \
+      -ldflags "-s -w -X main.version=${VERSION}" \
+      -o /app ./cmd/shuck-${COMPONENT}
+
+# ---- runtime stage ----------------------------------------------------------
+FROM cgr.dev/chainguard/static:latest@sha256:77d8b8925dc27970ec2f48243f44c7a260d52c49cd778288e4ee97566e0cb75b
+
+ARG COMPONENT
+
+# OCI metadata: lets GHCR, `docker scout`, etc. link the image to its source.
+LABEL org.opencontainers.image.source="https://github.com/justanotherspy/shuck" \
+      org.opencontainers.image.description="shuck self-hosted backend: shuck-${COMPONENT}" \
+      org.opencontainers.image.licenses="MIT"
+
+# A fixed path keeps the ENTRYPOINT static across all four components
+# (exec-form ENTRYPOINT cannot expand build args).
+COPY --from=build /app /usr/bin/app
+
+# Run as the non-root user (65532) that chainguard/static ships with. Set it
+# explicitly so the final image's effective USER is not root.
+USER nonroot
+ENTRYPOINT ["/usr/bin/app"]

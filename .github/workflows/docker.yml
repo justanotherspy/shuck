@@ -1,7 +1,7 @@
 name: Docker
 
-# Build a multi-arch image and publish it to GHCR.
-#   - pull_request: build only (validates the Dockerfile; nothing is pushed).
+# Build multi-arch images and publish them to GHCR.
+#   - pull_request: build only (validates the Dockerfiles; nothing is pushed).
 #   - push to main: build + push :edge and :sha-<short>.
 #   - workflow_call (from release.yml, on a v* tag): build + push the semver
 #     tags and :latest. Called rather than triggered on `release:` because
@@ -9,6 +9,14 @@ name: Docker
 #     token-created events never trigger other workflows; calling it from
 #     release.yml also gates the image publish behind the same "release"
 #     environment approval as goreleaser.
+#
+# The matrix builds five images: the portable CLI (ghcr.io/<owner>/shuck,
+# root Dockerfile — unchanged) and the four self-hosted backend binaries
+# (ghcr.io/<owner>/shuck-{ingest,worker,gateway,portal}, Dockerfile.backend
+# parameterized by COMPONENT; JUS-93). Note: the first push of a new package
+# creates it PRIVATE on GHCR — making it public is a one-time manual step in
+# the package settings.
+#
 # Pushed images are cosign-signed (keyless) and get an SLSA build-provenance
 # attestation.
 on:
@@ -24,13 +32,31 @@ concurrency:
   group: docker-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  IMAGE: ghcr.io/${{ github.repository }}
-
 jobs:
   docker:
-    name: Build & publish
+    name: Build & publish (${{ matrix.image }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: shuck
+            dockerfile: Dockerfile
+            component: ""
+          - image: shuck-ingest
+            dockerfile: Dockerfile.backend
+            component: ingest
+          - image: shuck-worker
+            dockerfile: Dockerfile.backend
+            component: worker
+          - image: shuck-gateway
+            dockerfile: Dockerfile.backend
+            component: gateway
+          - image: shuck-portal
+            dockerfile: Dockerfile.backend
+            component: portal
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
     permissions:
       contents: read
       packages: write # push to GHCR
@@ -76,18 +102,24 @@ jobs:
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
+          file: ${{ matrix.dockerfile }}
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # COMPONENT is only declared by Dockerfile.backend; the CLI image's
+          # Dockerfile takes VERSION/COMMIT/DATE alone.
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
             COMMIT=${{ github.sha }}
             DATE=${{ steps.date.outputs.date }}
+            ${{ matrix.component != '' && format('COMPONENT={0}', matrix.component) || '' }}
           provenance: ${{ github.event_name != 'pull_request' }}
           sbom: ${{ github.event_name != 'pull_request' }}
-          cache-from: type=gha
-          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max' || '' }}
+          # Per-image cache scopes: the five builds share layers only via
+          # their own scope, so mode=max writes don't evict each other.
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=gha,mode=max,scope={0}', matrix.image) || '' }}
 
       - name: Install cosign
         if: github.event_name != 'pull_request'

@@ -76,8 +76,13 @@ import (
 // drainTimeout bounds how long shutdown waits for connections to close.
 const drainTimeout = 10 * time.Second
 
+// version is stamped at build time via -X main.version (Makefile /
+// Dockerfile.backend); untagged builds report "dev".
+var version = "dev"
+
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	log.Info("shuck-gateway starting", "version", version)
 	if err := run(context.Background(), log); err != nil {
 		log.Error("shuck-gateway failed", "err", err)
 		os.Exit(1)
