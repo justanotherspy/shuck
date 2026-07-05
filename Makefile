@@ -204,6 +204,14 @@ shim-check: ## Typecheck + test the channel shim plugin (requires bun)
 		echo ">> bun not found; install from https://bun.sh"; exit 1; }
 	cd plugins/shuck-channel && bun install --frozen-lockfile && bun run typecheck && bun test
 
+.PHONY: terraform-check
+terraform-check: ## fmt-check + validate the deploy/terraform module (requires terraform)
+	@command -v terraform >/dev/null 2>&1 || { \
+		echo ">> terraform not found; install from https://developer.hashicorp.com/terraform/install"; exit 1; }
+	terraform -chdir=deploy/terraform fmt -check -recursive
+	terraform -chdir=deploy/terraform init -backend=false -input=false >/dev/null
+	terraform -chdir=deploy/terraform validate
+
 # ---- Tests ------------------------------------------------------------------
 # Drop excluded files from the profile in place, preserving the leading
 # `mode:` line. No-op when COVER_EXCLUDE is empty.
