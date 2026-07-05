@@ -63,17 +63,27 @@ job logs at that prefix in the operator's bucket.
 
 ## Protocol notes
 
-The shim speaks the wire protocol frozen in `internal/gateway/protocol.go`:
+The shim speaks the wire protocol of `internal/gateway/protocol.go`:
 `hello {token, session_id, last_event_id?}` / `subscribe` / `unsubscribe` /
-`ack {id}` out, `event {id, seq, repo, pr, kind, summary}` in. Session
-identity is `CLAUDE_CODE_SESSION_ID` (present in the stdio MCP environment;
-`--resume` keeps it, so subscriptions and buffered events reattach). The
-client reconnects with full-jitter exponential backoff, resumes from the last
-acked event id, dedupes replayed event ids, and stops permanently on close
-codes 4401 (token rejected) and 4409 (replaced by a newer connection for the
-same session). Subscribe/unsubscribe frames get no gateway reply by design;
-the tools report success once the frame is written on an authenticated
-connection.
+`ack {id}` / `ping` out, `event {id, seq, repo, pr, kind, summary}` in.
+Session identity is `CLAUDE_CODE_SESSION_ID` (present in the stdio MCP
+environment; `--resume` keeps it, so subscriptions and buffered events
+reattach). The client reconnects with full-jitter exponential backoff,
+resumes from the last acked event id, dedupes replayed event ids, and stops
+permanently on close codes 4401 (token rejected) and 4409 (replaced by a
+newer connection for the same session). Subscribe/unsubscribe frames get no
+gateway reply by design; the tools report success once the frame is written
+on an authenticated connection.
+
+One shim speaks to both gateway deployments. Against the serverless gateway
+(API Gateway WebSockets, the JUS-92 Terraform target), the permanent-stop
+verdicts arrive as in-band `{"type":"unauthorized"}` / `{"type":"replaced"}`
+control frames instead of close codes (API Gateway cannot send them), the
+periodic `ping` frame keeps the connection inside API Gateway's 10-minute
+idle timeout and refreshes the gateway's durable presence row, and API
+Gateway's two-hour connection cap forces a routine reconnect that the
+backoff + replay path absorbs. The resident gateway ignores `ping` and never
+sends control frames, so no configuration is needed either way.
 
 ## Development
 
