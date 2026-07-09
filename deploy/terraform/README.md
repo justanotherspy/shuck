@@ -9,7 +9,8 @@ EventBridge-scheduled sweep. Idle cost is effectively zero.
 > **Portable mode is the default.** The `shuck` CLI / MCP server with a
 > GitHub token needs none of this — deploying this stack is the operator's
 > opt-in to push-based delivery, and not deploying it costs users nothing.
-> See `docs/V2.md` for the two-mode contract.
+> See [`docs/ARCHITECTURE.md#two-modes`](../../docs/ARCHITECTURE.md#two-modes)
+> for the two-mode contract.
 
 ## Prerequisites
 
@@ -154,7 +155,14 @@ makes this invisible) and sends a keepalive ping every 5 minutes.
   72h (DynamoDB TTL), disconnected subscribers swept after 24h, webhook
   dedupe rows 1h.
 
+The full boundary-by-boundary analysis is
+[`docs/THREAT-MODEL.md`](../../docs/THREAT-MODEL.md).
+
 ## Operational notes
+
+Day-2 procedures (token/secret rotation, sweeps, DLQ redrive, gateway
+redeploys, image visibility, incident triage) are in
+[`docs/RUNBOOK.md`](../../docs/RUNBOOK.md). The essentials for this target:
 
 - **Deploy order** on upgrades is encoded in the graph: the worker updates
   before ingest (an old worker would DLQ new envelope kinds).

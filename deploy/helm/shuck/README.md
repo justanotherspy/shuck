@@ -10,7 +10,9 @@ daily `shuck-portal sweep` CronJob), and — by default — an in-cluster
 > **Portable mode is the default.** The `shuck` CLI / MCP server with a
 > GitHub token needs none of this — installing this chart is the
 > operator's opt-in to push-based delivery, and not installing it costs
-> users nothing. See `docs/V2.md` for the two-mode contract.
+> users nothing. See
+> [`docs/ARCHITECTURE.md#two-modes`](../../../docs/ARCHITECTURE.md#two-modes)
+> for the two-mode contract.
 
 The AWS managed dependencies (SQS queue + DLQ, the four DynamoDB tables,
 the raw-log S3 bucket) are **not** created by the chart. Provision them
@@ -183,14 +185,16 @@ verify probes on anything unusual.
 
 ## Trust model & retention
 
-Same as the Terraform target (`deploy/terraform/README.md#trust-model`):
-tokens are minted only after GitHub identity verification and stored as
+Tokens are minted only after GitHub identity verification and stored as
 SHA-256 hashes; the daily sweep revokes departed org members (GitHub org
 membership is the access-control plane); a token grants event-summary
 subscriptions only, no GitHub access. Retention defaults: raw logs 24h
 (S3 lifecycle — provisioned with the bucket, never in worker code),
 buffered events 72h, disconnected subscribers swept after 24h, dedupe
-rows 1h.
+rows 1h. The full boundary-by-boundary analysis is
+[`docs/THREAT-MODEL.md`](../../../docs/THREAT-MODEL.md); day-2 operations
+(rotation, sweeps, DLQ, rollouts, image visibility) are in
+[`docs/RUNBOOK.md`](../../../docs/RUNBOOK.md).
 
 ## Values
 
