@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/go-github/v88/github"
+	"github.com/google/go-github/v89/github"
 
 	"github.com/justanotherspy/shuck/internal/model"
 	"github.com/justanotherspy/shuck/internal/target"
