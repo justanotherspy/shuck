@@ -377,11 +377,27 @@ Re-running is safe; `--dry-run` previews.
 Everything above is pull-based and needs only a GitHub token. There is also a
 strictly opt-in, self-hosted backend that *pushes* CI failures and review
 events into subscribed Claude Code sessions within seconds (GitHub App →
-webhook ingest → queue → worker → gateway → the `shuck-channel` plugin). Deploy
-it serverless to your own AWS account with one `terraform apply` — see
-[deploy/terraform/README.md](deploy/terraform/README.md) for the walkthrough
-and [docs/V2.md](docs/V2.md) for the architecture and compatibility contract.
-Not deploying it changes nothing about the CLI/MCP above.
+webhook ingest → queue → worker → gateway → the `shuck-channel` plugin).
+**Deploying it changes nothing about the CLI/MCP above** — the two modes are
+independent and composable (see the [two-mode
+contract](docs/ARCHITECTURE.md#two-modes)).
+
+Two deploy targets:
+
+- **Serverless (AWS):** one `terraform apply`, idle cost ≈ $0 — see
+  [deploy/terraform/README.md](deploy/terraform/README.md).
+- **Kubernetes:** the Helm chart — see
+  [deploy/helm/shuck/README.md](deploy/helm/shuck/README.md).
+
+**Trust, in one screen:** tokens mint only after GitHub identity +
+org-membership validation and are stored hashed; a token grants event-summary
+subscriptions only, never GitHub access; the sole public endpoint HMAC-verifies
+GitHub before parsing; a daily sweep offboards departed members. Full analysis
+in [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
+
+Architecture and diagrams: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Operating a deployment: [docs/RUNBOOK.md](docs/RUNBOOK.md). Implementation
+history: [docs/V2.md](docs/V2.md).
 
 ## Development
 
