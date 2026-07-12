@@ -5,7 +5,7 @@ go 1.26.0
 // Pin a patched build toolchain (a bare go 1.26.0 stdlib can carry
 // vulnerabilities flagged by govulncheck). With GOTOOLCHAIN=auto this is fetched
 // on demand; bump it when a newer patch fixes a reported issue.
-toolchain go1.26.4
+toolchain go1.26.5
 
 require (
 	github.com/aws/aws-lambda-go v1.54.0
@@ -19,7 +19,7 @@ require (
 	github.com/coreos/go-oidc/v3 v3.19.0
 	github.com/go-git/go-git/v5 v5.19.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
-	github.com/google/go-github/v88 v88.0.0
+	github.com/google/go-github/v89 v89.0.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/term v0.44.0
