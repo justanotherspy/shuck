@@ -81,6 +81,7 @@ import (
 	"github.com/justanotherspy/shuck/internal/lambdahttp"
 	"github.com/justanotherspy/shuck/internal/portal"
 	"github.com/justanotherspy/shuck/internal/portal/awsx"
+	"github.com/justanotherspy/shuck/internal/promexpo"
 	"github.com/justanotherspy/shuck/internal/worker"
 )
 
@@ -116,7 +117,8 @@ func run(ctx context.Context, log *slog.Logger) error {
 		return fmt.Errorf("load AWS config: %w", err)
 	}
 	store := awsx.NewDynamoTokenStore(dynamodb.NewFromConfig(awsCfg), table)
-	sweeper := &portal.Sweeper{Store: store, Validate: validator, Interval: sweepInterval, Log: log}
+	metrics := &portal.Metrics{}
+	sweeper := &portal.Sweeper{Store: store, Validate: validator, Interval: sweepInterval, Log: log, Metrics: metrics}
 
 	// One-shot sweep mode for cron scheduling (JUS-92/93).
 	if len(os.Args) > 1 && os.Args[1] == "sweep" {
@@ -152,10 +154,16 @@ func run(ctx context.Context, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	handler.Metrics = metrics
 
 	runCtx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 	go sweeper.Run(runCtx)
+	go func() {
+		if err := promexpo.Serve(runCtx, os.Getenv(promexpo.EnvAddr), log, metrics.Snapshot); err != nil {
+			log.Error("metrics listener failed", "err", err)
+		}
+	}()
 
 	mux := http.NewServeMux()
 	handler.Register(mux)

@@ -40,6 +40,7 @@ spec:
         - protocol: TCP
           port: 8080
     {{- end }}
+    {{- include "shuck.metricsNetpolIngress" . | nindent 4 }}
   egress:
     # DynamoDB.
     - ports:
@@ -58,8 +59,15 @@ spec:
   podSelector:
     matchLabels:
       {{- include "shuck.selectorLabels" (dict "root" . "component" "worker") | nindent 6 }}
+  {{- if .Values.observability.enabled }}
+  # Metrics scraping adds an ingress rule for the metrics port.
+  policyTypes: [Ingress, Egress]
+  ingress:
+    {{- include "shuck.metricsNetpolIngress" . | nindent 4 }}
+  {{- else }}
   # Egress only: the worker exposes nothing but its liveness endpoint.
   policyTypes: [Egress]
+  {{- end }}
   egress:
     # SQS, S3, GitHub.
     - ports:
@@ -88,14 +96,17 @@ spec:
     matchLabels:
       {{- include "shuck.selectorLabels" (dict "root" . "component" "ingest") | nindent 6 }}
   policyTypes: [Ingress, Egress]
-  {{- with .Values.networkPolicy.ingestFrom }}
+  {{- if or .Values.networkPolicy.ingestFrom .Values.observability.enabled }}
   ingress:
+    {{- with .Values.networkPolicy.ingestFrom }}
     # The public ingress controller carrying /webhook.
     - from:
         {{- toYaml . | nindent 8 }}
       ports:
         - protocol: TCP
           port: 8080
+    {{- end }}
+    {{- include "shuck.metricsNetpolIngress" . | nindent 4 }}
   {{- end }}
   egress:
     # SQS + DynamoDB, and the kube-apiserver for the deploy-order gate.
@@ -120,14 +131,17 @@ spec:
     matchLabels:
       {{- include "shuck.selectorLabels" (dict "root" . "component" "portal") | nindent 6 }}
   policyTypes: [Ingress, Egress]
-  {{- with .Values.networkPolicy.portalFrom }}
+  {{- if or .Values.networkPolicy.portalFrom .Values.observability.enabled }}
   ingress:
+    {{- with .Values.networkPolicy.portalFrom }}
     # The private ingress controller carrying the portal UI.
     - from:
         {{- toYaml . | nindent 8 }}
       ports:
         - protocol: TCP
           port: 8080
+    {{- end }}
+    {{- include "shuck.metricsNetpolIngress" . | nindent 4 }}
   {{- end }}
   egress:
     # GitHub (user auth + validation), DynamoDB, optional OIDC issuer.

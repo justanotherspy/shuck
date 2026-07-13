@@ -188,3 +188,50 @@ readOnlyRootFilesystem: true
 capabilities:
   drop: ["ALL"]
 {{- end }}
+
+{{/*
+Opt-in Prometheus metrics wiring (JUS-96). Empty unless observability.enabled,
+so every resident component can include these unconditionally. Context: root.
+*/}}
+{{- define "shuck.metricsEnv" -}}
+{{- if .Values.observability.enabled }}
+- name: SHUCK_METRICS_ADDR
+  value: ":{{ .Values.observability.port }}"
+{{- end }}
+{{- end }}
+
+{{- define "shuck.metricsPort" -}}
+{{- if .Values.observability.enabled }}
+- name: metrics
+  containerPort: {{ .Values.observability.port }}
+{{- end }}
+{{- end }}
+
+{{/*
+The `metrics` Service port, added to a component's Service when observability
+is enabled so a ServiceMonitor can target it by name. Context: root.
+*/}}
+{{- define "shuck.metricsServicePort" -}}
+{{- if .Values.observability.enabled }}
+- name: metrics
+  port: {{ .Values.observability.port }}
+  targetPort: metrics
+{{- end }}
+{{- end }}
+
+{{/*
+NetworkPolicy ingress rule opening the metrics port to scrapers (empty
+observability.networkPolicyFrom means any source). Emitted only when
+observability is enabled. Context: root.
+*/}}
+{{- define "shuck.metricsNetpolIngress" -}}
+{{- if .Values.observability.enabled }}
+- ports:
+    - protocol: TCP
+      port: {{ .Values.observability.port }}
+  {{- with .Values.observability.networkPolicyFrom }}
+  from:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- end }}

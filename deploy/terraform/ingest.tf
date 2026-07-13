@@ -11,6 +11,14 @@ resource "aws_cloudwatch_log_group" "ingest" {
 resource "aws_lambda_function" "ingest" {
   function_name = "${var.name_prefix}-ingest"
   role          = aws_iam_role.lambda["ingest"].arn
+
+  dynamic "tracing_config" {
+    for_each = local.xray_tracing
+    content {
+      mode = tracing_config.value
+    }
+  }
+
   runtime       = "provided.al2023"
   handler       = "bootstrap"
   architectures = ["arm64"]

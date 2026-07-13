@@ -134,9 +134,24 @@ disabled TTL is the usual cause of buffer growth).
 
 ## Observability
 
-The binaries emit structured `log/slog` logs and in-process atomic counters
-(logged, not exported — there is no `/metrics` endpoint or ServiceMonitor
-shipped; see the follow-up ticket for metrics export). Watch:
+The binaries emit structured `log/slog` logs and in-process atomic counters.
+The counters are logged on a periodic snapshot always, and — opt-in —
+exported two ways (JUS-96, both off by default):
+
+- **Resident binaries (Helm target):** a Prometheus `/metrics` endpoint on a
+  dedicated port, enabled per component by setting `SHUCK_METRICS_ADDR`
+  (e.g. `:9090`). The Helm chart wires this from `observability.enabled`,
+  adds the `metrics` Service port, opens it in the NetworkPolicy, and can
+  ship a `ServiceMonitor` (`observability.serviceMonitor.enabled`, covers
+  gateway/portal/ingest) and/or `PodMonitor`
+  (`observability.podMonitor.enabled`, covers the worker too). Metric names
+  are `shuck_<component>_<field>` — the same counters listed below.
+- **Serverless target (Terraform):** the resident `/metrics` path has no home
+  in Lambda; CloudWatch is the equivalent. `var.observability` turns on
+  per-Lambda error alarms, a DLQ-depth alarm, a gateway-error alarm, a
+  stack dashboard, and optional X-Ray tracing.
+
+Watch:
 
 - **ingest**: received / verified / deduped / filtered / enqueued counts; a
   spike in "verified but filtered" is normal (most events aren't subscribed).

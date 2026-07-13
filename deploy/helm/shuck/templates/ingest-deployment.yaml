@@ -64,6 +64,7 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+            {{- include "shuck.metricsPort" . | nindent 12 }}
           env:
             - name: SHUCK_WEBHOOK_SECRET
               valueFrom:
@@ -83,6 +84,7 @@ spec:
               value: {{ .Values.config.subscriptionTable | quote }}
             {{- end }}
             {{- include "shuck.awsEnv" . | nindent 12 }}
+            {{- include "shuck.metricsEnv" . | nindent 12 }}
           livenessProbe:
             httpGet:
               path: /healthz

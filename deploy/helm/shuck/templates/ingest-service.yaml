@@ -12,6 +12,7 @@ spec:
     - name: http
       port: {{ .Values.ingest.service.port }}
       targetPort: http
+    {{- include "shuck.metricsServicePort" . | nindent 4 }}
   selector:
     {{- include "shuck.selectorLabels" (dict "root" . "component" "ingest") | nindent 4 }}
 {{- end }}
