@@ -277,12 +277,18 @@ jobs:
             ghcr.io/justanotherspy/shuck-worker:smoke \
             ghcr.io/justanotherspy/shuck-gateway:smoke \
             ghcr.io/justanotherspy/shuck-portal:smoke
+      # The worker parses the App private key at boot, so the smoke install
+      # needs a syntactically valid throwaway key — generated per run, never
+      # committed (see the note in ci/smoke-values.yaml).
+      - name: Generate throwaway App key
+        run: openssl genrsa -out /tmp/smoke-app-key.pem 2048
       # Defaults posture: in-cluster ingest, static worker, no NP. The
       # ingest rollout implicitly proves the deploy-order gate resolves
       # (its initContainer waits on the worker Deployment).
       - name: Install (default posture)
         run: |
-          helm install shuck deploy/helm/shuck -f deploy/helm/shuck/ci/smoke-values.yaml
+          helm install shuck deploy/helm/shuck -f deploy/helm/shuck/ci/smoke-values.yaml \
+            --set-file secrets.values.githubAppPrivateKey=/tmp/smoke-app-key.pem
           kubectl rollout status deployment/shuck-worker --timeout=180s
           kubectl rollout status deployment/shuck-gateway --timeout=180s
           kubectl rollout status deployment/shuck-portal --timeout=180s
@@ -294,7 +300,8 @@ jobs:
         run: |
           helm upgrade shuck deploy/helm/shuck \
             -f deploy/helm/shuck/ci/smoke-values.yaml \
-            -f deploy/helm/shuck/ci/combo-values.yaml
+            -f deploy/helm/shuck/ci/combo-values.yaml \
+            --set-file secrets.values.githubAppPrivateKey=/tmp/smoke-app-key.pem
           kubectl rollout status deployment/shuck-worker --timeout=180s
           kubectl wait --for=delete deployment/shuck-ingest --timeout=120s || \
             ! kubectl get deployment/shuck-ingest

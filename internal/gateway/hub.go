@@ -54,7 +54,11 @@ type Hub struct {
 	// Now may be nil, which means time.Now.
 	Now func() time.Time
 
-	draining     atomic.Bool
+	draining atomic.Bool
+	// drainMu orders track's draining-check-plus-Add against Drain's flag
+	// flip, so an Add can never race conns.Wait at counter zero (documented
+	// WaitGroup misuse).
+	drainMu      sync.Mutex
 	conns        sync.WaitGroup
 	registryOnce sync.Once
 	registry     Registry
@@ -88,6 +92,19 @@ func (h *Hub) Draining() bool {
 	return h.draining.Load()
 }
 
+// track adds the connection to the drain WaitGroup unless draining has
+// begun. Taking drainMu pairs with Drain's flag flip: every Add is ordered
+// strictly before Drain's Wait, or refused.
+func (h *Hub) track() bool {
+	h.drainMu.Lock()
+	defer h.drainMu.Unlock()
+	if h.draining.Load() {
+		return false
+	}
+	h.conns.Add(1)
+	return true
+}
+
 // ServeWS is the GET /ws endpoint: upgrade, hello handshake, then serve the
 // connection until it closes. It blocks for the connection's lifetime.
 func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
@@ -108,7 +125,13 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	conn := newConn(r.Context(), key, ws)
-	h.conns.Add(1)
+	if !h.track() {
+		// Drain began while the handshake was in flight: close rather than
+		// hold the drain open (or Add against a Wait already at zero).
+		conn.shutdown(websocket.StatusGoingAway, "gateway draining")
+		<-conn.done()
+		return
+	}
 	defer h.conns.Done()
 	if prev := h.Reg().Register(key, conn); prev != nil {
 		prev.shutdown(websocket.StatusCode(CloseReplaced), "replaced by newer connection")
@@ -116,8 +139,8 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 	}
 	h.count(func(m *Metrics) { m.ConnectionsTotal.Add(1); m.ConnectionsLive.Add(1) })
 	if h.Draining() {
-		// Drain may have snapshotted between the entry check and the
-		// registration above; close rather than hold the drain open.
+		// Drain may have snapshotted between track and the registration
+		// above; close rather than hold the drain open.
 		conn.shutdown(websocket.StatusGoingAway, "gateway draining")
 	}
 	if err := h.Presence.Touch(conn.ctx, key, h.clock()()); err != nil {
@@ -138,7 +161,13 @@ func (h *Hub) handshake(ctx context.Context, ws *websocket.Conn) (key Subscriber
 	defer cancel()
 	_, data, err := ws.Read(hctx)
 	if err != nil {
-		h.reject(ws, "no hello frame")
+		// The peer vanished or never sent a hello inside the handshake
+		// timeout: a transport failure, not an auth verdict — counting it
+		// as AuthRejected would poison the token-triage metric. The close
+		// is best-effort on what is usually an already-dead socket.
+		h.count(func(m *Metrics) { m.HandshakeFailures.Add(1) })
+		h.log().Info("connection closed before hello", "err", err)
+		_ = ws.Close(websocket.StatusCode(CloseUnauthorized), "unauthorized")
 		return SubscriberKey{}, 0, false
 	}
 	frame, err := ParseClientFrame(data)
@@ -403,7 +432,9 @@ func (h *Hub) Deliver(ctx context.Context, req DeliverRequest) (DeliverResult, e
 // signal to reconnect after the deploy — and waits for their goroutines,
 // bounded by ctx. New connections are refused once draining starts.
 func (h *Hub) Drain(ctx context.Context) {
+	h.drainMu.Lock()
 	h.draining.Store(true)
+	h.drainMu.Unlock()
 	for _, conn := range h.Reg().Snapshot() {
 		conn.shutdown(websocket.StatusGoingAway, "gateway draining")
 	}

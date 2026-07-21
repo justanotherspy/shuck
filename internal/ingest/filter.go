@@ -7,12 +7,17 @@ import (
 
 // Decision is Filter's verdict on one verified delivery.
 type Decision struct {
-	// Envelope is the work to enqueue. Filter leaves DeliveryID empty; the
-	// handler stamps it from the X-GitHub-Delivery header.
-	Envelope Envelope
-	// Enqueue reports whether the delivery becomes work at all.
-	Enqueue bool
-	// Reason says why a delivery was dropped (for logs); empty when Enqueue.
+	// Envelopes is the work to enqueue; empty means the delivery was
+	// dropped. Most events map to exactly one envelope, but a workflow_run
+	// associated with several pull requests fans out to one envelope per PR
+	// — fan-out downstream is keyed repo#pr, so a single envelope would
+	// leave subscribers on the other PRs deaf to the failure. All envelopes
+	// of a delivery share its GUID; the gateway's per-subscriber event_id
+	// dedupe makes that safe. Filter leaves DeliveryID empty; the handler
+	// stamps it from the X-GitHub-Delivery header.
+	Envelopes []Envelope
+	// Reason says why a delivery was dropped (for logs); empty when there
+	// are envelopes.
 	Reason string
 }
 
@@ -107,31 +112,30 @@ func filterWorkflowRun(p webhookPayload) Decision {
 	if p.WorkflowRun.ID <= 0 {
 		return drop("workflow_run payload has no run id")
 	}
-	// Fan-out is keyed repo#pr; a run with no PR association (e.g. a push
-	// to main, or a fork PR where GitHub omits the link) has no subscribers
-	// to reach.
-	pr := 0
+	// Fan-out is keyed repo#pr, so a run touching several PRs becomes one
+	// envelope per PR. A run with no PR association (e.g. a push to main,
+	// or a fork PR where GitHub omits the link) has no subscribers to reach.
+	var envs []Envelope
+	seen := make(map[int]bool, len(p.WorkflowRun.PullRequests))
 	for _, ref := range p.WorkflowRun.PullRequests {
-		if ref.Number > 0 {
-			pr = ref.Number
-			break
+		if ref.Number <= 0 || seen[ref.Number] {
+			continue
 		}
-	}
-	if pr == 0 {
-		return drop("workflow_run not associated with a pull request")
-	}
-	return Decision{
-		Enqueue: true,
-		Envelope: Envelope{
+		seen[ref.Number] = true
+		envs = append(envs, Envelope{
 			Schema:         EnvelopeSchema,
 			Kind:           KindCIFailure,
 			Repo:           p.Repository.FullName,
-			PR:             pr,
+			PR:             ref.Number,
 			RunID:          p.WorkflowRun.ID,
 			HeadSHA:        p.WorkflowRun.HeadSHA,
 			InstallationID: p.Installation.ID,
-		},
+		})
 	}
+	if len(envs) == 0 {
+		return drop("workflow_run not associated with a pull request")
+	}
+	return Decision{Envelopes: envs}
 }
 
 func filterPullRequest(p webhookPayload) Decision {
@@ -141,16 +145,13 @@ func filterPullRequest(p webhookPayload) Decision {
 	if p.Number <= 0 {
 		return drop("pull_request payload has no number")
 	}
-	return Decision{
-		Enqueue: true,
-		Envelope: Envelope{
-			Schema:         EnvelopeSchema,
-			Kind:           KindPRClosed,
-			Repo:           p.Repository.FullName,
-			PR:             p.Number,
-			InstallationID: p.Installation.ID,
-		},
-	}
+	return enqueueOne(Envelope{
+		Schema:         EnvelopeSchema,
+		Kind:           KindPRClosed,
+		Repo:           p.Repository.FullName,
+		PR:             p.Number,
+		InstallationID: p.Installation.ID,
+	})
 }
 
 // filterReviewComment routes pull_request_review_comment.created. Edits and
@@ -170,20 +171,17 @@ func filterReviewComment(p webhookPayload) Decision {
 	if p.Comment.User.ID <= 0 {
 		return drop("pull_request_review_comment payload has no author id")
 	}
-	return Decision{
-		Enqueue: true,
-		Envelope: Envelope{
-			Schema:         EnvelopeSchema,
-			Kind:           KindReviewComment,
-			Repo:           p.Repository.FullName,
-			PR:             p.PullRequest.Number,
-			HeadSHA:        p.PullRequest.Head.SHA,
-			InstallationID: p.Installation.ID,
-			CommentID:      p.Comment.ID,
-			AuthorID:       p.Comment.User.ID,
-			AuthorLogin:    p.Comment.User.Login,
-		},
-	}
+	return enqueueOne(Envelope{
+		Schema:         EnvelopeSchema,
+		Kind:           KindReviewComment,
+		Repo:           p.Repository.FullName,
+		PR:             p.PullRequest.Number,
+		HeadSHA:        p.PullRequest.Head.SHA,
+		InstallationID: p.Installation.ID,
+		CommentID:      p.Comment.ID,
+		AuthorID:       p.Comment.User.ID,
+		AuthorLogin:    p.Comment.User.Login,
+	})
 }
 
 // filterReview routes pull_request_review.submitted. Dismissals and edits
@@ -201,20 +199,22 @@ func filterReview(p webhookPayload) Decision {
 	if p.Review.User.ID <= 0 {
 		return drop("pull_request_review payload has no author id")
 	}
-	return Decision{
-		Enqueue: true,
-		Envelope: Envelope{
-			Schema:         EnvelopeSchema,
-			Kind:           KindReview,
-			Repo:           p.Repository.FullName,
-			PR:             p.PullRequest.Number,
-			HeadSHA:        p.PullRequest.Head.SHA,
-			InstallationID: p.Installation.ID,
-			ReviewID:       p.Review.ID,
-			AuthorID:       p.Review.User.ID,
-			AuthorLogin:    p.Review.User.Login,
-		},
-	}
+	return enqueueOne(Envelope{
+		Schema:         EnvelopeSchema,
+		Kind:           KindReview,
+		Repo:           p.Repository.FullName,
+		PR:             p.PullRequest.Number,
+		HeadSHA:        p.PullRequest.Head.SHA,
+		InstallationID: p.Installation.ID,
+		ReviewID:       p.Review.ID,
+		AuthorID:       p.Review.User.ID,
+		AuthorLogin:    p.Review.User.Login,
+	})
+}
+
+// enqueueOne wraps the single envelope the non-fan-out kinds produce.
+func enqueueOne(env Envelope) Decision {
+	return Decision{Envelopes: []Envelope{env}}
 }
 
 func drop(reason string) Decision {

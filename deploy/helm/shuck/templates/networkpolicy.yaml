@@ -96,18 +96,19 @@ spec:
     matchLabels:
       {{- include "shuck.selectorLabels" (dict "root" . "component" "ingest") | nindent 6 }}
   policyTypes: [Ingress, Egress]
-  {{- if or .Values.networkPolicy.ingestFrom .Values.observability.enabled }}
   ingress:
-    {{- with .Values.networkPolicy.ingestFrom }}
-    # The public ingress controller carrying /webhook.
-    - from:
-        {{- toYaml . | nindent 8 }}
-      ports:
+    # The public ingress controller carrying /webhook. An empty
+    # networkPolicy.ingestFrom degrades to a port-scoped allow (any source
+    # on 8080) — GitHub webhook deliveries to the chart's only public
+    # endpoint must keep flowing; set ingestFrom to tighten the sources.
+    - ports:
         - protocol: TCP
           port: 8080
-    {{- end }}
+      {{- with .Values.networkPolicy.ingestFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     {{- include "shuck.metricsNetpolIngress" . | nindent 4 }}
-  {{- end }}
   egress:
     # SQS + DynamoDB, and the kube-apiserver for the deploy-order gate.
     - ports:
@@ -131,20 +132,42 @@ spec:
     matchLabels:
       {{- include "shuck.selectorLabels" (dict "root" . "component" "portal") | nindent 6 }}
   policyTypes: [Ingress, Egress]
-  {{- if or .Values.networkPolicy.portalFrom .Values.observability.enabled }}
   ingress:
-    {{- with .Values.networkPolicy.portalFrom }}
-    # The private ingress controller carrying the portal UI.
-    - from:
-        {{- toYaml . | nindent 8 }}
-      ports:
+    # The private ingress controller carrying the portal UI. An empty
+    # networkPolicy.portalFrom degrades to a port-scoped allow (any source
+    # on 8080); set portalFrom to tighten the sources.
+    - ports:
         - protocol: TCP
           port: 8080
-    {{- end }}
+      {{- with .Values.networkPolicy.portalFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     {{- include "shuck.metricsNetpolIngress" . | nindent 4 }}
-  {{- end }}
   egress:
     # GitHub (user auth + validation), DynamoDB, optional OIDC issuer.
+    - ports:
+        - protocol: TCP
+          port: 443
+    {{- toYaml $dns | nindent 4 }}
+{{- end }}
+{{- if .Values.portal.sweep.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "shuck.fullname" . }}-portal-sweep
+  labels:
+    {{- include "shuck.labels" . | nindent 4 }}
+    app.kubernetes.io/component: portal-sweep
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "shuck.selectorLabels" (dict "root" . "component" "portal-sweep") | nindent 6 }}
+  # Egress only: the sweep Job serves nothing.
+  policyTypes: [Egress]
+  egress:
+    # GitHub (re-validation) + DynamoDB (token table).
     - ports:
         - protocol: TCP
           port: 443

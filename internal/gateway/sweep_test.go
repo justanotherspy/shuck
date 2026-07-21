@@ -119,3 +119,50 @@ func TestSweeperRunStopsOnContext(t *testing.T) {
 		t.Fatal("Run did not stop when its context ended")
 	}
 }
+
+// TestSweepDurableLiveCheck covers the serverless shape, where the in-memory
+// registry is always empty and the durable connection registry is the only
+// liveness guard: a stale-looking subscriber with a live registry row is
+// never swept, and a Live lookup error skips the subscriber (retry next
+// pass) instead of sweeping it.
+func TestSweepDurableLiveCheck(t *testing.T) {
+	sweeper, subs, _, presence, _ := newTestSweeper()
+	ctx := context.Background()
+	now := time.Now()
+	sweeper.Now = func() time.Time { return now }
+
+	reconnected := SubscriberKey{UserID: "1", SessionID: "back"}
+	flaky := SubscriberKey{UserID: "2", SessionID: "erring"}
+	gone := SubscriberKey{UserID: "3", SessionID: "gone"}
+	ref := PRRef{Repo: "octo/repo", PR: 7}
+	for _, sub := range []SubscriberKey{reconnected, flaky, gone} {
+		if err := subs.Subscribe(ctx, ref, sub); err != nil {
+			t.Fatalf("subscribe: %v", err)
+		}
+		if err := presence.Touch(ctx, sub, now.Add(-49*time.Hour)); err != nil {
+			t.Fatalf("touch: %v", err)
+		}
+		if err := presence.MarkDisconnected(ctx, sub, now.Add(-48*time.Hour)); err != nil {
+			t.Fatalf("mark: %v", err)
+		}
+	}
+	sweeper.Live = func(_ context.Context, sub SubscriberKey) (bool, error) {
+		switch sub {
+		case reconnected:
+			return true, nil
+		case flaky:
+			return false, context.DeadlineExceeded
+		default:
+			return false, nil
+		}
+	}
+
+	sweeper.Sweep(ctx)
+
+	if subs.count(ref) != 2 {
+		t.Fatalf("subscriptions after sweep = %d, want 2 (only the truly gone one removed)", subs.count(ref))
+	}
+	if got := sweeper.Metrics.SweepRemoved.Load(); got != 1 {
+		t.Fatalf("SweepRemoved = %d, want 1", got)
+	}
+}

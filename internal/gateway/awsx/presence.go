@@ -41,12 +41,17 @@ func (s *DynamoPresenceStore) Touch(ctx context.Context, sub gateway.SubscriberK
 	return nil
 }
 
-// MarkDisconnected records that sub's connection closed at t.
+// MarkDisconnected records that sub's connection closed at t. It also
+// backfills last_seen when the row doesn't carry one — a row created by a
+// disconnect alone (the connect-time Touch failed and the conn died before
+// the first TouchInterval) would otherwise never match Stale's
+// `last_seen < :cutoff` filter, leaking the subscriber's TTL-less
+// subscription rows forever. An existing last_seen is never overwritten.
 func (s *DynamoPresenceStore) MarkDisconnected(ctx context.Context, sub gateway.SubscriberKey, at time.Time) error {
 	_, err := s.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:                 aws.String(s.table),
 		Key:                       presenceKey(sub),
-		UpdateExpression:          aws.String("SET disconnected_at = :t"),
+		UpdateExpression:          aws.String("SET disconnected_at = :t, last_seen = if_not_exists(last_seen, :t)"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{":t": &types.AttributeValueMemberN{Value: strconv.FormatInt(at.Unix(), 10)}},
 	})
 	if err != nil {

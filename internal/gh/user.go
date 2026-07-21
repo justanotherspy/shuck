@@ -27,3 +27,20 @@ func (c *Client) OrgMember(ctx context.Context, org, login string) (bool, error)
 	}
 	return member, nil
 }
+
+// UserLoginByID resolves the current login behind an immutable numeric user
+// ID. Logins are mutable — a rename leaves any stored login stale — so
+// callers that persist identities must re-resolve before probing by login.
+// found is false only on a 404 (the account no longer exists — a definitive
+// answer); any other failure is an error the caller must treat as "unknown",
+// never as "gone".
+func (c *Client) UserLoginByID(ctx context.Context, id int64) (login string, found bool, err error) {
+	u, _, err := c.gh.Users.GetByID(ctx, id)
+	if err != nil {
+		if IsNotFound(err) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("resolve login for user %d: %w", id, err)
+	}
+	return u.GetLogin(), true, nil
+}

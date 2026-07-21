@@ -1,8 +1,11 @@
 package awsx
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -199,15 +202,31 @@ func TestScanErrors(t *testing.T) {
 	if _, err := store.All(context.Background()); err == nil {
 		t.Fatal("scan failure not surfaced")
 	}
+}
 
-	// A row without the numeric user id is corrupt, not a token.
-	fake = &fakeDynamo{scanFn: func(*dynamodb.ScanInput) (*dynamodb.ScanOutput, error) {
+// TestScanSkipsMalformedRows pins the degradation contract: one corrupt row
+// (e.g. hand-seeded without github_user_id) is skipped with a loud warning,
+// never allowed to 502 every dashboard view or abort the sweep forever.
+func TestScanSkipsMalformedRows(t *testing.T) {
+	fake := &fakeDynamo{scanFn: func(*dynamodb.ScanInput) (*dynamodb.ScanOutput, error) {
 		return &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{
-			{"pk": &types.AttributeValueMemberS{Value: "h"}},
+			{"pk": &types.AttributeValueMemberS{Value: "h-corrupt"}}, // no github_user_id
+			item("h-good", "42", "octocat", "1700000000"),
 		}}, nil
 	}}
-	store = NewDynamoTokenStore(fake, "tokens")
-	if _, err := store.All(context.Background()); err == nil {
-		t.Fatal("malformed row accepted")
+	store := NewDynamoTokenStore(fake, "tokens")
+	var logBuf bytes.Buffer
+	store.Log = slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	rows, err := store.All(context.Background())
+	if err != nil {
+		t.Fatalf("All: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Hash != "h-good" {
+		t.Fatalf("rows = %+v, want just the good row", rows)
+	}
+	logged := logBuf.String()
+	if !strings.Contains(logged, "skipping malformed token row") || !strings.Contains(logged, "h-corrupt") {
+		t.Errorf("skip not logged loudly with the pk:\n%s", logged)
 	}
 }

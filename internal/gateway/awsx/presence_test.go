@@ -37,8 +37,11 @@ func TestPresenceMarkDisconnectedKeepsLastSeen(t *testing.T) {
 		t.Fatalf("MarkDisconnected: %v", err)
 	}
 	expr := *fake.updates[0].UpdateExpression
-	if !strings.Contains(expr, "SET disconnected_at") || strings.Contains(expr, "last_seen") {
-		t.Fatalf("mark expression = %q — must set only disconnected_at", expr)
+	// disconnected_at is always stamped; last_seen is only seeded when the row
+	// never got a Touch (if_not_exists), so an existing last_seen survives and
+	// a disconnect-only row still matches the sweep's Stale filter.
+	if !strings.Contains(expr, "SET disconnected_at") || !strings.Contains(expr, "if_not_exists(last_seen") {
+		t.Fatalf("mark expression = %q — must stamp disconnected_at and seed last_seen via if_not_exists", expr)
 	}
 }
 

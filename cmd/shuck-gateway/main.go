@@ -241,14 +241,24 @@ func runLambda(ctx context.Context, log *slog.Logger) error {
 		if err != nil {
 			return err
 		}
-		// The registry is empty in a per-invocation process; liveness comes
-		// from ping-refreshed presence rows, which connected shims renew
-		// every few minutes — far inside any sane grace window.
+		// The in-memory registry is empty in a per-invocation process, so
+		// the durable connection registry (the buffer table's `w` rows) is
+		// the liveness guard: a subscriber with a live registry row — e.g.
+		// one that reconnected mid-pass — is never swept.
+		registryTTL, err := durationEnv("SHUCK_REGISTRY_TTL", awsx.DefaultRegistryTTL)
+		if err != nil {
+			return err
+		}
+		reg := awsx.NewDynamoRegistryStore(ddb, bufferTable, registryTTL)
 		sweeper := &gateway.Sweeper{
-			Subs:        subs,
-			Buffer:      buffer,
-			Presence:    presence,
-			Registry:    gateway.NewMemRegistry(),
+			Subs:     subs,
+			Buffer:   buffer,
+			Presence: presence,
+			Registry: gateway.NewMemRegistry(),
+			Live: func(ctx context.Context, sub gateway.SubscriberKey) (bool, error) {
+				_, ok, err := reg.Get(ctx, sub)
+				return ok, err
+			},
 			GraceWindow: grace,
 			Log:         log,
 			Metrics:     metrics,

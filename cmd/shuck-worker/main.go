@@ -89,6 +89,17 @@ func run(ctx context.Context, log *slog.Logger) error {
 			return fmt.Errorf("parse SHUCK_SUMMARY_LIMIT: %w", err)
 		}
 	}
+	contextLines := 0 // the Processor turns zero into distil.DefaultContextLines
+	if v := os.Getenv("SHUCK_REVIEW_CONTEXT_LINES"); v != "" {
+		if contextLines, err = strconv.Atoi(v); err != nil {
+			return fmt.Errorf("parse SHUCK_REVIEW_CONTEXT_LINES: %w", err)
+		}
+		if contextLines < 0 {
+			// Rejected at boot: a negative value would pass startup and then
+			// fail every review_comment envelope into the DLQ.
+			return fmt.Errorf("SHUCK_REVIEW_CONTEXT_LINES must be >= 0, got %d", contextLines)
+		}
+	}
 
 	tokens, err := worker.NewAppTokenSource(appID, keyPEM)
 	if err != nil {
@@ -99,13 +110,6 @@ func run(ctx context.Context, log *slog.Logger) error {
 	apiBase := os.Getenv("SHUCK_GITHUB_API_URL")
 	if apiBase != "" {
 		tokens.BaseURL = apiBase
-	}
-
-	contextLines := 0 // the Processor turns zero into distil.DefaultContextLines
-	if v := os.Getenv("SHUCK_REVIEW_CONTEXT_LINES"); v != "" {
-		if contextLines, err = strconv.Atoi(v); err != nil {
-			return fmt.Errorf("parse SHUCK_REVIEW_CONTEXT_LINES: %w", err)
-		}
 	}
 
 	fetch := &worker.GHFetcher{APIBase: apiBase, Log: log}
@@ -119,6 +123,11 @@ func run(ctx context.Context, log *slog.Logger) error {
 		ContextLines:  contextLines,
 		Log:           log,
 		Metrics:       metrics,
+	}
+	if err := processor.Validate(); err != nil {
+		// Backstop for the env checks above: an invalid config must fail
+		// boot, not poison every envelope at process time.
+		return err
 	}
 
 	awsCfg, err := config.LoadDefaultConfig(ctx)
@@ -239,6 +248,7 @@ func logMetrics(ctx context.Context, log *slog.Logger, m *worker.Metrics) {
 				"token_cache_hits", m.TokenCacheHits.Load(),
 				"token_errors", m.TokenErrors.Load(),
 				"fetch_errors", m.FetchErrors.Load(),
+				"parse_errors", m.ParseErrors.Load(),
 				"fetch_latency_ms_sum", m.FetchLatencySumMS.Load(),
 				"fetch_count", m.FetchLatencyCount.Load(),
 				"parse_latency_ms_sum", m.ParseLatencySumMS.Load(),

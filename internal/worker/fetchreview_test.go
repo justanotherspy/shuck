@@ -11,12 +11,15 @@ import (
 )
 
 // reviewAPI serves the GitHub REST surface the review fetches touch. The
-// knobs script per-endpoint failures.
+// knobs script per-endpoint failures and the served comment's anchor.
 type reviewAPI struct {
 	srv          *httptest.Server
 	commentGone  bool
+	commentSide  string // the served comment's side
+	commentLine  int    // the served comment's line; 0 means file-level
 	reviewGone   bool
 	reviewErr    bool
+	commentsErr  bool
 	threadErr    bool
 	contentsErr  bool
 	contentsHits []string // "path?ref" of each contents request
@@ -24,7 +27,7 @@ type reviewAPI struct {
 
 func newReviewAPI(t *testing.T) *reviewAPI {
 	t.Helper()
-	api := &reviewAPI{}
+	api := &reviewAPI{commentSide: "RIGHT", commentLine: 3}
 	mux := http.NewServeMux()
 	api.srv = httptest.NewServer(mux)
 	t.Cleanup(api.srv.Close)
@@ -37,13 +40,13 @@ func newReviewAPI(t *testing.T) *reviewAPI {
 			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
 			return
 		}
-		fmt.Fprint(w, `{
+		fmt.Fprintf(w, `{
 			"id": 9001, "pull_request_review_id": 77, "in_reply_to_id": 8000,
-			"path": "a.go", "line": 3, "side": "RIGHT",
+			"path": "a.go", "line": %d, "side": %q,
 			"body": "rename this", "diff_hunk": "@@ -1 +1 @@",
 			"commit_id": "commit9",
 			"user": {"id": 555, "login": "octocat"}
-		}`)
+		}`, api.commentLine, api.commentSide)
 	})
 	mux.HandleFunc("GET /api/v3/repos/o/r/pulls/7/reviews/77", func(w http.ResponseWriter, _ *http.Request) {
 		switch {
@@ -56,6 +59,10 @@ func newReviewAPI(t *testing.T) *reviewAPI {
 		}
 	})
 	mux.HandleFunc("GET /api/v3/repos/o/r/pulls/7/reviews/77/comments", func(w http.ResponseWriter, _ *http.Request) {
+		if api.commentsErr {
+			http.Error(w, `{"message":"boom"}`, http.StatusInternalServerError)
+			return
+		}
 		fmt.Fprint(w, `[{"id": 9001, "body": "rename this", "user": {"id": 555, "login": "octocat"}}]`)
 	})
 	mux.HandleFunc("GET /api/v3/repos/o/r/pulls/7/comments", func(w http.ResponseWriter, _ *http.Request) {
@@ -167,6 +174,51 @@ func TestGHFetcherFetchReviewCommentFileFailureDegrades(t *testing.T) {
 	}
 	if data.FileContent != "" {
 		t.Errorf("file content = %q, want empty", data.FileContent)
+	}
+}
+
+func TestGHFetcherFileAtHeadSkips(t *testing.T) {
+	// LEFT-side comments (head line numbers don't apply) and file-level
+	// comments (no line) must never hit the contents endpoint.
+	tests := []struct {
+		name string
+		side string
+		line int
+	}{
+		{"left side", "LEFT", 3},
+		{"file-level (no line)", "RIGHT", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			api := newReviewAPI(t)
+			api.commentSide = tt.side
+			api.commentLine = tt.line
+			f := &GHFetcher{APIBase: api.srv.URL}
+
+			data, err := f.FetchReviewComment(context.Background(), "ghs_inst", rcEnvelope())
+			if err != nil {
+				t.Fatalf("FetchReviewComment: %v", err)
+			}
+			if len(api.contentsHits) != 0 {
+				t.Errorf("contents fetched at %v, want no requests", api.contentsHits)
+			}
+			if data.FileContent != "" {
+				t.Errorf("file content = %q, want empty", data.FileContent)
+			}
+		})
+	}
+}
+
+func TestGHFetcherFetchReviewCommentsListingFails(t *testing.T) {
+	// 200 on the review, 500 on its /comments listing: the fetch must error
+	// (redelivery), never hand back a partial ReviewData — a partial would
+	// mis-evaluate the standalone-wrapper rule and break single-delivery.
+	api := newReviewAPI(t)
+	api.commentsErr = true
+	f := &GHFetcher{APIBase: api.srv.URL}
+
+	if _, err := f.FetchReview(context.Background(), "ghs_inst", rvEnvelope()); err == nil {
+		t.Fatal("want error when the comment listing fails")
 	}
 }
 

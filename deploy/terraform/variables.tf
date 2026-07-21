@@ -84,6 +84,13 @@ variable "webhook_secret" {
   default     = ""
 }
 
+variable "deliver_secret_secondary" {
+  description = "Second accepted deliver secret during a staged rotation (docs/RUNBOOK.md): set it to the old secret while workers move to the new one, then clear it. Empty means unset."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 # --- Optional OIDC gate on the portal -------------------------------------
 
 variable "oidc_issuer" {

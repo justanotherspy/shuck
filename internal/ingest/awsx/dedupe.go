@@ -1,8 +1,9 @@
 // Package awsx provides the AWS-backed implementations of the ingest
-// interfaces — a DynamoDB deduper and an SQS enqueuer — plus the Lambda
-// function-URL adapter used by cmd/shuck-ingest. It is the only ingest
-// package that imports AWS SDKs; the ingest core stays pure so the portable
-// shuck CLI never links any of this.
+// interfaces — a DynamoDB deduper, an SQS enqueuer, and the DynamoDB
+// subscription checker (the Lambda adapter lives in the shared
+// internal/lambdahttp). It is the only ingest package that imports AWS
+// SDKs; the ingest core stays pure so the portable shuck CLI never links
+// any of this.
 package awsx
 
 import (

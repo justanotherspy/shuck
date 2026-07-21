@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -39,13 +41,15 @@ func pemPKCS8(t *testing.T, key *rsa.PrivateKey) []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
 }
 
-// tokenServer serves the installation-token mint endpoint, verifying each
-// request's App JWT against testKey (on the caller's fake clock) and
-// counting mints.
+// tokenServer serves the installation-token mint endpoint for any
+// installation, verifying each request's App JWT against testKey (on the
+// caller's fake clock) and counting mints. Each minted token is unique
+// (ghs_test<n>), so callers can tell mints apart.
 func tokenServer(t *testing.T, now func() time.Time, expires time.Time, mints *atomic.Int64) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/app/installations/42/access_tokens" {
+		if r.Method != http.MethodPost || !strings.HasPrefix(r.URL.Path, "/app/installations/") ||
+			!strings.HasSuffix(r.URL.Path, "/access_tokens") {
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 			http.Error(w, "not found", http.StatusNotFound)
 			return
@@ -121,6 +125,60 @@ func TestAppTokenSourceMintAndCache(t *testing.T) {
 	}
 	if tok3 != "ghs_test2" {
 		t.Errorf("token after margin = %q, want a fresh mint", tok3)
+	}
+}
+
+func TestAppTokenSourceConcurrentMints(t *testing.T) {
+	// N goroutines racing Token() across two installations: exactly one mint
+	// per installation, every caller for an installation sees that one
+	// token, and the cache is never torn (run under -race).
+	now := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
+	var mints atomic.Int64
+	srv := tokenServer(t, func() time.Time { return now }, now.Add(time.Hour), &mints)
+	defer srv.Close()
+
+	metrics := &Metrics{}
+	src, err := NewAppTokenSource(7, pemPKCS1(testKey))
+	if err != nil {
+		t.Fatalf("NewAppTokenSource: %v", err)
+	}
+	src.BaseURL = srv.URL
+	src.HTTP = srv.Client()
+	src.Now = func() time.Time { return now }
+	src.Metrics = metrics
+
+	const calls = 20
+	installations := []int64{42, 43}
+	tokens := make([]string, calls)
+	errs := make([]error, calls)
+	var wg sync.WaitGroup
+	for i := range calls {
+		wg.Go(func() {
+			tokens[i], errs[i] = src.Token(context.Background(), installations[i%len(installations)])
+		})
+	}
+	wg.Wait()
+
+	byInstallation := make(map[int64]string)
+	for i := range calls {
+		if errs[i] != nil {
+			t.Fatalf("Token(%d): %v", installations[i%len(installations)], errs[i])
+		}
+		inst := installations[i%len(installations)]
+		if prev, ok := byInstallation[inst]; ok && prev != tokens[i] {
+			t.Errorf("installation %d saw tokens %q and %q, want one", inst, prev, tokens[i])
+		}
+		byInstallation[inst] = tokens[i]
+	}
+	if byInstallation[42] == byInstallation[43] {
+		t.Error("both installations got the same token")
+	}
+	if got := mints.Load(); got != 2 {
+		t.Errorf("server minted %d times, want exactly one per installation", got)
+	}
+	if metrics.TokenMints.Load() != 2 || metrics.TokenCacheHits.Load() != calls-2 {
+		t.Errorf("metrics mints=%d hits=%d, want 2/%d",
+			metrics.TokenMints.Load(), metrics.TokenCacheHits.Load(), calls-2)
 	}
 }
 

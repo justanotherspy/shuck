@@ -137,6 +137,23 @@ func (g *Gateway) Message(ctx context.Context, connID string, data []byte) error
 		return nil
 	}
 	if frame.Type == gateway.FrameHello {
+		// Hello must be the first frame and must not repeat — the resident
+		// hub closes a repeat with StatusProtocolError. Re-running hello
+		// here would re-register the connection and leave the previous
+		// identity's forward row dangling (a Gone round-trip on every
+		// deliver) until its TTL, so a repeat drops the connection; the
+		// platform's $disconnect then cleans the existing registration.
+		_, registered, err := g.Registry.Lookup(ctx, connID)
+		if err != nil {
+			g.log().Error("registry lookup failed", "conn", connID, "err", err)
+			g.drop(ctx, connID)
+			return nil
+		}
+		if registered {
+			g.log().Info("closing connection: repeated hello", "conn", connID)
+			g.drop(ctx, connID)
+			return nil
+		}
 		g.hello(ctx, connID, frame)
 		return nil
 	}

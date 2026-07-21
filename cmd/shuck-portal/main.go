@@ -117,6 +117,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 		return fmt.Errorf("load AWS config: %w", err)
 	}
 	store := awsx.NewDynamoTokenStore(dynamodb.NewFromConfig(awsCfg), table)
+	store.Log = log
 	metrics := &portal.Metrics{}
 	sweeper := &portal.Sweeper{Store: store, Validate: validator, Interval: sweepInterval, Log: log, Metrics: metrics}
 
@@ -249,8 +250,8 @@ func buildValidator() (portal.Validator, error) {
 		return nil, fmt.Errorf("SHUCK_GITHUB_ORG and SHUCK_GITHUB_ACCOUNT_ID are mutually exclusive")
 	case account != "":
 		id, err := strconv.ParseInt(account, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("parse SHUCK_GITHUB_ACCOUNT_ID: %w", err)
+		if err != nil || id <= 0 {
+			return nil, fmt.Errorf("SHUCK_GITHUB_ACCOUNT_ID must be a positive numeric user ID")
 		}
 		return &portal.AccountValidator{AccountID: id}, nil
 	case org != "":

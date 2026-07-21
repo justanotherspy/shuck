@@ -23,6 +23,9 @@ locals {
     aws_dynamodb_table.buffer.arn,
   ]
 
+  # Transactions (the buffer's transactional append) authorize via the
+  # per-item actions (PutItem/UpdateItem/DeleteItem/ConditionCheckItem) —
+  # "dynamodb:TransactWriteItems" is not a real IAM action.
   gateway_ddb_actions = [
     "dynamodb:GetItem",
     "dynamodb:PutItem",
@@ -31,7 +34,7 @@ locals {
     "dynamodb:Query",
     "dynamodb:Scan",
     "dynamodb:BatchWriteItem",
-    "dynamodb:TransactWriteItems",
+    "dynamodb:ConditionCheckItem",
   ]
 
   # policy statements per role; roles are created for_each over this map.
@@ -95,6 +98,9 @@ locals {
       },
     ]
 
+    # The portal's Replace (revoke-old + mint-new) is a transaction: it
+    # authorizes via the per-item actions plus ConditionCheckItem for any
+    # future condition-check elements. The sweep only scans and deletes.
     portal = [
       {
         actions = [
@@ -102,7 +108,7 @@ locals {
           "dynamodb:PutItem",
           "dynamodb:DeleteItem",
           "dynamodb:Scan",
-          "dynamodb:TransactWriteItems",
+          "dynamodb:ConditionCheckItem",
         ]
         resources = [aws_dynamodb_table.tokens.arn]
       },
@@ -114,7 +120,6 @@ locals {
           "dynamodb:GetItem",
           "dynamodb:DeleteItem",
           "dynamodb:Scan",
-          "dynamodb:TransactWriteItems",
         ]
         resources = [aws_dynamodb_table.tokens.arn]
       },

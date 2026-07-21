@@ -3,6 +3,7 @@ package awsx
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -19,11 +20,20 @@ import (
 type DynamoTokenStore struct {
 	client DynamoAPI
 	table  string
+	// Log may be nil, which means slog.Default().
+	Log *slog.Logger
 }
 
 // NewDynamoTokenStore returns a token store writing to table.
 func NewDynamoTokenStore(client DynamoAPI, table string) *DynamoTokenStore {
 	return &DynamoTokenStore{client: client, table: table}
+}
+
+func (s *DynamoTokenStore) log() *slog.Logger {
+	if s.Log != nil {
+		return s.Log
+	}
+	return slog.Default()
 }
 
 // ByUser lists the rows owned by userID. The table holds one row per user
@@ -57,7 +67,13 @@ func (s *DynamoTokenStore) scan(ctx context.Context, filter *string, values map[
 		for _, item := range out.Items {
 			row, err := rowFromItem(item)
 			if err != nil {
-				return nil, fmt.Errorf("token row: %w", err)
+				// One malformed row (e.g. hand-seeded without the numeric
+				// user id) must not abort the whole listing — that would 502
+				// every dashboard and permanently stall the sweep. Skip it
+				// loudly instead.
+				s.log().Warn("skipping malformed token row",
+					"pk", stringAttr(item, "pk"), "err", err)
+				continue
 			}
 			rows = append(rows, row)
 		}

@@ -92,6 +92,34 @@ func TestHTTPDelivererExhaustsRetries(t *testing.T) {
 	}
 }
 
+func TestHTTPDelivererBackoffDoubles(t *testing.T) {
+	// Three attempts against a dead gateway: the default backoff sleeps
+	// 500ms before the second attempt and 1s before the third.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "down", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	var slept []time.Duration
+	d := &HTTPDeliverer{URL: srv.URL, HTTP: srv.Client(),
+		Sleep: func(_ context.Context, dur time.Duration) error {
+			slept = append(slept, dur)
+			return nil
+		}}
+	if err := d.Deliver(context.Background(), deliverReq()); err == nil {
+		t.Fatal("want error after exhausting retries")
+	}
+	want := []time.Duration{500 * time.Millisecond, time.Second}
+	if len(slept) != len(want) {
+		t.Fatalf("slept %v, want %v", slept, want)
+	}
+	for i, dur := range want {
+		if slept[i] != dur {
+			t.Errorf("sleep %d = %v, want %v", i+1, slept[i], dur)
+		}
+	}
+}
+
 func TestHTTPDelivererClientErrorIsPermanent(t *testing.T) {
 	var calls atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

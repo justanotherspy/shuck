@@ -325,8 +325,10 @@ func TestParseIgnoreAuthors(t *testing.T) {
 		{123, "whoever", true},        // by id
 		{999, "SHUCK-APP[bot]", true}, // by login, case-insensitive
 		{999, "other", false},
-		{0, "", false},  // "0" token is not a valid id
-		{-5, "", false}, // negative ids never match
+		{999, "123", true}, // GitHub permits all-digit logins: "123" matches both ways
+		{0, "123", true},   // …even with no usable id on the event
+		{0, "", false},     // "0" token is not a valid id
+		{-5, "", false},    // negative ids never match
 	}
 	for _, tt := range tests {
 		if got := ia.Match(tt.id, tt.login); got != tt.want {
@@ -336,6 +338,57 @@ func TestParseIgnoreAuthors(t *testing.T) {
 	// "0" and "-5" fall through to the login set rather than the id set.
 	if !ia.Match(999, "0") || !ia.Match(999, "-5") {
 		t.Error("non-positive numeric tokens are treated as logins")
+	}
+}
+
+func TestProcessReviewCommentNegativeContextLinesPoison(t *testing.T) {
+	// Constructed directly, bypassing the boot-time Validate: a negative
+	// ContextLines must error the envelope (redelivery → DLQ), count a parse
+	// error, and deliver nothing.
+	p, _, deliver := reviewProcessor(&fakeReviews{comment: standaloneCommentData()})
+	p.ContextLines = -1
+
+	if err := p.Process(context.Background(), rcEnvelope()); err == nil {
+		t.Fatal("want error for negative ContextLines")
+	}
+	if p.Metrics.ParseErrors.Load() != 1 {
+		t.Errorf("parse errors = %d, want 1", p.Metrics.ParseErrors.Load())
+	}
+	if len(deliver.reqs) != 0 || p.Metrics.Delivered.Load() != 0 {
+		t.Errorf("delivered %d times, want nothing on a distillation failure", len(deliver.reqs))
+	}
+}
+
+func TestProcessReviewGhostUserFallsBackToEnvelopeLogin(t *testing.T) {
+	// A review whose author account is gone fetches with an empty login; the
+	// summary must fall back to the webhook's author_login.
+	data := bulkReviewData()
+	data.Review.UserLogin = ""
+	p, _, deliver := reviewProcessor(&fakeReviews{review: data})
+
+	if err := p.Process(context.Background(), rvEnvelope()); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if len(deliver.reqs) != 1 {
+		t.Fatal("not delivered")
+	}
+	if sum := deliver.reqs[0].Summary; !strings.Contains(sum, "Reviewer octocat requested changes") {
+		t.Errorf("summary did not fall back to the envelope login:\n%s", sum)
+	}
+}
+
+func TestLoginOr(t *testing.T) {
+	tests := []struct {
+		fetched, envelope, want string
+	}{
+		{"fresh", "stale", "fresh"},
+		{"", "stale", "stale"},
+		{"", "", ""},
+	}
+	for _, tt := range tests {
+		if got := loginOr(tt.fetched, tt.envelope); got != tt.want {
+			t.Errorf("loginOr(%q, %q) = %q, want %q", tt.fetched, tt.envelope, got, tt.want)
+		}
 	}
 }
 

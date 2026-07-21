@@ -103,6 +103,24 @@ type Processor struct {
 	Metrics *Metrics
 }
 
+// Validate checks the Processor's static configuration up front:
+// ContextLines and the distil Options. Both are otherwise only caught per
+// envelope at process time, where an operator typo fails EVERY envelope
+// (each redelivering until the DLQ) — entrypoints call this once at boot to
+// fail fast instead. Valid configurations (including the zero value's
+// defaults) always pass, so processing semantics are unchanged.
+func (p *Processor) Validate() error {
+	if p.ContextLines < 0 {
+		return fmt.Errorf("worker: ContextLines must be non-negative, got %d", p.ContextLines)
+	}
+	// distil owns the Options rules but does not export them; distilling an
+	// empty input errors only on invalid Options.
+	if _, err := distil.CIFailure(distil.Input{Options: p.options()}); err != nil {
+		return fmt.Errorf("worker: invalid Options: %w", err)
+	}
+	return nil
+}
+
 // ProcessMessage parses one queue message body and processes its envelope.
 // A returned error means the message must be redelivered (the poll loop
 // leaves it on the queue; the Lambda handler reports it as a batch item

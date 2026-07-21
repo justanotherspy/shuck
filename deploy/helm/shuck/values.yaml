@@ -98,6 +98,8 @@ externalSecrets:
   data:
     webhookSecret: { key: "", property: "" }
     deliverSecret: { key: "", property: "" }
+    # Optional: only synced during a staged deliver-secret rotation.
+    deliverSecretSecondary: { key: "", property: "" }
     sessionSecret: { key: "", property: "" }
     githubClientSecret: { key: "", property: "" }
     oidcClientSecret: { key: "", property: "" }

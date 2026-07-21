@@ -567,3 +567,28 @@ func TestIntegrationAckedEventNotReplayed(t *testing.T) {
 	}
 	expectSilence(t, c2)
 }
+
+// TestIntegrationPingIsIgnored pins the one-shim-two-gateways contract: the
+// shim sends an app-level {"type":"ping"} every 5 minutes for the serverless
+// gateway's benefit, and the resident hub must tolerate it — the connection
+// survives and deliveries still flow afterwards.
+func TestIntegrationPingIsIgnored(t *testing.T) {
+	hub, tokens, subs, _, _ := newTestHub()
+	tokens.add("tok-a", TokenRecord{GitHubUserID: 1, GitHubLogin: "alice"})
+	srv := startGateway(t, hub)
+
+	c := hello(t, srv, "tok-a", "sess-1", "")
+	defer c.Close(websocket.StatusNormalClosure, "")
+	send(t, c, ClientFrame{Type: FramePing})
+	send(t, c, ClientFrame{Type: FrameSubscribe, Repo: "octo/repo", PR: 7})
+	waitFor(t, "subscription", func() bool { return subs.count(PRRef{Repo: "octo/repo", PR: 7}) == 1 })
+	send(t, c, ClientFrame{Type: FramePing})
+
+	if _, err := hub.Deliver(context.Background(), deliverReq("ev-ping-1", KindCIFailure, nil)); err != nil {
+		t.Fatalf("Deliver: %v", err)
+	}
+	ev := readEvent(t, c)
+	if ev.ID != "ev-ping-1" {
+		t.Fatalf("event after pings = %+v, want ev-ping-1", ev)
+	}
+}

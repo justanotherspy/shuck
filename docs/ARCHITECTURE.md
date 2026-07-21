@@ -59,8 +59,10 @@ keep the CLI/MCP golden outputs byte-identical.
 
 The router closes the CI-feedback loop **off-agent**. Instead of an agent
 burning tokens and latency polling `gh` to discover a run failed, a GitHub App
-receives the event, a worker fetches and distils it (the shared
-`internal/distil` core — the same code path the CLI uses), and a gateway pushes
+receives the event, a worker fetches and distils it (CI failures go through the
+shared `internal/distil.CIFailure` core — the same code path the CLI uses; the
+`review` / `review_comment` formatters in the same package are worker-only, the
+CLI's reviews view being a separate GraphQL path), and a gateway pushes
 the distilled context into the subscribed session within seconds.
 
 ```mermaid
@@ -96,7 +98,7 @@ Four envelope kinds flow through the queue:
 
 | Kind | Trigger | Payload the worker distils |
 | --- | --- | --- |
-| `ci_failure` | `workflow_run` completed with a failure/cancellation | failed/cancelled jobs → per-step failure detail + agent-ready summary |
+| `ci_failure` | `workflow_run` completed with conclusion `failure` / `cancelled` / `timed_out` | failed/cancelled jobs → per-step failure detail + agent-ready summary |
 | `pr_closed` | `pull_request` closed/merged | none — clears the PR's subscriptions |
 | `review_comment` | `pull_request_review_comment` | comment + thread + hunk + ±`SHUCK_REVIEW_CONTEXT_LINES` file lines at head |
 | `review` | `pull_request_review` submitted | verdict + body + all inline comments (one event per human review action) |
@@ -110,7 +112,11 @@ Delivery is **write-then-push, at-least-once, ordered per subscriber**:
 - The shim **acks** each event by id; an ack deletes the buffer row.
 - On reconnect the shim replays unacked events (resident: from
   `last_event_id`; serverless: the full unacked buffer — re-sends are free, the
-  shim dedupes by event id).
+  shim dedupes by event id). Ordering is strict per subscriber on the resident
+  path (one writer goroutine); on the serverless path concurrent deliver
+  invocations each drain the unacked buffer, so a shim's *first sight* of two
+  near-simultaneous events can be out of seq order — replay always re-presents
+  them in order, and the shim's event-id dedupe absorbs the re-sends.
 - `event_id` is **always the webhook delivery GUID**, so SQS redeliveries and
   deliver retries dedupe in the gateway.
 - Fan-out is per `repo#pr` across every subscriber.
@@ -172,16 +178,17 @@ flowchart TB
 
 | Edge | Mechanism |
 | --- | --- |
-| GitHub → ingest | Webhook secret HMAC (`X-Hub-Signature-256`), constant-time; delivery-GUID dedupe. The **only** public component. |
-| Worker → GitHub | App private key → short-lived cached installation tokens (RS256 App JWT). Permissions: `actions:read`, `pull_requests:read`, `members:read`. No PATs. |
+| GitHub → ingest | Webhook secret HMAC (`X-Hub-Signature-256`), constant-time; delivery-GUID dedupe. The **only unauthenticated** public component (plus its `/healthz`, which touches nothing). |
+| Worker → GitHub | App private key → short-lived cached installation tokens (RS256 App JWT). Permissions: `actions:read`, `pull_requests:read`, `members:read`, plus `contents:read` for the ±N file-context lines on review comments (absent, that context degrades to hunk-only). No PATs. |
 | User → portal | Optional generic OIDC (any issuer, or none) → GitHub App user authorization → org-membership / account-ownership check → token mint. |
 | Continuous re-validation | Daily sweep re-checks each token holder's current org membership and revokes departed members. A validation **error is always "unknown" — never a refusal, never a revoke**. |
 | Shim → gateway | Per-user bearer token in the `hello` frame, over TLS. |
 | Worker → gateway deliver | `X-Shuck-Deliver-Secret` shared-secret header, constant-time, two accepted values for rotation. App-layer auth, never topology alone. |
 
-Secrets are **env-injected everywhere** (with `SHUCK_*_FILE` variants for
-Kubernetes secret mounts). No component reads Secrets Manager; the Terraform
-target generates its secrets in-stack and injects them as env.
+Secrets are **env-injected everywhere** (the GitHub App private key also has a
+`SHUCK_GITHUB_APP_PRIVATE_KEY_FILE` variant, which is how the Helm chart mounts
+it; the other secrets are env-value-only). No component reads Secrets Manager;
+the Terraform target generates its secrets in-stack and injects them as env.
 
 ## The two gateway shapes
 
@@ -244,9 +251,10 @@ buffered replay absorb them.
 ```
 
 Close codes (resident server): `4401` unauthorized, `4409` replaced (newest
-connection wins), `1001` drain. The WebSocket accepts a connection but delivers
-nothing until a `hello` authenticates; an unauthenticated socket dies at the
-idle timeout.
+connection wins), `1001` drain. A connection delivers nothing until a `hello`
+authenticates; the resident server closes a socket that hasn't sent its
+`hello` within the handshake timeout (10s default), while the serverless
+shape leaves it to API Gateway's idle timeout.
 
 ## Deployment topologies
 
@@ -325,7 +333,7 @@ rather than restating the numbers.
 | --- | --- | --- |
 | Raw job logs | 24h | S3 lifecycle (provisioned with the bucket, never in worker code) |
 | Buffered events | 72h | DynamoDB TTL on the buffer table |
-| Disconnected-subscriber grace | 24h | gateway sweep before dropping subscriptions/buffer |
+| Disconnected-subscriber grace | 24h | gateway sweep before dropping subscriptions/buffer. Subscription and presence rows carry **no TTL** — the sweep is their only cleanup, so it must stay healthy (see the runbook) |
 | Webhook delivery-GUID dedupe | 1h | DynamoDB TTL on the dedupe table |
 | Summary cap | 16 KiB | `distil.CapSummary` (S3 pointer when a raw log is archived) |
 | Gateway heartbeat (resident) | 30s | `SHUCK_HEARTBEAT` — the LB-idle-timeout defense |

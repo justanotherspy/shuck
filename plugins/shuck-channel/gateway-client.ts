@@ -72,7 +72,7 @@ const STOP_REPLACED =
 // that exceed it, so refuse to send oversized frames instead.
 export const MAX_FRAME_SIZE = 32 * 1024
 
-const DEDUPE_CAP = 1024
+export const DEDUPE_CAP = 1024
 
 type BunWebSocket = WebSocket & { ping?: () => void; terminate?: () => void }
 
@@ -215,14 +215,12 @@ export class GatewayClient {
       return
     }
     if (!isEvent(frame)) return
-    if (!this.seen.has(frame.id)) {
-      try {
-        await this.opts.onEvent(frame)
-      } catch (err) {
-        // Not acked: the gateway replays it on the next reconnect.
-        this.opts.log(`event ${frame.id} delivery failed: ${err instanceof Error ? err.message : err}`)
-        return
-      }
+    const duplicate = this.seen.has(frame.id)
+    if (!duplicate) {
+      // Mark the id seen BEFORE awaiting onEvent: the serverless gateway's
+      // hello replay and a concurrent deliver each drain the whole unacked
+      // buffer, so the same id can arrive again while the notification is
+      // still in flight — check-then-act across the await would notify twice.
       this.seen.add(frame.id)
       if (this.seen.size > DEDUPE_CAP) {
         for (const oldest of this.seen) {
@@ -230,12 +228,22 @@ export class GatewayClient {
           break
         }
       }
+      try {
+        await this.opts.onEvent(frame)
+      } catch (err) {
+        // Not acked, and un-mark the id so the gateway's replay on the next
+        // reconnect can retry the notification.
+        this.seen.delete(frame.id)
+        this.opts.log(`event ${frame.id} delivery failed: ${err instanceof Error ? err.message : err}`)
+        return
+      }
     }
     // Duplicates (replays past our cursor) are acked too — the ack is what
-    // drains the gateway's buffer row.
+    // drains the gateway's buffer row — but they never move lastEventID:
+    // a late replay of an old event must not rewind the resume cursor.
     try {
       this.send({ type: 'ack', id: frame.id })
-      this.lastEventID = frame.id
+      if (!duplicate) this.lastEventID = frame.id
     } catch {
       // Connection died mid-ack; the event replays and dedupes next time.
     }
@@ -243,7 +251,9 @@ export class GatewayClient {
 
   private send(frame: Record<string, unknown>): void {
     const data = JSON.stringify(frame)
-    if (data.length > MAX_FRAME_SIZE) throw new Error(`frame exceeds ${MAX_FRAME_SIZE} bytes`)
+    // The gateway's cap is bytes on the wire; String.length counts UTF-16
+    // code units, which undercounts multibyte content.
+    if (Buffer.byteLength(data, 'utf8') > MAX_FRAME_SIZE) throw new Error(`frame exceeds ${MAX_FRAME_SIZE} bytes`)
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) throw new Error('not connected')
     this.ws.send(data)
   }

@@ -67,7 +67,9 @@ type IgnoreAuthors struct {
 
 // ParseIgnoreAuthors parses a comma-separated list of numeric GitHub user
 // IDs and logins (e.g. "12345,shuck-app[bot]"). IDs are authoritative;
-// logins match case-insensitively.
+// logins match case-insensitively. A positive-integer token is ambiguous —
+// GitHub permits all-digit logins — so it matches BOTH ways: as a user ID
+// and as a login.
 func ParseIgnoreAuthors(s string) IgnoreAuthors {
 	var ia IgnoreAuthors
 	for tok := range strings.SplitSeq(s, ",") {
@@ -80,7 +82,8 @@ func ParseIgnoreAuthors(s string) IgnoreAuthors {
 				ia.ids = make(map[int64]bool)
 			}
 			ia.ids[id] = true
-			continue
+			// No continue: the token also enters the login set below, so a
+			// bot whose login IS these digits can still be ignored.
 		}
 		if ia.logins == nil {
 			ia.logins = make(map[string]bool)

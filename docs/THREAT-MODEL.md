@@ -67,20 +67,28 @@ The numbered boundaries below are analysed as threat → mitigation → residual
 
 ## Public surface inventory
 
-The backend exposes exactly **two** public endpoints, and only one is
-unauthenticated at L7:
+What is network-reachable differs by deployment shape; what is
+**unauthenticated** does not — exactly one endpoint parses unauthenticated
+input:
 
 1. **The ingest endpoint** (`/webhook`, a Lambda function URL or an in-cluster
    Ingress) — a single stateless component that verifies GitHub's HMAC before
-   parsing the body. Nothing else is reachable from it.
+   parsing the body. Nothing else is reachable from it (its `/healthz`
+   sibling touches no state).
 2. **The portal** — behind TLS, with an optional OIDC gate in front of the
    GitHub-identity flow; HMAC-signed session cookies.
+3. **The gateway WebSocket** — network-public in both shapes; it delivers
+   nothing until a `hello` frame authenticates. The resident server closes a
+   hello-less socket at the handshake timeout (10s); the serverless shape
+   leaves it to API Gateway's idle timeout.
+4. **The deliver endpoint** (`/internal/deliver`) — requires the
+   `X-Shuck-Deliver-Secret` shared secret in both shapes. In the **Helm**
+   shape it is additionally never routed by any ingress (network-private);
+   in the **Terraform** shape it is a Lambda function URL that *is*
+   network-reachable, so there the shared secret is the load-bearing layer,
+   not defence in depth.
 
-The **gateway WebSocket** accepts connections but delivers nothing until a
-`hello` frame authenticates; unauthenticated sockets die at the idle timeout.
-The **deliver endpoint** (`/internal/deliver`) is never routed by any public
-ingress and additionally requires the shared secret. Everything else (queue,
-tables, bucket, worker) has no public surface at all.
+Everything else (queue, tables, bucket, worker) has no public surface at all.
 
 ## Boundary analysis
 
@@ -175,21 +183,26 @@ tables, bucket, worker) has no public surface at all.
 
 - **Threat.** An attacker who reaches the deliver endpoint injects fabricated
   summaries into arbitrary subscribers' sessions.
-- **Mitigation.** `/internal/deliver` is never publicly routed and requires the
-  `X-Shuck-Deliver-Secret` shared secret, compared **constant-time**, with two
+- **Mitigation.** `/internal/deliver` requires the `X-Shuck-Deliver-Secret`
+  shared secret, compared **constant-time** before the body is read, with two
   accepted values so the secret can rotate without downtime. This is app-layer
-  auth — the network topology (private ingress, NetworkPolicy) is defence in
-  depth, never the only layer.
-- **Residual.** A leaked deliver secret allows summary injection until rotated;
-  the injected text is still bounded by `CapSummary` and enters only sessions
-  the attacker can name a valid `user_id#session_id` for.
+  auth — network topology is defence in depth where it exists (the Helm shape
+  never routes the endpoint through any ingress; the Terraform shape's deliver
+  function URL is network-reachable, so the secret is the load-bearing layer
+  there), never the only design assumption.
+- **Residual.** A leaked deliver secret allows summary injection until rotated.
+  The deliver contract names a `repo#pr`, not a subscriber — so an attacker
+  with the secret can inject a (CapSummary-bounded) fabricated summary to
+  **every subscriber of any repo/PR they can name**; they do not need to know
+  any `user_id#session_id`. Rotate promptly on suspicion.
 
 ### B7 · Worker → GitHub
 
 - **Threat.** Over-privileged or long-lived GitHub credentials on the worker.
 - **Mitigation.** The worker holds only the App private key and mints
   **short-lived, cached installation tokens** (RS256 App JWT) scoped to
-  `actions:read`, `pull_requests:read`, `members:read`. **No PATs.** The private
+  `actions:read`, `pull_requests:read`, `members:read` (plus `contents:read`
+  for review-comment file context). **No PATs.** The private
   key is env-injected (or file-mounted via `SHUCK_GITHUB_APP_PRIVATE_KEY_FILE`),
   never in Secrets Manager.
 - **Residual.** The App private key is the crown jewel; its compromise is the
@@ -238,8 +251,11 @@ tables, bucket, worker) has no public surface at all.
 ## Secrets handling
 
 - **Env-injected everywhere.** No component reads Secrets Manager. `SHUCK_*`
-  env vars, with `SHUCK_*_FILE` variants for Kubernetes secret mounts (the App
-  private key is always a file mount, never an env value).
+  env vars; the App private key additionally supports
+  `SHUCK_GITHUB_APP_PRIVATE_KEY_FILE` for Kubernetes secret mounts — the Helm
+  chart always file-mounts it, while the Terraform target env-injects the PEM
+  (Lambda env vars are encrypted at rest with KMS). The other secrets are
+  env-value-only.
 - **Terraform** generates the deliver/webhook/session secrets in-stack; they
   never leave it. **Treat the Terraform state as secret material.**
 - **Helm** sources one k8s Secret from chart values (dev only — values end up
@@ -250,11 +266,12 @@ tables, bucket, worker) has no public surface at all.
 The SQS **envelope is slim** — it carries identifiers and event coordinates,
 never the raw webhook payload; the worker fetches detail server-side with its
 own token. (The one documented exception: review envelopes carry
-`author_id`/`author_login` so self-suppression can run.) Everything expires on a
-timer — see the authoritative table in
+`author_id`/`author_login` so self-suppression can run.) Event data expires on
+a timer — see the authoritative table in
 [`docs/ARCHITECTURE.md`](ARCHITECTURE.md#stores-and-retention-defaults): raw
 logs 24h, buffered events 72h, disconnected-subscriber grace 24h, webhook
-dedupe 1h.
+dedupe 1h. Subscription and presence rows carry no TTL; the grace-window sweep
+is their cleanup path.
 
 ## Trust model at a glance
 
@@ -293,7 +310,7 @@ dedupe 1h.
 | B3 user ↔ user | ✓ | | | ✓ | | ✓ | `user_id#session_id`, newest-wins |
 | B4 token lifecycle | ✓ | | | ✓ | | ✓ | verified mint, hash-at-rest, daily sweep |
 | B5 subscribe scope | | | | ✓ | | ✓ | org-membership gate, `repo_allowlist` reserved |
-| B6 deliver | ✓ | ✓ | | ✓ | | ✓ | shared secret, constant-time, private route |
+| B6 deliver | ✓ | ✓ | | ✓ | | ✓ | shared secret, constant-time (+ private route on k8s) |
 | B7 worker → GitHub | | | | ✓ | | ✓ | least-privilege short-lived App tokens |
 | B8 portal cookie | ✓ | ✓ | | | | ✓ | HMAC cookie, strict base64, `state` CSRF |
 | B9 channel → session | ✓ | | | | | | distillation narrows (residual, § B9) |
