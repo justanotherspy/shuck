@@ -211,12 +211,12 @@ variable "observability" {
       - *_threshold:       alarm firing thresholds (per 5-minute period).
   EOT
   type = object({
-    alarms_enabled          = optional(bool, false)
-    dashboard_enabled       = optional(bool, false)
-    xray_enabled            = optional(bool, false)
-    alarm_actions           = optional(list(string), [])
-    dlq_depth_threshold     = optional(number, 1)
-    lambda_errors_threshold = optional(number, 1)
+    alarms_enabled           = optional(bool, false)
+    dashboard_enabled        = optional(bool, false)
+    xray_enabled             = optional(bool, false)
+    alarm_actions            = optional(list(string), [])
+    dlq_depth_threshold      = optional(number, 1)
+    lambda_errors_threshold  = optional(number, 1)
     gateway_errors_threshold = optional(number, 1)
   })
   default = {}
