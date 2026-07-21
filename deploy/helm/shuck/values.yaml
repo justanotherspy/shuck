@@ -238,7 +238,7 @@ ingest:
 # on every upgrade; SQS redelivery absorbs any residual skew.
 deployOrder:
   enforce: true
-  kubectlImage: registry.k8s.io/kubectl:v1.33.0
+  kubectlImage: registry.k8s.io/kubectl:v1.36.2@sha256:b0d792e0d8dfb9bb1b922b78b23137e2a34bb6f9667640353a9d2aadd1fd7761
   timeoutSeconds: 300
 
 # Per-component ServiceAccounts. IRSA: set the role annotation per component
