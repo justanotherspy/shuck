@@ -23,6 +23,9 @@ type Sweeper struct {
 	Log *slog.Logger
 	// Now may be nil, which means time.Now.
 	Now func() time.Time
+	// Metrics may be nil, which disables counter export; every increment is
+	// nil-safe.
+	Metrics *Metrics
 }
 
 // Run sweeps on the configured interval until ctx is done.
@@ -48,14 +51,17 @@ func (s *Sweeper) Run(ctx context.Context) {
 // false revoke); only a definitive non-member loses the row. revoked
 // reports how many tokens were removed, for the one-shot cmd mode's logs.
 func (s *Sweeper) Sweep(ctx context.Context) (revoked int) {
+	s.Metrics.incSweepPass()
 	rows, err := s.Store.All(ctx)
 	if err != nil {
 		s.log().Error("sweep: token listing failed", "err", err)
 		return 0
 	}
+	var unknown int
 	for _, row := range rows {
 		member, err := s.Validate.Member(ctx, row.GitHubUserID, row.GitHubLogin)
 		if err != nil {
+			unknown++
 			s.log().Warn("sweep: membership check failed, skipping",
 				"github_user_id", row.GitHubUserID, "github_login", row.GitHubLogin, "err", err)
 			continue
@@ -73,6 +79,7 @@ func (s *Sweeper) Sweep(ctx context.Context) (revoked int) {
 			"github_user_id", row.GitHubUserID, "github_login", row.GitHubLogin,
 			"token_hash", row.Hash)
 	}
+	s.Metrics.addSweep(int64(revoked), int64(unknown))
 	return revoked
 }
 

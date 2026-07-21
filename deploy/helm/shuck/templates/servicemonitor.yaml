@@ -1,0 +1,43 @@
+{{- /*
+Prometheus Operator ServiceMonitor (JUS-96, opt-in). Scrapes the `metrics`
+port of the chart's service-backed components (gateway, portal, in-cluster
+ingest). The worker has no Service — scrape it with the PodMonitor instead.
+Requires the monitoring.coreos.com CRDs (Prometheus Operator / kube-prometheus)
+in the cluster.
+*/ -}}
+{{- if and .Values.observability.enabled .Values.observability.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "shuck.fullname" . }}
+  labels:
+    {{- include "shuck.labels" . | nindent 4 }}
+    {{- with .Values.observability.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "shuck.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  endpoints:
+    - port: metrics
+      path: {{ .Values.observability.path }}
+      {{- with .Values.observability.serviceMonitor.interval }}
+      interval: {{ . }}
+      {{- end }}
+      {{- with .Values.observability.serviceMonitor.scrapeTimeout }}
+      scrapeTimeout: {{ . }}
+      {{- end }}
+      {{- with .Values.observability.serviceMonitor.relabelings }}
+      relabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.observability.serviceMonitor.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

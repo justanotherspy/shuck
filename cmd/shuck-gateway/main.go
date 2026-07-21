@@ -71,6 +71,7 @@ import (
 	"github.com/justanotherspy/shuck/internal/gateway/awsx"
 	"github.com/justanotherspy/shuck/internal/gateway/serverless"
 	"github.com/justanotherspy/shuck/internal/lambdahttp"
+	"github.com/justanotherspy/shuck/internal/promexpo"
 )
 
 // drainTimeout bounds how long shutdown waits for connections to close.
@@ -182,6 +183,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 	defer stop()
 	go sweeper.Run(runCtx)
 	go logMetrics(runCtx, log, metrics, hub)
+	go serveMetrics(runCtx, log, metrics.Snapshot)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- server.ListenAndServe() }()
@@ -318,6 +320,14 @@ func durationEnv(name string, fallback time.Duration) (time.Duration, error) {
 		return 0, fmt.Errorf("parse %s: %w", name, err)
 	}
 	return parsed, nil
+}
+
+// serveMetrics runs the opt-in Prometheus /metrics listener when
+// SHUCK_METRICS_ADDR is set (a no-op otherwise).
+func serveMetrics(ctx context.Context, log *slog.Logger, collect func() []promexpo.Sample) {
+	if err := promexpo.Serve(ctx, os.Getenv(promexpo.EnvAddr), log, collect); err != nil {
+		log.Error("metrics listener failed", "err", err)
+	}
 }
 
 // logMetrics snapshots the counters periodically so a plain log pipeline

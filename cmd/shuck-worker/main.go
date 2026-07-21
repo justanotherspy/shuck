@@ -51,6 +51,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 
+	"github.com/justanotherspy/shuck/internal/promexpo"
 	"github.com/justanotherspy/shuck/internal/worker"
 	"github.com/justanotherspy/shuck/internal/worker/awsx"
 )
@@ -143,6 +144,11 @@ func run(ctx context.Context, log *slog.Logger) error {
 
 	go serveHealthz(runCtx, log)
 	go logMetrics(runCtx, log, metrics)
+	go func() {
+		if err := promexpo.Serve(runCtx, os.Getenv(promexpo.EnvAddr), log, metrics.Snapshot); err != nil {
+			log.Error("metrics listener failed", "err", err)
+		}
+	}()
 
 	consumer := &awsx.Consumer{
 		Client:   sqs.NewFromConfig(awsCfg),

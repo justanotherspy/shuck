@@ -214,6 +214,11 @@ helm-check: ## Lint + template the deploy/helm/shuck chart (requires helm)
 	helm template shuck deploy/helm/shuck --kube-version 1.33.0 \
 		-f deploy/helm/shuck/ci/smoke-values.yaml \
 		-f deploy/helm/shuck/ci/combo-values.yaml >/dev/null
+	helm template shuck deploy/helm/shuck --kube-version 1.33.0 \
+		-f deploy/helm/shuck/ci/smoke-values.yaml \
+		--set observability.enabled=true \
+		--set observability.serviceMonitor.enabled=true \
+		--set observability.podMonitor.enabled=true >/dev/null
 
 .PHONY: terraform-check
 terraform-check: ## fmt-check + validate the deploy/terraform module (requires terraform)

@@ -36,6 +36,7 @@ import (
 	"github.com/justanotherspy/shuck/internal/ingest"
 	"github.com/justanotherspy/shuck/internal/ingest/awsx"
 	"github.com/justanotherspy/shuck/internal/lambdahttp"
+	"github.com/justanotherspy/shuck/internal/promexpo"
 )
 
 // version is stamped at build time via -X main.version (Makefile /
@@ -76,13 +77,14 @@ func run(ctx context.Context, log *slog.Logger) error {
 	if subTable := os.Getenv("SHUCK_SUBSCRIPTION_TABLE"); subTable != "" {
 		subs = awsx.NewDynamoSubscriptionChecker(ddb, subTable)
 	}
+	metrics := &ingest.Metrics{}
 	handler := &ingest.Handler{
 		Secret:  []byte(secret),
 		Dedupe:  awsx.NewDynamoDeduper(ddb, table, ttl),
 		Queue:   awsx.NewSQSEnqueuer(sqs.NewFromConfig(awsCfg), queueURL),
 		Subs:    subs,
 		Log:     log,
-		Metrics: &ingest.Metrics{},
+		Metrics: metrics,
 	}
 
 	mux := http.NewServeMux()
@@ -100,6 +102,14 @@ func run(ctx context.Context, log *slog.Logger) error {
 	if addr == "" {
 		addr = ":8080"
 	}
+	// Opt-in Prometheus metrics on a dedicated listener (server mode only;
+	// Lambda mode is scraped via CloudWatch). No-op unless SHUCK_METRICS_ADDR
+	// is set.
+	go func() {
+		if err := promexpo.Serve(ctx, os.Getenv(promexpo.EnvAddr), log, metrics.Snapshot); err != nil {
+			log.Error("metrics listener failed", "err", err)
+		}
+	}()
 	log.Info("starting HTTP server", "addr", addr)
 	server := &http.Server{
 		Addr:              addr,

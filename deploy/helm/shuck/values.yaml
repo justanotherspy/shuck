@@ -279,6 +279,43 @@ networkPolicy:
   ingestFrom: []
   portalFrom: []
 
+# Opt-in Prometheus metrics (JUS-96). Off by default: portable mode is
+# unaffected and there is no new surface unless you turn this on. When
+# enabled, each resident component serves the exposition format on a dedicated
+# `metrics` port (SHUCK_METRICS_ADDR), a `metrics` port is added to the
+# gateway/portal/ingest Services, and — if NetworkPolicy is enabled — that
+# port is allowed in (from `networkPolicyFrom`, or from anywhere if empty).
+# The counters are the same ones the binaries already log; see docs/RUNBOOK.md.
+observability:
+  enabled: false
+  # Container/Service port the metrics listener binds. Kept off the app port
+  # (8080) so scrapers target it directly and it is never routed by the app
+  # ingress.
+  port: 9090
+  path: /metrics
+  # Peers allowed to reach the metrics port when networkPolicy.enabled. Empty
+  # allows any source on that port (metrics are low-sensitivity aggregate
+  # counters); set it to your monitoring namespace/pods to restrict.
+  networkPolicyFrom: []
+  # ServiceMonitor covers the service-backed components (gateway, portal,
+  # in-cluster ingest). Requires the Prometheus Operator CRDs.
+  serviceMonitor:
+    enabled: false
+    interval: ""       # e.g. "30s"; empty uses the Prometheus default
+    scrapeTimeout: ""
+    labels: {}         # extra labels so your Prometheus's selector picks it up
+    relabelings: []
+    metricRelabelings: []
+  # PodMonitor covers every pod, including the worker (which has no Service).
+  # Prefer this if you want the worker scraped. Requires the Operator CRDs.
+  podMonitor:
+    enabled: false
+    interval: ""
+    scrapeTimeout: ""
+    labels: {}
+    relabelings: []
+    metricRelabelings: []
+
 # Raw manifest passthrough: CiliumNetworkPolicies, ServiceMonitors,
 # TriggerAuthentications, anything. Strings are templated; maps render as-is.
 extraManifests: []

@@ -28,6 +28,9 @@ type Handler struct {
 	Now func() time.Time
 	// Rand may be nil, which means crypto/rand. Tests inject determinism.
 	Rand io.Reader
+	// Metrics may be nil, which disables counter export; every increment is
+	// nil-safe.
+	Metrics *Metrics
 }
 
 // Register mounts the portal's routes.
@@ -252,6 +255,7 @@ func (h *Handler) mintToken(w http.ResponseWriter, r *http.Request) {
 	}
 	raw, regenerated, err := Mint(r.Context(), h.Store, h.Rand, h.now(), s.UserID, s.Login)
 	if err != nil {
+		h.Metrics.incMintErrors()
 		h.log().Error("mint failed", "err", err)
 		h.render(w, http.StatusBadGateway, "error.tmpl", errorData{Message: "Minting failed. Your existing token, if any, is unchanged."})
 		return
@@ -259,6 +263,9 @@ func (h *Handler) mintToken(w http.ResponseWriter, r *http.Request) {
 	event := "token_minted"
 	if regenerated {
 		event = "token_regenerated"
+		h.Metrics.incRegenerated()
+	} else {
+		h.Metrics.incMinted()
 	}
 	h.log().Info("audit: "+event, "event", event,
 		"github_user_id", s.UserID, "github_login", s.Login)
@@ -270,11 +277,13 @@ func (h *Handler) mintToken(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) membershipGate(ctx context.Context, w http.ResponseWriter, userID int64, login string) bool {
 	member, err := h.Validate.Member(ctx, userID, login)
 	if err != nil {
+		h.Metrics.incMembershipUnknown()
 		h.log().Error("membership check failed", "github_login", login, "err", err)
 		h.render(w, http.StatusBadGateway, "error.tmpl", errorData{Message: "Membership check unavailable. Try again."})
 		return false
 	}
 	if !member {
+		h.Metrics.incMembershipDenied()
 		h.log().Info("audit: token refused", "event", "token_refused",
 			"github_user_id", userID, "github_login", login)
 		h.render(w, http.StatusForbidden, "error.tmpl", errorData{

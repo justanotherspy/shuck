@@ -12,6 +12,7 @@ spec:
     - name: http
       port: {{ .Values.portal.service.port }}
       targetPort: http
+    {{- include "shuck.metricsServicePort" . | nindent 4 }}
   selector:
     {{- include "shuck.selectorLabels" (dict "root" . "component" "portal") | nindent 4 }}
 {{- end }}

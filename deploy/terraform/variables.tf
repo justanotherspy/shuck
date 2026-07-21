@@ -193,3 +193,31 @@ variable "queue_max_receive_count" {
   type        = number
   default     = 5
 }
+
+# --- Observability (JUS-96, opt-in) ------------------------------------------
+
+variable "observability" {
+  description = <<-EOT
+    Opt-in CloudWatch observability. Everything defaults off, so idle cost
+    stays ~$0 and nothing changes unless you turn a knob on:
+
+      - alarms_enabled:    DLQ-depth, per-Lambda error, and gateway-error alarms.
+      - dashboard_enabled: a single CloudWatch dashboard for the whole stack.
+      - xray_enabled:      Active X-Ray tracing on every Lambda (adds the
+                           X-Ray write policy to each function role).
+      - alarm_actions:     SNS topic (or other) ARNs notified on ALARM/OK.
+                           Empty means the alarms still evaluate and show in the
+                           console, they just take no action.
+      - *_threshold:       alarm firing thresholds (per 5-minute period).
+  EOT
+  type = object({
+    alarms_enabled           = optional(bool, false)
+    dashboard_enabled        = optional(bool, false)
+    xray_enabled             = optional(bool, false)
+    alarm_actions            = optional(list(string), [])
+    dlq_depth_threshold      = optional(number, 1)
+    lambda_errors_threshold  = optional(number, 1)
+    gateway_errors_threshold = optional(number, 1)
+  })
+  default = {}
+}

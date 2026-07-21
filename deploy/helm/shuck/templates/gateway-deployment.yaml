@@ -46,6 +46,7 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+            {{- include "shuck.metricsPort" . | nindent 12 }}
           env:
             - name: SHUCK_TOKEN_TABLE
               value: {{ .Values.config.tokenTable | quote }}
@@ -81,6 +82,7 @@ spec:
               value: {{ . | quote }}
             {{- end }}
             {{- include "shuck.awsEnv" . | nindent 12 }}
+            {{- include "shuck.metricsEnv" . | nindent 12 }}
           livenessProbe:
             httpGet:
               path: /healthz

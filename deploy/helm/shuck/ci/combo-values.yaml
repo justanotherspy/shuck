@@ -24,3 +24,10 @@ networkPolicy:
     - namespaceSelector:
         matchLabels:
           kubernetes.io/metadata.name: ingress-nginx
+
+# Core metrics wiring: the metrics port on every component + Service, and the
+# NetworkPolicy allowance for it. ServiceMonitor/PodMonitor stay off — kind
+# has no Prometheus Operator CRDs, so those objects can't apply here (they are
+# render-checked separately in `make helm-check`).
+observability:
+  enabled: true

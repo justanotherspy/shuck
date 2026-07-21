@@ -39,6 +39,14 @@ resource "aws_cloudwatch_log_group" "gateway_ws" {
 resource "aws_lambda_function" "gateway_ws" {
   function_name = "${var.name_prefix}-gateway-ws"
   role          = aws_iam_role.lambda["gateway_ws"].arn
+
+  dynamic "tracing_config" {
+    for_each = local.xray_tracing
+    content {
+      mode = tracing_config.value
+    }
+  }
+
   runtime       = "provided.al2023"
   handler       = "bootstrap"
   architectures = ["arm64"]
@@ -90,6 +98,14 @@ resource "aws_cloudwatch_log_group" "gateway_deliver" {
 resource "aws_lambda_function" "gateway_deliver" {
   function_name = "${var.name_prefix}-gateway-deliver"
   role          = aws_iam_role.lambda["gateway_deliver"].arn
+
+  dynamic "tracing_config" {
+    for_each = local.xray_tracing
+    content {
+      mode = tracing_config.value
+    }
+  }
+
   runtime       = "provided.al2023"
   handler       = "bootstrap"
   architectures = ["arm64"]
@@ -128,6 +144,14 @@ resource "aws_cloudwatch_log_group" "gateway_sweep" {
 resource "aws_lambda_function" "gateway_sweep" {
   function_name = "${var.name_prefix}-gateway-sweep"
   role          = aws_iam_role.lambda["gateway_sweep"].arn
+
+  dynamic "tracing_config" {
+    for_each = local.xray_tracing
+    content {
+      mode = tracing_config.value
+    }
+  }
+
   runtime       = "provided.al2023"
   handler       = "bootstrap"
   architectures = ["arm64"]

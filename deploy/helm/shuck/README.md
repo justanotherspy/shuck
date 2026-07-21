@@ -196,6 +196,31 @@ rows 1h. The full boundary-by-boundary analysis is
 (rotation, sweeps, DLQ, rollouts, image visibility) are in
 [`docs/RUNBOOK.md`](../../../docs/RUNBOOK.md).
 
+## Metrics
+
+Off by default. `observability.enabled: true` makes every resident component
+serve the Prometheus exposition format on a dedicated `metrics` port
+(`observability.port`, default 9090, kept off the app port so it is never
+routed by the app ingress), adds that port to the gateway/portal/ingest
+Services, and — when `networkPolicy.enabled` — opens it (from
+`observability.networkPolicyFrom`, or from anywhere if that list is empty).
+Metric names are `shuck_<component>_<field>`; they are the same counters the
+binaries log, plus the `_live`/`_depth`/`rate_remaining` gauges.
+
+To scrape with the Prometheus Operator, enable one or both monitors (they need
+the `monitoring.coreos.com` CRDs):
+
+- `observability.serviceMonitor.enabled` — a `ServiceMonitor` covering the
+  service-backed components (gateway, portal, in-cluster ingest).
+- `observability.podMonitor.enabled` — a `PodMonitor` covering every pod,
+  **including the worker** (which has no Service, so the ServiceMonitor cannot
+  reach it). Prefer this if you want worker metrics.
+
+Both take `interval` / `scrapeTimeout` / extra `labels` (so your Prometheus's
+selector picks them up) / `relabelings` / `metricRelabelings`. Without the
+Operator, scrape the `metrics` port yourself, or hand-roll a monitor via
+`extraManifests`.
+
 ## Values
 
 See the extensively commented [`values.yaml`](values.yaml) — every knob is

@@ -166,8 +166,13 @@ redeploys, image visibility, incident triage) are in
 
 - **Deploy order** on upgrades is encoded in the graph: the worker updates
   before ingest (an old worker would DLQ new envelope kinds).
-- **Poison envelopes** land in the DLQ after 5 receives — alarm on
-  `dlq_name`'s depth; redrive back to `queue_name` after fixing.
+- **Poison envelopes** land in the DLQ after 5 receives — redrive back to
+  `queue_name` after fixing. Set `observability = { alarms_enabled = true }`
+  to have the module create the DLQ-depth alarm (and per-Lambda error and
+  gateway-error alarms) for you; add `dashboard_enabled = true` for a
+  stack dashboard, `xray_enabled = true` for Active X-Ray tracing on every
+  Lambda, and `alarm_actions = [<sns-arn>]` to route alarm notifications.
+  Everything defaults off — idle cost stays ~$0.
 - **Token rotation**: regenerate in the portal (old token dies at its next
   reconnect). Deliver-secret rotation: taint
   `random_password.deliver_secret` and apply.

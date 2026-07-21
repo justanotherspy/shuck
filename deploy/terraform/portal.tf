@@ -33,6 +33,14 @@ resource "aws_cloudwatch_log_group" "portal" {
 resource "aws_lambda_function" "portal" {
   function_name = "${var.name_prefix}-portal"
   role          = aws_iam_role.lambda["portal"].arn
+
+  dynamic "tracing_config" {
+    for_each = local.xray_tracing
+    content {
+      mode = tracing_config.value
+    }
+  }
+
   runtime       = "provided.al2023"
   handler       = "bootstrap"
   architectures = ["arm64"]
@@ -109,6 +117,14 @@ resource "aws_cloudwatch_log_group" "portal_sweep" {
 resource "aws_lambda_function" "portal_sweep" {
   function_name = "${var.name_prefix}-portal-sweep"
   role          = aws_iam_role.lambda["portal_sweep"].arn
+
+  dynamic "tracing_config" {
+    for_each = local.xray_tracing
+    content {
+      mode = tracing_config.value
+    }
+  }
+
   runtime       = "provided.al2023"
   handler       = "bootstrap"
   architectures = ["arm64"]
