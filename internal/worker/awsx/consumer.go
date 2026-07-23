@@ -7,6 +7,7 @@ package awsx
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -41,10 +42,14 @@ type Consumer struct {
 	Log *slog.Logger
 	// WaitTime is the long-poll wait; 0 means DefaultWaitTime.
 	WaitTime time.Duration
-	// Batch is the max messages per receive; 0 means DefaultBatch.
+	// Batch is the max messages per receive; 0 means DefaultBatch. Values
+	// above DefaultBatch (the SQS maximum) are clamped with a warning.
 	Batch int32
 	// ErrPause is the sleep after a receive error; 0 means DefaultErrPause.
 	ErrPause time.Duration
+
+	// warnBatch dedupes the over-max Batch warning to one log line.
+	warnBatch sync.Once
 }
 
 // Run polls until ctx is done (its error is then returned). Receive errors
@@ -122,11 +127,22 @@ func (c *Consumer) waitSeconds() int32 {
 	}
 }
 
+// batch resolves the receive batch, clamped to SQS's [1, 10] valid range —
+// an over-max value would fail EVERY ReceiveMessage's request validation,
+// warn-pausing the poll loop forever while /healthz stays green.
 func (c *Consumer) batch() int32 {
-	if c.Batch <= 0 {
+	switch {
+	case c.Batch <= 0:
 		return DefaultBatch
+	case c.Batch > DefaultBatch:
+		c.warnBatch.Do(func() {
+			c.log().Warn("Batch exceeds the SQS maximum; clamped",
+				"batch", c.Batch, "max", DefaultBatch)
+		})
+		return DefaultBatch
+	default:
+		return c.Batch
 	}
-	return c.Batch
 }
 
 func (c *Consumer) log() *slog.Logger {

@@ -171,9 +171,22 @@ func (s *DynamoSubscriptionStore) queryPR(ctx context.Context, ref gateway.PRRef
 	}
 }
 
+// batchRetryMax caps how many times batchDelete retries unprocessed items
+// before giving up with an error.
+const batchRetryMax = 5
+
+// batchRetryBase is the first unprocessed-item backoff, doubling per retry.
+// A var so tests can shrink it.
+var batchRetryBase = 50 * time.Millisecond
+
 // batchDelete deletes keys from table in BatchWriteItem chunks, retrying
-// unprocessed keys.
+// unprocessed keys. Unprocessed items are DynamoDB's throttle signal, so
+// each retry backs off (doubling, ctx-cancellable) instead of amplifying the
+// throttle in a tight loop, and a bounded retry budget surfaces a persistent
+// throttle as an error rather than spinning.
 func batchDelete(ctx context.Context, client DynamoAPI, table string, keys []map[string]types.AttributeValue) error {
+	retries := 0
+	backoff := batchRetryBase
 	for len(keys) > 0 {
 		n := min(len(keys), batchWriteMax)
 		chunk := keys[:n]
@@ -188,7 +201,21 @@ func batchDelete(ctx context.Context, client DynamoAPI, table string, keys []map
 		if err != nil {
 			return err
 		}
-		for _, req := range out.UnprocessedItems[table] {
+		unprocessed := out.UnprocessedItems[table]
+		if len(unprocessed) == 0 {
+			continue
+		}
+		if retries >= batchRetryMax {
+			return fmt.Errorf("batch delete: %d items still unprocessed after %d retries", len(unprocessed), retries)
+		}
+		retries++
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+		for _, req := range unprocessed {
 			if req.DeleteRequest != nil {
 				keys = append(keys, req.DeleteRequest.Key)
 			}

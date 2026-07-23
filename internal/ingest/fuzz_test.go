@@ -39,9 +39,10 @@ func FuzzIngestVerify(f *testing.F) {
 }
 
 // FuzzIngestFilter asserts the filter never panics on arbitrary verified
-// payloads and that anything it decides to enqueue becomes a valid envelope
-// once the delivery ID is stamped — i.e. the filter can never hand workers
-// malformed work.
+// payloads and that every envelope it decides to enqueue becomes valid once
+// the delivery ID is stamped — i.e. the filter can never hand workers
+// malformed work. Fan-out (one delivery → several envelopes) must never
+// duplicate a repo#pr target.
 func FuzzIngestFilter(f *testing.F) {
 	f.Add("workflow_run", workflowRunFailure)
 	f.Add("pull_request", prClosed)
@@ -54,19 +55,28 @@ func FuzzIngestFilter(f *testing.F) {
 		if err != nil {
 			return // malformed payloads are rejected, not enqueued
 		}
-		if !dec.Enqueue {
+		if len(dec.Envelopes) == 0 {
 			if dec.Reason == "" {
 				t.Fatal("a drop must carry a reason")
 			}
 			return
 		}
-		env := dec.Envelope
-		if env.DeliveryID != "" {
-			t.Fatal("filter must leave DeliveryID for the handler")
+		if dec.Reason != "" {
+			t.Fatalf("an enqueue must not carry a drop reason: %q", dec.Reason)
 		}
-		env.DeliveryID = "fuzz-delivery"
-		if err := env.Validate(); err != nil {
-			t.Fatalf("filter enqueued an invalid envelope: %v (%+v)", err, env)
+		prs := make(map[int]bool, len(dec.Envelopes))
+		for _, env := range dec.Envelopes {
+			if env.DeliveryID != "" {
+				t.Fatal("filter must leave DeliveryID for the handler")
+			}
+			if prs[env.PR] {
+				t.Fatalf("filter emitted two envelopes for pr %d", env.PR)
+			}
+			prs[env.PR] = true
+			env.DeliveryID = "fuzz-delivery"
+			if err := env.Validate(); err != nil {
+				t.Fatalf("filter enqueued an invalid envelope: %v (%+v)", err, env)
+			}
 		}
 	})
 }

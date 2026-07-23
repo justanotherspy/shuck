@@ -14,6 +14,7 @@ type Metrics struct {
 	ConnectionsTotal    atomic.Int64 // connections accepted since start
 	ConnectionsReplaced atomic.Int64 // closed by newest-wins replacement
 	AuthRejected        atomic.Int64 // handshakes rejected (bad frame/token)
+	HandshakeFailures   atomic.Int64 // first frame never arrived (timeout / vanished peer)
 	HeartbeatFailures   atomic.Int64 // pings that timed out or errored
 
 	EventsBuffered   atomic.Int64 // buffer rows written
@@ -55,6 +56,7 @@ func (m *Metrics) Snapshot() []promexpo.Sample {
 		c("shuck_gateway_connections_total", "Connections accepted since start.", m.ConnectionsTotal.Load()),
 		c("shuck_gateway_connections_replaced_total", "Connections closed by newest-wins replacement.", m.ConnectionsReplaced.Load()),
 		c("shuck_gateway_auth_rejected_total", "Handshakes rejected (bad frame or token).", m.AuthRejected.Load()),
+		c("shuck_gateway_handshake_failures_total", "Connections whose first frame never arrived (timeout / vanished peer).", m.HandshakeFailures.Load()),
 		c("shuck_gateway_heartbeat_failures_total", "Heartbeat pings that timed out or errored.", m.HeartbeatFailures.Load()),
 		c("shuck_gateway_events_buffered_total", "Event buffer rows written.", m.EventsBuffered.Load()),
 		c("shuck_gateway_events_pushed_total", "Event frames written to live connections.", m.EventsPushed.Load()),

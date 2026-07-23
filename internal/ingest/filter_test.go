@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -41,30 +42,67 @@ const reviewSubmitted = `{
 }`
 
 func TestFilterWorkflowRunFailure(t *testing.T) {
+	// A run associated with several PRs fans out to one envelope per PR —
+	// subscription fan-out is keyed repo#pr, so each PR needs its own.
 	dec, err := Filter("workflow_run", []byte(workflowRunFailure))
 	if err != nil {
 		t.Fatalf("Filter: %v", err)
 	}
-	if !dec.Enqueue {
+	if len(dec.Envelopes) == 0 {
 		t.Fatalf("expected enqueue, dropped: %s", dec.Reason)
 	}
-	env := dec.Envelope
-	want := Envelope{
+	base := Envelope{
 		Schema:         EnvelopeSchema,
 		Kind:           KindCIFailure,
 		Repo:           "octo/repo",
-		PR:             9,
 		RunID:          1234,
 		HeadSHA:        "abc123",
 		InstallationID: 77,
 	}
-	if env != want {
-		t.Fatalf("envelope = %+v, want %+v", env, want)
+	for i, pr := range []int{9, 10} {
+		want := base
+		want.PR = pr
+		if dec.Envelopes[i] != want {
+			t.Fatalf("envelope[%d] = %+v, want %+v", i, dec.Envelopes[i], want)
+		}
 	}
-	// DeliveryID is the handler's job; with it stamped the envelope is valid.
-	env.DeliveryID = "guid"
-	if err := env.Validate(); err != nil {
-		t.Fatalf("stamped envelope invalid: %v", err)
+	if len(dec.Envelopes) != 2 {
+		t.Fatalf("envelopes = %d, want one per associated PR (2)", len(dec.Envelopes))
+	}
+	// DeliveryID is the handler's job; with it stamped the envelopes are valid.
+	for _, env := range dec.Envelopes {
+		env.DeliveryID = "guid"
+		if err := env.Validate(); err != nil {
+			t.Fatalf("stamped envelope invalid: %v", err)
+		}
+	}
+}
+
+func TestFilterWorkflowRunPRFanOut(t *testing.T) {
+	cases := []struct {
+		name    string
+		refs    string // replacement for the fixture's pull_requests array
+		wantPRs []int
+	}{
+		{"two PRs", `[{"number": 9}, {"number": 10}]`, []int{9, 10}},
+		{"empty ref mixed with a real one", `[{}, {"number": 10}]`, []int{10}},
+		{"duplicate refs collapse", `[{"number": 9}, {"number": 9}]`, []int{9}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := strings.Replace(workflowRunFailure, `[{"number": 9}, {"number": 10}]`, tc.refs, 1)
+			dec, err := Filter("workflow_run", []byte(body))
+			if err != nil {
+				t.Fatalf("Filter: %v", err)
+			}
+			var got []int
+			for _, env := range dec.Envelopes {
+				got = append(got, env.PR)
+			}
+			if !slices.Equal(got, tc.wantPRs) {
+				t.Fatalf("envelope PRs = %v, want %v", got, tc.wantPRs)
+			}
+		})
 	}
 }
 
@@ -73,8 +111,8 @@ func TestFilterPRClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Filter: %v", err)
 	}
-	if !dec.Enqueue {
-		t.Fatalf("expected enqueue, dropped: %s", dec.Reason)
+	if len(dec.Envelopes) != 1 {
+		t.Fatalf("envelopes = %d (reason %q), want 1", len(dec.Envelopes), dec.Reason)
 	}
 	want := Envelope{
 		Schema:         EnvelopeSchema,
@@ -83,8 +121,8 @@ func TestFilterPRClosed(t *testing.T) {
 		PR:             42,
 		InstallationID: 77,
 	}
-	if dec.Envelope != want {
-		t.Fatalf("envelope = %+v, want %+v", dec.Envelope, want)
+	if dec.Envelopes[0] != want {
+		t.Fatalf("envelope = %+v, want %+v", dec.Envelopes[0], want)
 	}
 }
 
@@ -93,8 +131,8 @@ func TestFilterReviewComment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Filter: %v", err)
 	}
-	if !dec.Enqueue {
-		t.Fatalf("expected enqueue, dropped: %s", dec.Reason)
+	if len(dec.Envelopes) != 1 {
+		t.Fatalf("envelopes = %d (reason %q), want 1", len(dec.Envelopes), dec.Reason)
 	}
 	want := Envelope{
 		Schema:         EnvelopeSchema,
@@ -107,10 +145,10 @@ func TestFilterReviewComment(t *testing.T) {
 		AuthorID:       555,
 		AuthorLogin:    "octocat",
 	}
-	if dec.Envelope != want {
-		t.Fatalf("envelope = %+v, want %+v", dec.Envelope, want)
+	if dec.Envelopes[0] != want {
+		t.Fatalf("envelope = %+v, want %+v", dec.Envelopes[0], want)
 	}
-	env := dec.Envelope
+	env := dec.Envelopes[0]
 	env.DeliveryID = "guid"
 	if err := env.Validate(); err != nil {
 		t.Fatalf("stamped envelope invalid: %v", err)
@@ -122,8 +160,8 @@ func TestFilterReview(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Filter: %v", err)
 	}
-	if !dec.Enqueue {
-		t.Fatalf("expected enqueue, dropped: %s", dec.Reason)
+	if len(dec.Envelopes) != 1 {
+		t.Fatalf("envelopes = %d (reason %q), want 1", len(dec.Envelopes), dec.Reason)
 	}
 	want := Envelope{
 		Schema:         EnvelopeSchema,
@@ -136,10 +174,10 @@ func TestFilterReview(t *testing.T) {
 		AuthorID:       555,
 		AuthorLogin:    "octocat",
 	}
-	if dec.Envelope != want {
-		t.Fatalf("envelope = %+v, want %+v", dec.Envelope, want)
+	if dec.Envelopes[0] != want {
+		t.Fatalf("envelope = %+v, want %+v", dec.Envelopes[0], want)
 	}
-	env := dec.Envelope
+	env := dec.Envelopes[0]
 	env.DeliveryID = "guid"
 	if err := env.Validate(); err != nil {
 		t.Fatalf("stamped envelope invalid: %v", err)
@@ -262,8 +300,8 @@ func TestFilterDrops(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Filter: %v", err)
 			}
-			if dec.Enqueue {
-				t.Fatalf("expected drop, got envelope %+v", dec.Envelope)
+			if len(dec.Envelopes) != 0 {
+				t.Fatalf("expected drop, got envelopes %+v", dec.Envelopes)
 			}
 			if !strings.Contains(dec.Reason, tc.reason) {
 				t.Fatalf("reason = %q, want it to contain %q", dec.Reason, tc.reason)
@@ -279,7 +317,7 @@ func TestFilterCancelledAndTimedOutAreDrillable(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Filter(%s): %v", conclusion, err)
 		}
-		if !dec.Enqueue {
+		if len(dec.Envelopes) == 0 {
 			t.Fatalf("conclusion %q should enqueue, dropped: %s", conclusion, dec.Reason)
 		}
 	}

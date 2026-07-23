@@ -57,9 +57,9 @@ func (AllowAll) HasSubscriber(context.Context, string, int) (bool, error) {
 type Metrics struct {
 	Received     atomic.Int64 // deliveries that reached the handler
 	Verified     atomic.Int64 // passed signature verification
-	Deduped      atomic.Int64 // dropped as redeliveries
-	Dropped      atomic.Int64 // filtered out (event/action/conclusion)
-	Unsubscribed atomic.Int64 // dropped by the subscription pre-filter
+	Deduped      atomic.Int64 // deliveries dropped as redeliveries
+	Dropped      atomic.Int64 // deliveries filtered out (event/action/conclusion)
+	Unsubscribed atomic.Int64 // envelopes dropped by the subscription pre-filter
 	Enqueued     atomic.Int64 // envelopes handed to the queue
 	Errors       atomic.Int64 // dedupe/enqueue/payload failures
 }
@@ -138,35 +138,52 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "malformed payload", http.StatusBadRequest)
 		return
 	}
-	if !dec.Enqueue {
+	if len(dec.Envelopes) == 0 {
 		h.count(func(m *Metrics) { m.Dropped.Add(1) })
 		h.done(w, delivery, event, dec.Reason, "ignored")
 		return
 	}
-	env := dec.Envelope
-	env.DeliveryID = delivery
 
-	if ok, err := h.subs().HasSubscriber(ctx, env.Repo, env.PR); err != nil {
-		// The pre-filter is an optimisation: losing it must not lose events.
-		h.log().Warn("subscription pre-filter failed; enqueueing anyway",
-			"delivery", delivery, "repo", env.Repo, "pr", env.PR, "err", err)
-	} else if !ok {
-		h.count(func(m *Metrics) { m.Unsubscribed.Add(1) })
+	// The subscription pre-filter runs per envelope: a workflow_run fanned
+	// out over several PRs keeps only the envelopes someone is listening to.
+	// It is an optimisation, never a gate — losing it must not lose events,
+	// so a failed check keeps the envelope.
+	keep := make([]Envelope, 0, len(dec.Envelopes))
+	for _, env := range dec.Envelopes {
+		env.DeliveryID = delivery
+		if ok, err := h.subs().HasSubscriber(ctx, env.Repo, env.PR); err != nil {
+			h.log().Warn("subscription pre-filter failed; enqueueing anyway",
+				"delivery", delivery, "repo", env.Repo, "pr", env.PR, "err", err)
+		} else if !ok {
+			h.count(func(m *Metrics) { m.Unsubscribed.Add(1) })
+			continue
+		}
+		keep = append(keep, env)
+	}
+	if len(keep) == 0 {
 		h.done(w, delivery, event, "no subscriber", "no subscriber")
 		return
 	}
 
-	if err := h.Queue.Enqueue(ctx, env); err != nil {
-		if ferr := h.Dedupe.Forget(ctx, delivery); ferr != nil {
-			h.log().Warn("dedupe cleanup failed; redelivery will be dropped",
-				"delivery", delivery, "err", ferr)
+	for _, env := range keep {
+		if err := h.Queue.Enqueue(ctx, env); err != nil {
+			// The cleanup must survive the request context: GitHub abandons
+			// deliveries after ~10s, and if a canceled ctx made the Forget
+			// fail, the redelivery of this GUID would be dropped as a
+			// duplicate and the event lost forever. A partial enqueue is
+			// safe to redeliver whole — envelopes share the delivery GUID,
+			// which the gateway dedupes per subscriber.
+			if ferr := h.Dedupe.Forget(context.WithoutCancel(ctx), delivery); ferr != nil {
+				h.log().Warn("dedupe cleanup failed; redelivery will be dropped",
+					"delivery", delivery, "err", ferr)
+			}
+			h.fail(w, "enqueue", delivery, event, err)
+			return
 		}
-		h.fail(w, "enqueue", delivery, event, err)
-		return
+		h.count(func(m *Metrics) { m.Enqueued.Add(1) })
+		h.log().Info("enqueued", "delivery", delivery, "event", event,
+			"kind", env.Kind, "repo", env.Repo, "pr", env.PR)
 	}
-	h.count(func(m *Metrics) { m.Enqueued.Add(1) })
-	h.log().Info("enqueued", "delivery", delivery, "event", event,
-		"kind", env.Kind, "repo", env.Repo, "pr", env.PR)
 	plainText(w)
 	w.WriteHeader(http.StatusAccepted)
 	fmt.Fprintln(w, "enqueued")

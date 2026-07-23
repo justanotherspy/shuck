@@ -37,6 +37,51 @@ func TestAuthenticatedUserError(t *testing.T) {
 	}
 }
 
+func TestUserLoginByID(t *testing.T) {
+	tests := []struct {
+		name      string
+		status    int
+		body      string
+		wantLogin string
+		wantFound bool
+		wantErr   bool
+	}{
+		{name: "renamed user", status: http.StatusOK, body: `{"id": 583231, "login": "octocat-renamed"}`, wantLogin: "octocat-renamed", wantFound: true},
+		{name: "deleted account is definitive", status: http.StatusNotFound, body: `{"message":"Not Found"}`, wantFound: false},
+		{name: "server error is unknown", status: http.StatusInternalServerError, body: `{"message":"boom"}`, wantErr: true},
+		{name: "forbidden is unknown", status: http.StatusForbidden, body: `{"message":"no"}`, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/user/583231" {
+					t.Errorf("unexpected path %q", r.URL.Path)
+				}
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			login, found, err := testClient(t, srv).UserLoginByID(context.Background(), 583231)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("want error, got nil")
+				}
+				if !strings.Contains(err.Error(), "583231") {
+					t.Errorf("error %q does not name the user id", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("UserLoginByID: %v", err)
+			}
+			if found != tt.wantFound || login != tt.wantLogin {
+				t.Errorf("got login=%q found=%v, want %q/%v", login, found, tt.wantLogin, tt.wantFound)
+			}
+		})
+	}
+}
+
 func TestOrgMember(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -22,10 +22,14 @@ type InstallationTokenSource interface {
 	Token(ctx context.Context, installationID int64) (string, error)
 }
 
-// OrgAPI is the one GitHub call the org check needs. Satisfied by
+// OrgAPI is the pair of GitHub calls the org check needs. Satisfied by
 // *gh.Client.
 type OrgAPI interface {
 	OrgMember(ctx context.Context, org, login string) (bool, error)
+	// UserLoginByID resolves the current login behind an immutable numeric
+	// user ID. found is false only when the account no longer exists (a
+	// definitive answer); any other failure is an error meaning "unknown".
+	UserLoginByID(ctx context.Context, id int64) (login string, found bool, err error)
 }
 
 // OrgValidator checks membership of the installation's org with a
@@ -39,10 +43,16 @@ type OrgValidator struct {
 	NewClient func(token string) (OrgAPI, error)
 }
 
-// Member implements Validator via the org members probe.
-func (v *OrgValidator) Member(ctx context.Context, _ int64, login string) (bool, error) {
-	if login == "" {
-		return false, errors.New("empty login")
+// Member implements Validator via the org members probe. The probe is by
+// login, but logins are mutable: a stored login goes stale when the user
+// renames, and probing it would 404 into a definitive "not a member" — a
+// false revoke for the sweep. So when a numeric user ID is known it wins:
+// the current login is re-resolved from the immutable ID first, and only a
+// deleted account (a definitive lookup 404) is a non-member; any lookup
+// error stays "unknown".
+func (v *OrgValidator) Member(ctx context.Context, userID int64, login string) (bool, error) {
+	if userID <= 0 && login == "" {
+		return false, errors.New("no user id or login to validate")
 	}
 	token, err := v.Tokens.Token(ctx, v.InstallationID)
 	if err != nil {
@@ -51,6 +61,17 @@ func (v *OrgValidator) Member(ctx context.Context, _ int64, login string) (bool,
 	client, err := v.NewClient(token)
 	if err != nil {
 		return false, fmt.Errorf("build client: %w", err)
+	}
+	if userID > 0 {
+		fresh, found, err := client.UserLoginByID(ctx, userID)
+		if err != nil {
+			return false, fmt.Errorf("resolve current login for user %d: %w", userID, err)
+		}
+		if !found {
+			// The account is gone — definitively not a member.
+			return false, nil
+		}
+		login = fresh
 	}
 	return client.OrgMember(ctx, v.Org, login)
 }

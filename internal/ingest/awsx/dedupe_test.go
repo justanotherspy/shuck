@@ -8,6 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/aws/smithy-go"
 )
 
 type fakeDynamo struct {
@@ -66,14 +67,34 @@ func TestDynamoDeduperFirstSeen(t *testing.T) {
 }
 
 func TestDynamoDeduperDuplicate(t *testing.T) {
-	fake := &fakeDynamo{putErr: &types.ConditionalCheckFailedException{}}
-	d := NewDynamoDeduper(fake, "dedupe", time.Hour)
-	seen, err := d.Seen(t.Context(), "guid-1")
-	if err != nil {
-		t.Fatalf("conditional failure must not be an error: %v", err)
+	cases := []struct {
+		name   string
+		putErr error
+	}{
+		{"bare conditional failure", &types.ConditionalCheckFailedException{}},
+		{
+			// The real SDK wraps the API error in an OperationError;
+			// duplicate detection must unwrap it.
+			"SDK-wrapped conditional failure",
+			&smithy.OperationError{
+				ServiceID:     "DynamoDB",
+				OperationName: "PutItem",
+				Err:           &types.ConditionalCheckFailedException{},
+			},
+		},
 	}
-	if !seen {
-		t.Fatal("conditional failure means the GUID was already recorded")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeDynamo{putErr: tc.putErr}
+			d := NewDynamoDeduper(fake, "dedupe", time.Hour)
+			seen, err := d.Seen(t.Context(), "guid-1")
+			if err != nil {
+				t.Fatalf("conditional failure must not be an error: %v", err)
+			}
+			if !seen {
+				t.Fatal("conditional failure means the GUID was already recorded")
+			}
+		})
 	}
 }
 

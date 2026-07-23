@@ -12,7 +12,9 @@
 //	               GSI subscriber-index (hash sk, range pk, KEYS_ONLY)
 //	buffer         pk (S) = "user_id#session_id"; sk (S) discriminates:
 //	               "s#<seq %020d>" event row, "c" seq counter,
-//	               "e#<event_id>" dedupe marker, "p" presence;
+//	               "e#<event_id>" dedupe marker, "p" presence,
+//	               "w" serverless connection-registry forward row
+//	               (with a "conn#<id>" reverse partition per connection);
 //	               TTL on the numeric expires attribute
 package awsx
 

@@ -116,11 +116,19 @@ resource "aws_lambda_function" "gateway_deliver" {
   source_code_hash = data.archive_file.lambda["gateway"].output_base64sha256
 
   environment {
-    variables = merge(local.gateway_table_env, {
-      SHUCK_WS_ROLE        = "deliver"
-      SHUCK_WS_ENDPOINT    = local.ws_endpoint
-      SHUCK_DELIVER_SECRET = local.deliver_secret
-    })
+    variables = merge(
+      local.gateway_table_env,
+      {
+        SHUCK_WS_ROLE        = "deliver"
+        SHUCK_WS_ENDPOINT    = local.ws_endpoint
+        SHUCK_DELIVER_SECRET = local.deliver_secret
+      },
+      # Staged rotation: the deliver role (the only secret validator) also
+      # accepts the secondary while workers move to the new secret.
+      var.deliver_secret_secondary != "" ? {
+        SHUCK_DELIVER_SECRET_SECONDARY = var.deliver_secret_secondary
+      } : {},
+    )
   }
 
   depends_on = [aws_cloudwatch_log_group.gateway_deliver]

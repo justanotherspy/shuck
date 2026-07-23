@@ -28,12 +28,16 @@ type Sweeper struct {
 	Metrics *Metrics
 }
 
-// Run sweeps on the configured interval until ctx is done.
+// Run sweeps once immediately and then on the configured interval until ctx
+// is done. The immediate pass matters for restart-prone deployments: a
+// ticker alone would not fire until a whole interval (default 24h) after
+// start, so a server restarted more often than that would never sweep.
 func (s *Sweeper) Run(ctx context.Context) {
 	interval := s.Interval
 	if interval <= 0 {
 		interval = DefaultSweepInterval
 	}
+	s.sweepAndLog(ctx)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -41,9 +45,19 @@ func (s *Sweeper) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.Sweep(ctx)
+			s.sweepAndLog(ctx)
 		}
 	}
+}
+
+// sweepAndLog runs one pass and logs its outcome so operators of the
+// resident server mode see every pass (the one-shot cmd modes log their own).
+func (s *Sweeper) sweepAndLog(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
+	}
+	revoked := s.Sweep(ctx)
+	s.log().Info("sweep pass finished", "revoked", revoked)
 }
 
 // Sweep runs one pass. A validation error is a skipped check — the token

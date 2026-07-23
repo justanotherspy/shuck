@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import type { ServerWebSocket } from 'bun'
-import { GatewayClient, type GatewayEvent } from './gateway-client.ts'
+import { DEDUPE_CAP, GatewayClient, type GatewayEvent } from './gateway-client.ts'
 
 // FakeGateway mirrors the wire protocol in internal/gateway/protocol.go just
 // far enough to exercise the client: it records inbound frames per
@@ -154,6 +154,65 @@ describe('GatewayClient', () => {
       { type: 'ack', id: 'ev-1' },
     ])
     expect(events).toHaveLength(1)
+  })
+
+  test('same event id twice within the notification window: one notification, two acks', async () => {
+    // The serverless gateway's hello replay + a concurrent deliver each
+    // drain the whole unacked buffer, so the same id can arrive again while
+    // onEvent is still awaiting. Both frames must be acked; only one may
+    // notify.
+    const events: GatewayEvent[] = []
+    const { gw, client } = harness({
+      onEvent: async ev => {
+        await Bun.sleep(20)
+        events.push(ev)
+      },
+    })
+    client.start()
+    const conn = await gw.conn(0)
+    await conn.frame(0)
+    conn.event({ id: 'ev-1' })
+    conn.event({ id: 'ev-1' })
+    await conn.frame(2)
+    expect(conn.frames.slice(1)).toEqual([
+      { type: 'ack', id: 'ev-1' },
+      { type: 'ack', id: 'ev-1' },
+    ])
+    await Bun.sleep(30) // any second notification would have landed by now
+    expect(events).toHaveLength(1)
+  })
+
+  test('a late duplicate is acked but does not rewind the resume cursor', async () => {
+    const { gw, client } = harness()
+    client.start()
+    const first = await gw.conn(0)
+    await first.frame(0)
+    first.event({ id: 'ev-1' })
+    first.event({ id: 'ev-2' })
+    await first.frame(2)
+    first.event({ id: 'ev-1' }) // late replay of an already-acked event
+    const ack = await first.frame(3)
+    expect(ack).toEqual({ type: 'ack', id: 'ev-1' })
+    first.close(1001, 'draining')
+    const second = await gw.conn(1)
+    const hello = await second.frame(0)
+    expect(hello.last_event_id).toBe('ev-2')
+  })
+
+  test('dedupe set evicts insertion-ordered at DEDUPE_CAP; an evicted id re-notifies', async () => {
+    const { gw, client, events } = harness()
+    client.start()
+    const conn = await gw.conn(0)
+    await conn.frame(0)
+    // DEDUPE_CAP+1 distinct ids: adding the last one evicts ev-0.
+    for (let i = 0; i <= DEDUPE_CAP; i++) conn.event({ id: `ev-${i}` })
+    await until(() => events.length === DEDUPE_CAP + 1)
+    conn.event({ id: `ev-${DEDUPE_CAP}` }) // still tracked: deduped
+    conn.event({ id: 'ev-0' }) // evicted: re-notifies
+    await until(() => events.length === DEDUPE_CAP + 2)
+    expect(events.at(-1)!.id).toBe('ev-0')
+    await Bun.sleep(20)
+    expect(events).toHaveLength(DEDUPE_CAP + 2) // the tracked id stayed deduped
   })
 
   test('1001 drain → reconnects and resumes with last_event_id', async () => {
@@ -327,6 +386,17 @@ describe('GatewayClient', () => {
     expect(client.subscribe('o/'.padEnd(40 * 1024, 'x'), 1)).rejects.toThrow(/exceeds/)
   })
 
+  test('outbound frame size is measured in bytes, not UTF-16 code units', async () => {
+    const { gw, client } = harness()
+    client.start()
+    const conn = await gw.conn(0)
+    await conn.frame(0)
+    // '€' is one UTF-16 code unit but three UTF-8 bytes: ~16k of them pass a
+    // .length check yet exceed the gateway's 32 KiB byte cap on the wire.
+    const repo = 'o/' + '€'.repeat(16 * 1024)
+    expect(client.subscribe(repo, 1)).rejects.toThrow(/exceeds/)
+  })
+
   test('malformed and unknown server frames are ignored', async () => {
     const { gw, client, events } = harness()
     client.start()
@@ -349,5 +419,29 @@ describe('GatewayClient', () => {
     await Bun.sleep(40) // several ping cycles; the server auto-pongs
     expect(gw.conns).toHaveLength(1)
     expect(client.state).toBe('open')
+  })
+
+  test('watchdog pong timeout → terminate → reconnect', async () => {
+    // Swallow outbound liveness pings so no pong ever comes back; terminate
+    // stays real so the watchdog's hard drop closes the socket.
+    const RealWS = globalThis.WebSocket
+    cleanup.push(() => {
+      globalThis.WebSocket = RealWS
+    })
+    const patched = function (this: unknown, url: string | URL) {
+      const ws = new RealWS(url) as WebSocket & { ping?: () => void }
+      ws.ping = () => {}
+      return ws
+    }
+    Object.setPrototypeOf(patched, RealWS) // inherit the statics (OPEN, …)
+    globalThis.WebSocket = patched as never
+    const { gw, client, logs } = harness({ pingIntervalMs: 10, pongTimeoutMs: 15 })
+    client.start()
+    const first = await gw.conn(0)
+    await first.frame(0)
+    await until(() => logs.some(l => l.includes('liveness ping timed out')))
+    const second = await gw.conn(1) // the drop reconnected
+    const hello = await second.frame(0)
+    expect(hello.type).toBe('hello')
   })
 })

@@ -134,4 +134,50 @@ describe('server (stdio smoke)', () => {
     // Configured + healthy: still nothing on stderr.
     expect(stderr()).toBe('')
   })
+
+  test('configured without CLAUDE_CODE_SESSION_ID: one stderr warning, ephemeral UUID session id', async () => {
+    const conns: { ws: ServerWebSocket<unknown>; frames: Record<string, unknown>[] }[] = []
+    const gw = Bun.serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      fetch(req, server) {
+        if (server.upgrade(req)) return
+        return new Response('no', { status: 400 })
+      },
+      websocket: {
+        open(ws) {
+          conns.push({ ws, frames: [] })
+        },
+        message(ws, raw) {
+          conns.find(c => c.ws === ws)?.frames.push(JSON.parse(String(raw)) as Record<string, unknown>)
+        },
+      },
+    })
+    closers.push(() => gw.stop(true))
+
+    const { client, stderr } = await spawnServer({
+      SHUCK_CHANNEL_GATEWAY_URL: `ws://127.0.0.1:${gw.port}/ws`,
+      SHUCK_CHANNEL_TOKEN: 'test-token-not-real',
+      // No CLAUDE_CODE_SESSION_ID: the shim must fall back to a UUID.
+    })
+    closers.push(() => client.close())
+
+    const until = async (cond: () => boolean) => {
+      const deadline = Date.now() + 3_000
+      while (!cond()) {
+        if (Date.now() > deadline) throw new Error('condition not met in time')
+        await Bun.sleep(5)
+      }
+    }
+
+    await until(() => conns.length === 1 && conns[0]!.frames.length >= 1)
+    const hello = conns[0]!.frames[0]!
+    expect(hello.type).toBe('hello')
+    expect(String(hello.session_id)).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+
+    await until(() => stderr().includes('ephemeral session id'))
+    const lines = stderr().split('\n').filter(l => l.trim() !== '')
+    expect(lines).toHaveLength(1) // exactly one warning, nothing else
+    expect(lines[0]).toContain('CLAUDE_CODE_SESSION_ID is not set')
+  })
 })

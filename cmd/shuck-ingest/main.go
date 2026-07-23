@@ -11,7 +11,7 @@
 //	SHUCK_WEBHOOK_SECRET       GitHub App webhook secret (required)
 //	SHUCK_QUEUE_URL            SQS queue URL for envelopes (required)
 //	SHUCK_DEDUPE_TABLE         DynamoDB dedupe table name (required)
-//	SHUCK_DEDUPE_TTL           dedupe row retention (default 1h)
+//	SHUCK_DEDUPE_TTL           dedupe row retention (default 1h; must be > 0)
 //	SHUCK_SUBSCRIPTION_TABLE   gateway subscription table for the pre-filter
 //	                           (optional; unset means every event is enqueued)
 //	SHUCK_ADDR                 HTTP listen address (default :8080; server mode)
@@ -61,9 +61,9 @@ func run(ctx context.Context, log *slog.Logger) error {
 	}
 	ttl := time.Hour
 	if v := os.Getenv("SHUCK_DEDUPE_TTL"); v != "" {
-		parsed, err := time.ParseDuration(v)
+		parsed, err := parseTTL(v)
 		if err != nil {
-			return fmt.Errorf("parse SHUCK_DEDUPE_TTL: %w", err)
+			return err
 		}
 		ttl = parsed
 	}
@@ -110,11 +110,64 @@ func run(ctx context.Context, log *slog.Logger) error {
 			log.Error("metrics listener failed", "err", err)
 		}
 	}()
+	// Server mode also logs a periodic counter snapshot (the worker
+	// precedent) so a plain log pipeline sees the delivery funnel without
+	// scraping; the ticker stops when run returns.
+	metricsCtx, stopMetrics := context.WithCancel(ctx)
+	defer stopMetrics()
+	go logMetrics(metricsCtx, log, metrics, time.Minute)
 	log.Info("starting HTTP server", "addr", addr)
-	server := &http.Server{
-		Addr:              addr,
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
+	return newServer(addr, mux).ListenAndServe()
+}
+
+// parseTTL validates SHUCK_DEDUPE_TTL. A zero or negative retention would
+// make every dedupe row expire immediately, silently disabling redelivery
+// protection, so it is a configuration error.
+func parseTTL(v string) (time.Duration, error) {
+	ttl, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("parse SHUCK_DEDUPE_TTL: %w", err)
 	}
-	return server.ListenAndServe()
+	if ttl <= 0 {
+		return 0, fmt.Errorf("SHUCK_DEDUPE_TTL must be positive, got %s", ttl)
+	}
+	return ttl, nil
+}
+
+// newServer wraps the mux with the public-endpoint timeouts.
+// ReadHeaderTimeout alone leaves a body-slowloris (headers complete, body
+// dripped byte by byte) holding a connection open forever, so the whole
+// read and idle keep-alives are bounded too.
+func newServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+}
+
+// logMetrics snapshots the ingest counters periodically so a plain log
+// pipeline sees the delivery funnel the runbook watches (received →
+// verified → enqueued, plus every drop bucket); mirrors cmd/shuck-worker.
+func logMetrics(ctx context.Context, log *slog.Logger, m *ingest.Metrics, every time.Duration) {
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			log.Info("metrics",
+				"received", m.Received.Load(),
+				"verified", m.Verified.Load(),
+				"deduped", m.Deduped.Load(),
+				"dropped", m.Dropped.Load(),
+				"unsubscribed", m.Unsubscribed.Load(),
+				"enqueued", m.Enqueued.Load(),
+				"errors", m.Errors.Load(),
+			)
+		}
+	}
 }

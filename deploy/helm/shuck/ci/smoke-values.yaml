@@ -18,6 +18,12 @@ config:
   bufferTable: shuck-buffer
 
 github:
+  # The worker validates the App ID and private-key PEM at boot, so the
+  # smoke install needs a plausible ID here and a real (throwaway) RSA key —
+  # the CI job generates one per run and injects it with --set-file; a key
+  # must never be committed. Token minting then fails at GitHub, which the
+  # worker absorbs per-envelope without crashing.
+  appId: "999001"
   clientId: Iv1.smoke
   accountId: "12345"
 

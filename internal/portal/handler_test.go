@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/justanotherspy/shuck/internal/gateway"
 )
 
 // capturingLog collects every rendered log line so tests can assert what
@@ -433,6 +435,154 @@ func TestHealthz(t *testing.T) {
 	resp := rig.do(http.MethodGet, "/healthz", nil)
 	if resp.StatusCode != http.StatusOK || readBody(t, resp) != "ok" {
 		t.Fatal("healthz broken")
+	}
+	if resp.Header.Get("Cache-Control") != "no-store" {
+		t.Error("healthz is cacheable — every portal route must be no-store")
+	}
+}
+
+// TestMintRotatesCSRF pins the double-mint guard: a successful mint rotates
+// the session's CSRF token, so replaying the same POST (a double click on
+// Regenerate) fails the CSRF check instead of racing a second
+// read-then-Replace into two live tokens.
+func TestMintRotatesCSRF(t *testing.T) {
+	rig := newRig(t, false)
+	rig.login()
+	oldCSRF := rig.csrf()
+
+	resp := rig.do(http.MethodPost, "/token", url.Values{"csrf": {oldCSRF}})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("mint status = %d", resp.StatusCode)
+	}
+	if rig.store.count() != 1 {
+		t.Fatalf("store rows after mint = %d", rig.store.count())
+	}
+
+	// Replay with the stale CSRF value: refused, and still one live token.
+	resp = rig.do(http.MethodPost, "/token", url.Values{"csrf": {oldCSRF}})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("replayed mint = %d, want 403", resp.StatusCode)
+	}
+	if rig.store.count() != 1 {
+		t.Fatalf("store rows after replay = %d, want exactly 1 live token", rig.store.count())
+	}
+
+	// The dashboard hands out the rotated token, which works.
+	newCSRF := rig.csrf()
+	if newCSRF == oldCSRF {
+		t.Fatal("CSRF not rotated by the mint")
+	}
+	resp = rig.do(http.MethodPost, "/token", url.Values{"csrf": {newCSRF}})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("mint with rotated csrf = %d", resp.StatusCode)
+	}
+}
+
+// TestMintAuditCarriesTokenHash checks operators can correlate audit lines
+// to token-table rows: the mint audit line carries the stored hash (never
+// the raw token).
+func TestMintAuditCarriesTokenHash(t *testing.T) {
+	rig := newRig(t, false)
+	rig.login()
+	resp := rig.do(http.MethodPost, "/token", url.Values{"csrf": {rig.csrf()}})
+	raw := tokenInBody.FindString(readBody(t, resp))
+	if raw == "" {
+		t.Fatal("no token minted")
+	}
+	logged := rig.log.String()
+	if !strings.Contains(logged, gateway.HashToken(raw)) {
+		t.Error("mint audit line missing token_hash")
+	}
+	if strings.Contains(logged, raw) {
+		t.Fatal("raw token in logs")
+	}
+}
+
+func TestGitHubUserLookupFailure(t *testing.T) {
+	rig := newRig(t, false)
+	rig.github.userErr = errors.New("saml enforcement")
+	resp := rig.do(http.MethodGet, "/login", nil)
+	state := stateFrom(t, resp)
+	resp = rig.do(http.MethodGet, "/github/callback?state="+url.QueryEscape(state)+"&code=c", nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("user lookup failure = %d, want 403", resp.StatusCode)
+	}
+	// And the session did not become authenticated.
+	body := readBody(t, rig.do(http.MethodGet, "/", nil))
+	if !strings.Contains(body, "Connect GitHub") {
+		t.Fatal("session authenticated despite user lookup failure")
+	}
+}
+
+func TestOIDCVerificationFailure(t *testing.T) {
+	rig := newRig(t, true)
+	rig.oidc.verifyErr = errors.New("bad id_token")
+	resp := rig.do(http.MethodGet, "/login", nil)
+	state := stateFrom(t, resp)
+	resp = rig.do(http.MethodGet, "/oidc/callback?state="+url.QueryEscape(state)+"&code=c", nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("oidc verify failure = %d, want 403", resp.StatusCode)
+	}
+	// OIDCDone was not set: the next /login still goes to the IdP.
+	resp = rig.do(http.MethodGet, "/login", nil)
+	loc, err := resp.Location()
+	if err != nil || loc.Host != "idp.example" {
+		t.Fatalf("post-failure /login → %v, want the IdP again", loc)
+	}
+}
+
+func TestHomeTokenListingFailure(t *testing.T) {
+	rig := newRig(t, false)
+	rig.login()
+	rig.store.listErr = errors.New("scan down")
+	resp := rig.do(http.MethodGet, "/", nil)
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("dashboard with listing failure = %d, want 502", resp.StatusCode)
+	}
+	if !strings.Contains(readBody(t, resp), "Could not load your token") {
+		t.Error("502 page missing explanation")
+	}
+}
+
+// TestLoginRotatesSession asserts the post-login session directly: fresh
+// expiry, fresh CSRF, and no leftover OAuth round-trip state.
+func TestLoginRotatesSession(t *testing.T) {
+	rig := newRig(t, false)
+	rig.login()
+	s, err := rig.handler.Sessions.Decode(rig.cookie)
+	if err != nil {
+		t.Fatalf("decode session cookie: %v", err)
+	}
+	if s.GHState != "" || s.OIDCState != "" {
+		t.Errorf("leftover OAuth state: gs=%q os=%q", s.GHState, s.OIDCState)
+	}
+	if s.CSRF == "" {
+		t.Error("no CSRF in the authenticated session")
+	}
+	if !s.Authenticated() {
+		t.Error("session not authenticated after login")
+	}
+	// Expires was refreshed to a full TTL from the login, not inherited.
+	earliest := time.Now().Add(DefaultSessionTTL - time.Minute).Unix()
+	if s.Expires < earliest {
+		t.Errorf("expiry %d not refreshed (want >= %d)", s.Expires, earliest)
+	}
+}
+
+// failingReader always errors — the randomness-exhausted case.
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) { return 0, errors.New("entropy down") }
+
+func TestLoginRandomnessFailure(t *testing.T) {
+	rig := newRig(t, false)
+	rig.handler.Rand = failingReader{}
+	resp := rig.do(http.MethodGet, "/login", nil)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("randomness failure = %d, want 500", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); loc != "" {
+		t.Fatalf("500 carried a redirect to %q", loc)
 	}
 }
 

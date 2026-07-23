@@ -33,14 +33,18 @@ assumes a running deployment.
   - *Terraform*: the deliver secret is generated in-stack. `terraform taint
     random_password.deliver_secret` then `terraform apply` rolls it; workers and
     gateway pick up the new env on redeploy. For a true zero-gap rotation,
-    stage the new value as the secondary, redeploy consumers, then promote.
+    stage the new value via the `deliver_secret_secondary` variable, apply
+    (consumers now accept both), then promote it to primary and unset the
+    secondary in a second apply.
   - *Helm*: update the `deliver-secret` (and optionally
     `deliver-secret-secondary`) in the source Secret / ESO backend and
     `helm upgrade`; roll workers and gateway.
 - **Rotate the webhook secret.** Update it on both sides — the deployment
   (`webhook_secret` output / chart Secret) **and** the GitHub App's webhook
   config — within the same change window; a mismatch fails HMAC verification
-  and drops deliveries (they are retried by GitHub for a while).
+  and drops deliveries. **GitHub does not retry failed deliveries on its own**
+  — after fixing the mismatch, redeliver the missed events from the App's
+  recent-deliveries panel (UI or API).
 - **Rotate the GitHub App private key.** Generate a new key in the App
   settings, update the mounted secret, redeploy the worker and portal. Old and
   new keys are both valid on GitHub until you delete the old one.
@@ -65,8 +69,12 @@ There are **two** independent sweeps; don't confuse them.
    sessions disconnected beyond the grace window (default 24h).
    - *Terraform*: an EventBridge-scheduled gateway Lambda (every 15 min).
    - *Helm*: in-process in the resident gateway.
-   - A failed pass is harmless — rows carry TTLs and expire regardless; the
-     sweep is an eager cleanup, not a correctness dependency.
+   - An occasional failed pass is tolerable — buffered-event rows carry TTLs
+     and expire regardless — but the sweep is the **only** cleanup for
+     subscription and presence rows (they have no TTL), and it is what stops
+     fan-out to long-gone sessions. A sweep that stays broken means those rows
+     and their per-delivery buffer writes grow without bound: treat repeated
+     sweep failures as an incident, not noise.
 
 ## DLQ handling and the deploy-order contract
 
@@ -125,12 +133,14 @@ ghcr.io/justanotherspy/shuck-portal
 
 ## Retention and storage
 
-Nothing here needs manual GC — everything is on a timer (authoritative table in
+Nothing here needs manual GC — event data is on a timer (authoritative table in
 [`docs/ARCHITECTURE.md`](ARCHITECTURE.md#stores-and-retention-defaults)): raw
 logs 24h (S3 lifecycle), buffered events 72h (DynamoDB TTL), disconnected
-subscribers swept after 24h, dedupe rows 1h. If storage grows unexpectedly,
-verify the S3 lifecycle rule and the DynamoDB TTL attributes are enabled (a
-disabled TTL is the usual cause of buffer growth).
+subscribers swept after 24h, dedupe rows 1h. Subscription and presence rows
+have **no TTL** — the grace-window sweep is their only cleanup (see Sweeps
+above). If storage grows unexpectedly, verify the S3 lifecycle rule and the
+DynamoDB TTL attributes are enabled (a disabled TTL is the usual cause of
+buffer growth), then check the gateway sweep is completing.
 
 ## Observability
 
@@ -151,25 +161,31 @@ exported two ways (JUS-96, both off by default):
   per-Lambda error alarms, a DLQ-depth alarm, a gateway-error alarm, a
   stack dashboard, and optional X-Ray tracing.
 
-Watch:
+The periodic counter snapshots and `/healthz` listeners run in the
+resident/server modes (the Helm shape); in Lambda mode rely on the per-event
+structured logs and the CloudWatch alarms above. Watch:
 
-- **ingest**: received / verified / deduped / filtered / enqueued counts; a
-  spike in "verified but filtered" is normal (most events aren't subscribed).
-- **worker**: processed / delivered / retried; deliver 5xx retries; S3 archive
-  failures (best-effort, counted, never fatal).
+- **ingest** (server mode): the periodic snapshot of received / verified /
+  deduped / dropped / enqueued; a high dropped count is normal (most events
+  aren't subscribed).
+- **worker** (poll mode): the periodic snapshot — processed / delivered /
+  deliver retries and errors / parse errors; S3 archive failures (best-effort,
+  counted, never fatal).
 - **gateway**: heartbeat failures, replayed events on reconnect.
-- **portal / sweep**: tokens minted / revoked; sweep "unknown" (API error)
-  counts — a rising "unknown" count means the sweep can't validate and is
-  (correctly) not revoking.
+- **portal / sweep**: mint and revoke audit log lines; each sweep pass logs
+  its revoked count; per-row "unknown" (API error) warnings — rising
+  "unknown" warnings mean the sweep can't validate and is (correctly) not
+  revoking.
 - **Health**: gateway `/healthz` + `/readyz` (readiness flips 503 on drain —
-  that is the rollout signal), worker / ingest / portal `/healthz`.
+  that is the rollout signal), worker / ingest / portal `/healthz` (server
+  modes).
 
 ## Incident triage
 
 | Symptom | Likely cause | Action |
 | --- | --- | --- |
 | Events never arrive in a session | shim not subscribed, wrong gateway URL, or token rejected | Confirm `shuck_subscribe` ran; check `SHUCK_CHANNEL_GATEWAY_URL` / `SHUCK_CHANNEL_TOKEN`; look for the shim's token error |
-| Session reconnect-loops with a token error | token revoked/regenerated or holder offboarded | Mint a fresh token in the portal, update the shim, restart the session |
+| Shim reports a token error and stays disconnected (it stops permanently on `unauthorized` — no reconnect loop) | token revoked/regenerated or holder offboarded | Mint a fresh token in the portal, update the shim config, restart the session |
 | DLQ depth climbing | poison envelopes, usually old worker + new envelope kind | Verify worker rolled out before ingest; fix worker; redrive DLQ → main queue |
 | Webhooks not being received | HMAC mismatch (secret rotated on one side only) or wrong webhook URL | Re-check the App's webhook URL + secret against the deployment; GitHub's recent-deliveries panel shows the response code |
 | Sweep revoking too many tokens | should not happen — errors are "unknown" | If it does, inspect sweep logs; confirm `members:read` and the App installation; a true mass-revoke implies real org changes |

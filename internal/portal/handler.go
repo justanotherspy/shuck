@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/justanotherspy/shuck/internal/gateway"
 )
 
 // Handler serves the token portal. Wire the required fields and Register it
@@ -41,6 +43,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /github/callback", h.githubCallback)
 	mux.HandleFunc("POST /token", h.mintToken)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		noStore(w)
 		_, _ = w.Write([]byte("ok"))
 	})
 }
@@ -253,11 +256,25 @@ func (h *Handler) mintToken(w http.ResponseWriter, r *http.Request) {
 	if !h.membershipGate(r.Context(), w, s.UserID, s.Login) {
 		return
 	}
+	// Rotate the CSRF token before minting: a duplicate submission (double
+	// click on Regenerate) then fails the CSRF check instead of racing a
+	// second read-then-Replace and leaving two live tokens. Generated up
+	// front so a randomness failure never strands an already-minted token.
+	csrf, err := randToken(h.Rand, 32)
+	if err != nil {
+		h.internalError(w, "csrf rotation failed", err)
+		return
+	}
 	raw, regenerated, err := Mint(r.Context(), h.Store, h.Rand, h.now(), s.UserID, s.Login)
 	if err != nil {
 		h.Metrics.incMintErrors()
 		h.log().Error("mint failed", "err", err)
 		h.render(w, http.StatusBadGateway, "error.tmpl", errorData{Message: "Minting failed. Your existing token, if any, is unchanged."})
+		return
+	}
+	s.CSRF = csrf
+	if err := h.setSession(w, s); err != nil {
+		h.internalError(w, "session encode failed", err)
 		return
 	}
 	event := "token_minted"
@@ -268,7 +285,8 @@ func (h *Handler) mintToken(w http.ResponseWriter, r *http.Request) {
 		h.Metrics.incMinted()
 	}
 	h.log().Info("audit: "+event, "event", event,
-		"github_user_id", s.UserID, "github_login", s.Login)
+		"github_user_id", s.UserID, "github_login", s.Login,
+		"token_hash", gateway.HashToken(raw))
 	h.render(w, http.StatusOK, "token.tmpl", tokenData{Token: raw, Regenerated: regenerated})
 }
 

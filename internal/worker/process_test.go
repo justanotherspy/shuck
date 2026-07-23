@@ -7,8 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/justanotherspy/shuck/internal/distil"
 	"github.com/justanotherspy/shuck/internal/gateway"
 	"github.com/justanotherspy/shuck/internal/ingest"
+	"github.com/justanotherspy/shuck/internal/logs"
 	"github.com/justanotherspy/shuck/internal/model"
 )
 
@@ -84,10 +86,10 @@ func twoJobRun() RunFailure {
 func TestProcessCIFailure(t *testing.T) {
 	tokens := &fakeTokens{token: "ghs_x"}
 	fetch := &fakeFetch{run: twoJobRun()}
-	logs := &fakeLogs{}
+	logStore := &fakeLogs{}
 	deliver := &fakeDeliver{}
 	metrics := &Metrics{}
-	p := &Processor{Tokens: tokens, Fetch: fetch, Logs: logs, Deliver: deliver, Metrics: metrics}
+	p := &Processor{Tokens: tokens, Fetch: fetch, Logs: logStore, Deliver: deliver, Metrics: metrics}
 
 	if err := p.Process(context.Background(), ciEnvelope()); err != nil {
 		t.Fatalf("Process: %v", err)
@@ -99,8 +101,8 @@ func TestProcessCIFailure(t *testing.T) {
 	if fetch.tokens[0] != "ghs_x" {
 		t.Errorf("fetch used token %q", fetch.tokens[0])
 	}
-	if len(logs.puts) != 2 {
-		t.Errorf("archived %v, want both jobs", logs.puts)
+	if len(logStore.puts) != 2 {
+		t.Errorf("archived %v, want both jobs", logStore.puts)
 	}
 	if len(deliver.reqs) != 1 {
 		t.Fatalf("delivered %d times, want 1", len(deliver.reqs))
@@ -259,6 +261,66 @@ func TestProcessCIFailureErrorsPropagate(t *testing.T) {
 			t.Error("not counted")
 		}
 	})
+}
+
+func TestProcessorValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		p       *Processor
+		wantErr bool
+	}{
+		{"zero value defaults", &Processor{}, false},
+		{"valid custom config", &Processor{ContextLines: 5, Options: &distil.Options{Extract: logs.DefaultOptions()}}, false},
+		{"negative context lines", &Processor{ContextLines: -1}, true},
+		{"invalid options", &Processor{Options: &distil.Options{Extract: logs.Options{Context: -1}}}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.p.Validate(); (err != nil) != tt.wantErr {
+				t.Errorf("Validate() = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestProcessCIFailureInvalidOptionsPoison(t *testing.T) {
+	// Constructed directly, bypassing the boot-time Validate: an invalid
+	// Options must error the envelope (redelivery → DLQ), count a parse
+	// error, and deliver nothing.
+	deliver := &fakeDeliver{}
+	metrics := &Metrics{}
+	p := &Processor{Tokens: &fakeTokens{token: "t"}, Fetch: &fakeFetch{run: twoJobRun()},
+		Deliver: deliver, Metrics: metrics,
+		Options: &distil.Options{Extract: logs.Options{Context: -1}}}
+
+	if err := p.Process(context.Background(), ciEnvelope()); err == nil {
+		t.Fatal("want error for invalid Options")
+	}
+	if metrics.ParseErrors.Load() != 1 {
+		t.Errorf("parse errors = %d, want 1", metrics.ParseErrors.Load())
+	}
+	if len(deliver.reqs) != 0 || metrics.Delivered.Load() != 0 {
+		t.Errorf("delivered %d times, want nothing on a distillation failure", len(deliver.reqs))
+	}
+}
+
+func TestProcessPRClosedDeliverError(t *testing.T) {
+	deliver := &fakeDeliver{err: errors.New("gateway down")}
+	metrics := &Metrics{}
+	p := &Processor{Tokens: &fakeTokens{token: "t"}, Fetch: &fakeFetch{},
+		Deliver: deliver, Metrics: metrics}
+
+	env := ingest.Envelope{Schema: ingest.EnvelopeSchema, DeliveryID: "d-2",
+		Kind: ingest.KindPRClosed, Repo: "o/r", PR: 7}
+	if err := p.Process(context.Background(), env); err == nil {
+		t.Fatal("a deliver failure must propagate so the message redelivers")
+	}
+	if metrics.DeliverErrors.Load() != 1 {
+		t.Errorf("deliver errors = %d, want 1", metrics.DeliverErrors.Load())
+	}
+	if metrics.PRClosed.Load() != 0 {
+		t.Error("a failed pr_closed must not count as delivered")
+	}
 }
 
 func TestProcessPRClosedPassesThrough(t *testing.T) {
