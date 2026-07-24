@@ -72,6 +72,13 @@ func writeSummary(w io.Writer, r *model.Report) {
 	}
 }
 
+// Job renders one job's failure detail — its workflow, step overview,
+// annotations, and each failed step's command and error excerpt. It is the
+// same block `shuck logs` prints for that job, exported so the background
+// monitor's events read exactly like the command's output rather than like a
+// second, subtly different format.
+func Job(w io.Writer, job model.JobResult) { writeJob(w, job) }
+
 func writeJob(w io.Writer, job model.JobResult) {
 	fmt.Fprintf(w, "\nWorkflow: %s (%s)\n", job.WorkflowName, job.WorkflowPath)
 	fmt.Fprintf(w, "Job: %s  [%s]\n", job.Name, job.Conclusion)

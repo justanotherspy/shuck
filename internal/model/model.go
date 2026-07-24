@@ -14,6 +14,32 @@ type PR struct {
 	HeadSHA    string    `json:"head_sha"`
 	HeadBranch string    `json:"head_branch"`
 	UpdatedAt  time.Time `json:"updated_at"` // PR's last-updated time; feeds the cheap reviews-changed check
+
+	// State, Draft, and Merged carry the PR's lifecycle. They exist for the
+	// background monitor, which has to notice a PR being merged or closed to
+	// stop watching it; the one-shot report paths ignore them.
+	State  string `json:"state,omitempty"` // "open" or "closed"
+	Draft  bool   `json:"draft,omitempty"`
+	Merged bool   `json:"merged,omitempty"`
+}
+
+// Lifecycle collapses State, Draft, and Merged into the single word worth
+// reporting: "merged" and "closed" are the two ways a PR ends, and a draft is
+// open but not asking for review yet. It returns "" when the state was never
+// populated.
+func (p PR) Lifecycle() string {
+	switch {
+	case p.Merged:
+		return "merged"
+	case p.State == "closed":
+		return "closed"
+	case p.Draft:
+		return "draft"
+	case p.State == "open":
+		return "open"
+	default:
+		return ""
+	}
 }
 
 // AuthorType classifies who wrote a review or comment, so the output can flag

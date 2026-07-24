@@ -12,7 +12,7 @@
     {
       "name": "shuck",
       "source": "./plugins/shuck",
-      "description": "Failing CI step logs, PR reviews, security alerts, compliance and Dependabot audits, and Action/image SHA-pinning via the shuck CLI: a skill, an MCP server, and a prereq-checking hook."
+      "description": "A background monitor that keeps Claude current on your PR: new CI failures with their exact failing step logs, review comments with code context, and stale GitHub Action pins \u2014 delivered into the session as they happen. Plus the on-demand shuck tools (logs, reviews, security, compliance, Dependabot, pins, SHA-pinning) as a skill and an MCP server."
     }
   ]
 }

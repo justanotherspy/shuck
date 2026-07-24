@@ -1,7 +1,7 @@
 {
   "name": "shuck",
-  "version": "0.4.0",
-  "description": "Get the exact failing CI step logs for a GitHub pull request via the shuck CLI, plus reviews, security alerts, settings compliance, Dependabot audits, and Action/image SHA-pinning. Adds a /shuck skill, a local MCP server (inspect_logs / inspect_reviews / inspect_security / check_compliance / audit_dependabot / inspect_action / inspect_images tools) that runs the shuck binary from your PATH, and a SessionStart hook that checks shuck is installed, recent enough for the MCP server, and that a GitHub token is present. Install shuck yourself and keep it current with `shuck upgrade`.",
+  "version": "0.5.0",
+  "description": "Keep Claude up to date on the pull request you are actually working on. shuck runs a local background monitor that follows your working tree \u2014 it reads the branch from HEAD, finds the open PR for it, and retargets itself when you switch branches or worktrees \u2014 then feeds the session new CI failures (with the exact failing step logs), review comments (with the diff hunk and surrounding code), and GitHub Actions that are unpinned or whose SHA pin has gone stale, as they happen. No webhook and no server: one binary, your GitHub token, a local socket. Also adds the /shuck skill and an MCP server (inspect_logs, inspect_reviews, inspect_security, check_compliance, audit_dependabot, check_pins, inspect_action, inspect_images, monitor_status, monitor_events, monitor_watch, monitor_unwatch). Install shuck yourself and keep it current with `shuck upgrade`.",
   "author": {
     "name": "justanotherspy",
     "email": "daniel.schwartz@hey.com"
@@ -9,5 +9,14 @@
   "homepage": "https://github.com/justanotherspy/shuck",
   "repository": "https://github.com/justanotherspy/shuck",
   "license": "MIT",
-  "keywords": ["ci", "github-actions", "logs", "pull-request", "debugging", "mcp"]
+  "keywords": [
+    "ci",
+    "github-actions",
+    "logs",
+    "pull-request",
+    "code-review",
+    "monitor",
+    "debugging",
+    "mcp"
+  ]
 }

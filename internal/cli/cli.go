@@ -50,6 +50,7 @@ By default (and via "shuck all") shuck reports a PR's failing CI, its reviews,
 and the repo's security alerts together. Use a subcommand to focus on one.
 
 Usage:
+  shuck monitor               follow this working tree in the background and stream what changes
   shuck [target]              CI + reviews + security for a PR (same as "shuck all")
   shuck <owner>/<repo> <pr>   an explicit PR ("shuck <pr-url>", "shuck <pr>", or "shuck" for the current branch)
   shuck <run-url> | <job-url> a single GitHub Actions run / job (CI only; a run URL may name an /attempts/<n>)
@@ -57,6 +58,7 @@ Usage:
   shuck --watch [target]      poll until every check finishes, then print the report
 
 Subcommands (single-letter shorthands in parentheses):
+  shuck monitor (m) [watch|events|status|…]  the background monitor: CI, reviews, and pin drift as they happen
   shuck logs (l) [target] [--run <id|url>]   failing CI step logs for a PR or a single run
   shuck reviews (r) [target]                 a PR's reviews and review-comment threads
   shuck all [target]                         CI + reviews + security (the default)
@@ -67,6 +69,7 @@ Subcommands (single-letter shorthands in parentheses):
   shuck compliance discover [owner/repo]     snapshot the live settings into .github/compliance.yml
   shuck dependabot (d) [owner/repo | url]    audit .github/dependabot.yml against the repo's ecosystems
   shuck dependabot discover [owner/repo]     scaffold or extend .github/dependabot.yml from detected ecosystems
+  shuck pins (p) [dir]                       find workflow actions that are unpinned or whose SHA pin is stale
   shuck mcp                   run as a local MCP (stdio) server exposing shuck tools
   shuck setup                 install the shuck skill + CLAUDE.md note for Claude Code (and, optionally, the MCP)
   shuck version [--check]     print the installed version; --check looks for a newer release
@@ -108,6 +111,8 @@ var subcommandAliases = map[string]string{
 	"l": "logs",
 	"r": "reviews",
 	"a": "action",
+	"m": "monitor",
+	"p": "pins",
 	"s": "security",
 	"c": "compliance",
 	"d": "dependabot",
@@ -130,6 +135,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			return runUpgrade(args[1:], stdout, stderr)
 		case "action":
 			return runAction(args[1:], stdout, stderr)
+		case "monitor":
+			return runMonitor(args[1:], stdout, stderr)
+		case "pins", "pin":
+			return runPins(args[1:], stdout, stderr)
 		case "image", "images":
 			return runImage(args[1:], stdout, stderr)
 		case "security":

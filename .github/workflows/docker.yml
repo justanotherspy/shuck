@@ -31,16 +31,10 @@ concurrency:
 
 jobs:
   docker:
-    name: Build & publish (${{ matrix.image }})
+    name: Build & publish
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - image: shuck
-            dockerfile: Dockerfile
     env:
-      IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+      IMAGE: ghcr.io/${{ github.repository_owner }}/shuck
     permissions:
       contents: read
       packages: write # push to GHCR
@@ -86,7 +80,7 @@ jobs:
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
-          file: ${{ matrix.dockerfile }}
+          file: Dockerfile
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
@@ -97,8 +91,8 @@ jobs:
             DATE=${{ steps.date.outputs.date }}
           provenance: ${{ github.event_name != 'pull_request' }}
           sbom: ${{ github.event_name != 'pull_request' }}
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: ${{ github.event_name != 'pull_request' && format('type=gha,mode=max,scope={0}', matrix.image) || '' }}
+          cache-from: type=gha
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max' || '' }}
 
       - name: Install cosign
         if: github.event_name != 'pull_request'

@@ -30,9 +30,6 @@ bench-*.txt
 # Plugin-managed binary (downloaded on demand by the shuck plugin's installer)
 /plugins/shuck/bin/
 
-# Channel shim plugin dependencies (bun install at session start)
-/plugins/shuck-channel/node_modules/
-
 # Pinned Claude Code CLI installed by make plugin-validate / CI
 /.github/plugin-validate/node_modules/
 
@@ -49,13 +46,3 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
-
-# Terraform (deploy/terraform): local state, providers, and built Lambda
-# artifacts never belong in the repo.
-.terraform/
-.terraform.lock.hcl
-*.tfstate
-*.tfstate.*
-*.tfvars
-*.tfvars.json
-deploy/terraform/build/

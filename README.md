@@ -13,13 +13,38 @@ with a coarse class (`lint`/`test`/`build`/`timeout`/`oom`/`infra`) and shown
 alongside the job's check-run **annotations** — the `file:line` pointers problem
 matchers emit — so you land on the offending line, not in a wall of log.
 
-Around that core it covers the rest of PR and repo hygiene:
+It is one portable binary and a GitHub token. Nothing to deploy, no webhook, no
+account: a standing CI gate fails the build if the binary ever links a cloud
+SDK, a serverless runtime, or a server framework.
+
+## Don't poll CI — be told
+
+`shuck monitor` is a **local background daemon**. Point it at a working tree and
+it follows that tree: it reads the branch out of `.git/HEAD`, finds the open PR
+for it, and re-checks on a cadence that tightens while CI is running. Switch
+branches or worktrees and it retargets itself — you never tell it a PR number.
+
+```sh
+shuck monitor          # what it is watching, and where those PRs stand
+shuck monitor watch    # follow this working tree (starts the daemon if needed)
+shuck monitor events   # hand over what has happened since you last looked
+```
+
+In [Claude Code](#claude-code-plugin) you do not run any of that. The plugin
+registers the session's working tree on start and delivers each new CI failure,
+review comment, and stale action pin into the conversation as it happens — with
+the failing step's logs, or the comment's diff hunk, already in the event. See
+[Background monitor](#background-monitor).
+
+The command set — the monitor above, and everything else one shot, no daemon:
 
 | Command | What it does |
 | --- | --- |
 | `shuck` / `shuck all` | One report: failing CI logs + reviews + security alerts for a PR. |
+| `shuck monitor` | The background monitor: CI, reviews, and pin drift as they happen. |
 | `shuck logs` | Just the failing CI step logs (for a PR or a single Actions run/job). |
 | `shuck reviews` | A PR's reviews and review-comment threads. |
+| `shuck pins` | Workflow actions that are not SHA-pinned, or whose pin has gone stale. |
 | `shuck security` | A repo's security alerts (code scanning, secrets, Dependabot). |
 | `shuck compliance` | Check a repo's live settings against a committed `.github/compliance.yml`. |
 | `shuck dependabot` | Audit `.github/dependabot.yml` against the ecosystems the repo uses. |
@@ -66,6 +91,73 @@ shuck version --check   # query GitHub for the latest release
 shuck upgrade           # download, verify, and replace this binary in place
 ```
 
+## Background monitor
+
+The monitor is the subscription half of shuck: instead of running a command and
+reading a report, you register a working tree once and it tells you what
+changed. Everything is local — no webhook, no server, and no credential beyond
+the `GITHUB_TOKEN` the rest of shuck uses.
+
+```sh
+shuck monitor                    # what is being watched, and where it stands
+shuck monitor watch [target]     # follow something (default: this working tree)
+shuck monitor unwatch [target]   # stop following it
+shuck monitor events             # hand over what has happened since you last looked
+shuck monitor poke [target]      # re-check now, without waiting for the interval
+shuck monitor stop               # shut the monitor down
+shuck monitor log                # print the monitor's own log
+```
+
+A target is a directory, or a pull request — `owner/repo#42`, a PR URL,
+`owner/repo 42`, or a bare number for the local repository. `shuck m` is the
+shorthand. `shuck monitor events` takes `--follow` (keep printing as they
+arrive), `--all` (the whole retained journal), `--wait D` (block for up to `D`
+when nothing is pending), `--limit N`, and `--consumer NAME` — the identity
+whose cursor advances, so two consumers each see every event once.
+
+### What it notices
+
+| Event | What it carries |
+| --- | --- |
+| `ci.failed` | One job went red. Body: the distilled failing-step logs, same as `shuck logs`. |
+| `ci.passed` | Every check on a head commit finished green. Once per commit. |
+| `ci.started` | First sighting of checks for a new head commit — your push registered. |
+| `review.comment` | A new inline comment, with its diff hunk, ±10 lines of the file at the commit it is anchored to, and the thread it replies to. |
+| `review.submitted` | An approval, changes-requested, or comment review, inline comments folded in. |
+| `pr.state` | The PR merged, closed, or moved out of draft. |
+| `pins.stale` | A workflow action that is unpinned or behind its release. Body: the corrected line. |
+| `watch.target` | The watch retargeted itself: a branch switch, a PR found, a PR closed. |
+| `monitor.error` | A poll failed. Reported once, then counted into the backoff. |
+
+One known gap: `ci.passed` is defined but does not fire yet, so a clean run is
+currently something you ask about (`shuck monitor`) rather than something you
+are told — see [docs/PLAN.md](docs/PLAN.md).
+
+Events land in a durable append-only journal under `~/.cache/shuck/monitor/`
+with a cursor per consumer, so restarting the daemon neither replays history
+nor loses a failure that arrived while nobody was looking. Each consumer is
+handed each event once.
+
+### How it paces itself
+
+Every polled pull request carries its own deadline: **12s** while a run is in
+flight, **90s** for an open PR whose checks are all terminal, **5m** once it is
+merged or closed. Poll errors back off exponentially to 15 minutes, and when the
+token's REST quota drops below 500 remaining every interval doubles. Two watches
+that resolve to the same pull request are polled once between them. A branch
+with no open PR is not polled at all — the monitor just re-asks once a minute
+whether one has appeared.
+
+Watches expire after 12 hours nobody has asked about them, and a daemon that
+was started on demand exits once its last watch goes — so nothing keeps polling
+GitHub after your sessions end. One you start yourself (`shuck monitor run`)
+stays up regardless.
+
+Clients are short-lived: one JSON line over a unix socket in a `0700`
+directory (loopback plus a random token where a unix socket is not available),
+one line back, connection closed. A client that finds no daemon starts one,
+detached.
+
 ## Usage
 
 ```sh
@@ -76,8 +168,10 @@ shuck <run-url> | <job-url> # a single GitHub Actions run / job (CI only)
 shuck --watch [target]      # poll until every check finishes, then print the report
 
 # Subcommands (single-letter shorthands in parentheses)
+shuck monitor (m) [watch|events|status|…]       # the background monitor
 shuck logs (l) [target] [--run <id|url>]        # failing CI step logs only
 shuck reviews (r) [target]                      # reviews only
+shuck pins (p) [dir]                            # unpinned / stale workflow actions
 shuck action (a) <owner>/<action>[@<version>]   # SHA-pin a GitHub Action
 shuck image (i) [owner | ghcr.io/owner/name[:tag]]  # list / digest-pin GHCR images
 shuck security (s) [owner/repo | url]           # security alerts
@@ -97,9 +191,9 @@ already downloaded are re-parsed locally instead of re-fetched.
 
 **Exit codes are operational, gating is opt-in**: `0` means the report was
 produced (even if it shows failures), `2` means an operational error. Pass
-`--exit-code` to make failing checks (or open security alerts) exit `1` for CI
-gating. `shuck compliance` is the exception: drift exits `1` by default
-(suppress with `--exit-zero`).
+`--exit-code` to make failing checks (or open security alerts, or unpinned
+actions) exit `1` for CI gating. `shuck compliance` is the exception: drift
+exits `1` by default (suppress with `--exit-zero`).
 
 ### Flags
 
@@ -179,6 +273,9 @@ thing on stdout. Combine with `--exit-code` for a scriptable verdict
 shuck --watch --watch-timeout 30m --json <pr-url>
 ```
 
+For a loop you don't have to sit in front of, use the
+[background monitor](#background-monitor) instead.
+
 ### JSON output
 
 `--json` emits a stable, versioned document for every command, so agents and
@@ -203,6 +300,46 @@ scripts can consume results deterministically:
 
 `schema_version` is bumped only on breaking changes; lists are always present
 (`[]`, never `null`).
+
+## Action pin audit
+
+`shuck pins [dir]` audits a checkout for `uses:` references that are not pinned
+to a commit SHA — `actions/checkout@v4` runs whatever commit that tag points at
+today — and for pins that have fallen behind: a `# v4.2.2` comment naming a
+release that has since been superseded. Both halves matter, and every finding
+comes with the line to paste.
+
+```
+$ shuck pins
+. — action pins
+
+Summary: 12 references — 10 pinned, 1 stale, 1 unpinned
+
+✗ .github/workflows/ci.yml:31  actions/checkout@v4
+    "v4" is a mutable tag — each release re-points it
+    uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v4.2.2
+
+✗ 2 references need attention — 1 unpinned, 1 behind the latest release.
+```
+
+It reads `.github/workflows/*.y{a,}ml`, the repository's own `action.yml`, and
+the manifests under `.github/actions/*/` — so job steps, composite actions, and
+reusable-workflow `jobs.<id>.uses` are all covered. A suggested pin stays on the
+major you chose (`@v4` resolves within 4.x.x); a newer major is mentioned in the
+note, never silently proposed as the fix. Local (`./…`) and `docker://`
+references are reported as skipped, with what to do about them instead.
+
+```sh
+shuck pins                      # audit the current directory
+shuck pins ../other-checkout    # audit somewhere else
+shuck pins --offline            # list the references without resolving releases
+shuck pins --exit-code          # exit 1 on an unpinned or stale reference (CI gating)
+```
+
+Auth is optional for public actions; a token only lifts the unauthenticated rate
+limit. Tag lists are cached for an hour (`--refresh` re-fetches). The background
+monitor runs the same audit against watched trees, re-auditing when the workflow
+files change.
 
 ## Pinning actions and images
 
@@ -344,8 +481,17 @@ stdio server, so any MCP-aware agent can use shuck as typed tool calls:
 | `inspect_security` | A repo's security alerts. |
 | `check_compliance` | Check a repo's settings against its `.github/compliance.yml`. |
 | `audit_dependabot` | Audit a repo's `.github/dependabot.yml` against the ecosystems it uses. |
+| `check_pins` | Find workflow actions that are unpinned or whose SHA pin is stale. |
 | `inspect_action` | Resolve an Action to its latest tag + SHA for pinning. |
 | `inspect_images` | List GHCR images, or resolve one to its digest. |
+| `monitor_status` | What the background monitor is watching, and where those PRs stand. |
+| `monitor_events` | Collect what the monitor noticed; `wait_seconds` blocks until something happens. |
+| `monitor_watch` | Follow a working tree (default) or pin one pull request. |
+| `monitor_unwatch` | Stop following something. |
+
+`monitor_events` with `wait_seconds` is how an agent waits for CI without
+polling: watch the tree, push, then block until the monitor has something to
+say.
 
 Each tool returns the rendered text report **and** the matching stable JSON
 document as structured output. Register it with any MCP client, e.g. in
@@ -358,46 +504,35 @@ document as structured output. Register it with any MCP client, e.g. in
 ## Claude Code plugin
 
 shuck ships as a [Claude Code](https://claude.com/claude-code) plugin: a
-`/shuck` skill, the MCP server above, and a `SessionStart` hook that checks the
-binary and token are present. Install the `shuck` binary first (the plugin runs
-it from your `PATH`), then:
+`/shuck` skill, the MCP server above, and the hooks that wire the background
+monitor into a session. Install the `shuck` binary first (the plugin runs it
+from your `PATH`), then:
 
 ```
 /plugin marketplace add justanotherspy/claude-plugins
 /plugin install shuck@justanotherspy
 ```
 
+The hooks are the whole integration — no polling, no tool call:
+
+| Hook | What it does |
+| --- | --- |
+| `SessionStart` | Checks the binary and token, registers the session's working tree, and fast-forwards the session's cursor so it hears what happens next, not the last hour of history. |
+| `UserPromptSubmit` | Delivers what is new as a `<shuck-monitor>` block. |
+| `PostToolUse` (Bash) | After a `git push` (or `gh pr create` / `gh run rerun` / …) asks the monitor to re-check now instead of at the next interval. |
+| `Stop` | Hands over anything actionable and asks for one more turn rather than finishing on a red build. |
+| `SessionEnd` | Retires the session's cursor. |
+
+All the logic lives in the binary (`shuck monitor hook <event>`); the shell shim
+only exists so a session without shuck installed degrades to silence. Every path
+exits 0 — a background convenience must never be why a prompt is rejected. Opt
+out with `SHUCK_MONITOR_DISABLE=1`, or just the `Stop` hook with
+`SHUCK_MONITOR_NO_STOP=1`.
+
 Prefer not to use the marketplace? `shuck setup` installs the same skill into
 `~/.claude/skills/shuck`, adds a managed note to your `~/.claude/CLAUDE.md`, and
 optionally registers the MCP server at user scope (`--mcp` / `--no-mcp`).
 Re-running is safe; `--dry-run` previews.
-
-## Self-hosted event router (optional)
-
-Everything above is pull-based and needs only a GitHub token. There is also a
-strictly opt-in, self-hosted backend that *pushes* CI failures and review
-events into subscribed Claude Code sessions within seconds (GitHub App →
-webhook ingest → queue → worker → gateway → the `shuck-channel` plugin).
-**Deploying it changes nothing about the CLI/MCP above** — the two modes are
-independent and composable (see the [two-mode
-contract](docs/ARCHITECTURE.md#two-modes)).
-
-Two deploy targets:
-
-- **Serverless (AWS):** one `terraform apply`, idle cost ≈ $0 — see
-  [deploy/terraform/README.md](deploy/terraform/README.md).
-- **Kubernetes:** the Helm chart — see
-  [deploy/helm/shuck/README.md](deploy/helm/shuck/README.md).
-
-**Trust, in one screen:** tokens mint only after GitHub identity +
-org-membership validation and are stored hashed; a token grants event-summary
-subscriptions only, never GitHub access; the sole public endpoint HMAC-verifies
-GitHub before parsing; a daily sweep offboards departed members. Full analysis
-in [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
-
-Architecture and diagrams: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-Operating a deployment: [docs/RUNBOOK.md](docs/RUNBOOK.md). Implementation
-history: [docs/V2.md](docs/V2.md).
 
 ## Development
 
@@ -409,7 +544,9 @@ make lint    # golangci-lint
 make ci      # what CI runs: deps + lint + modernize-check + test + cover-check + build
 ```
 
-Run `make help` for the full target list. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Run `make help` for the full target list. How it all fits together:
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). What's next and what's missing:
+[docs/PLAN.md](docs/PLAN.md). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

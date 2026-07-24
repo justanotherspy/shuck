@@ -81,6 +81,9 @@ func (c *Client) GetPR(ctx context.Context, owner, repo string, number int) (mod
 		HeadSHA:    pr.GetHead().GetSHA(),
 		HeadBranch: pr.GetHead().GetRef(),
 		UpdatedAt:  pr.GetUpdatedAt().Time,
+		State:      pr.GetState(),
+		Draft:      pr.GetDraft(),
+		Merged:     pr.GetMerged(),
 	}, nil
 }
 
