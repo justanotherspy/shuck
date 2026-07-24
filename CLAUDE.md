@@ -248,9 +248,9 @@ what changed as events.
   report on PRs and gates at 80% (`make cover-check`).
 - Every parser of untrusted input is fuzzed: `fuzz_test.go` in `logs`,
   `distil`, `semver`, `action`, `image`, `target`, `compliance`, `dependabot`,
-  `pins`, and `release`. Targets
-  assert semantic invariants (round-trips, selection contracts, fail-closed
-  verification), not just panic-safety. Seed corpora run under `make test`;
+  `pins`, `monitor`, and `release`. Targets assert semantic invariants
+  (round-trips, selection contracts, fail-closed verification), not just
+  panic-safety. Seed corpora run under `make test`;
   the nightly `fuzz.yml` runs `make fuzz-all`. Keep fuzz-target names unique
   module-wide; commit minimized crashers under `testdata/fuzz/<FuzzXxx>/` as
   regression seeds, then fix the bug.

@@ -242,23 +242,28 @@ GitHub changed a field.
 | `watch.target` | a watch retargeted, or explained why it cannot | — |
 | `monitor.error` | a round failed | the error |
 
-One caveat, because an architecture doc that hides a defect is worth less than
-one that names it: **`ci.passed` does not currently fire.** `verdictEvent`
-refuses to speak unless a failed, cancelled, or red non-Actions check has
-registered for the commit — and by then `failureEvents` has already set the
-verdict to `failed`, which is the other thing that silences it. A fully green
-commit takes the "nothing has registered yet" branch instead. Tracked in
-[`docs/PLAN.md`](PLAN.md).
+`ci.passed` deserves a note, because it is inferred rather than read. Nothing
+in the API says a commit is green: `ListJobs` returns only failed, cancelled,
+and running jobs, and `OtherChecks` returns only non-Actions checks that have
+already gone red. So the pass is deduced from having watched checks run and
+then stop — `prState.Announced` records that this commit had jobs in flight,
+and the round that finds none left, none failed, and no red external check is
+the round they all passed. A commit whose checks were already finished when the
+watch began stays silent, which is correct: it is a fact, not news. The
+consequence to know about is the converse — a watch started mid-run reports the
+verdict, one started after the run does not.
 
 Every event carries an id, a time, the watch and target it came from, a
 one-line `Title`, an optional `Body`, and a URL. `Title` is enough to decide
 whether to care; `Body` is enough to act without a follow-up call. That split is
 what lets a consumer show a digest and expand on demand.
 
-Each kind maps to a severity: `ci.failed`, `review.comment`, `review.submitted`,
-`pins.stale` and `monitor.error` are **action**, everything else is **info**.
-Only the Stop hook currently reads it, and it is the difference between "your
-build is red" holding a turn open and "your build is green" not.
+Each kind maps to a severity: `ci.failed`, `review.comment`, `review.submitted`
+and `pins.stale` are **action**, everything else — including `monitor.error` —
+is **info**. Only the Stop hook currently reads it, and it is the difference
+between "your build is red" holding a turn open and "your build is green" not.
+`monitor.error` is deliberately on the quiet side of that line: a failed poll is
+the monitor's problem, and a network blip must not hold a finished turn open.
 
 Repeat suppression lives in the per-target state: reported job keys, reported
 review and comment ids (bounded at 200 each — they exist to suppress duplicates
@@ -270,7 +275,7 @@ identical failures; the rest lengthen the backoff instead of filling the feed.
 
 ```
 events.jsonl   append-only, one Event per line, id-ordered
-               rotated to the newest 2000 events, rewritten atomically
+               trimmed to the newest 1500 past 2000, rewritten atomically
 cursors.json   { "<consumer>": <last delivered id>, … }
 ```
 
@@ -422,7 +427,9 @@ either the previous contents or the new ones, never half of each — the daemon
 rewrites on a tick while clients read at will.
 
 The inspection caches are TTL'd and swept on every run (`cache.Purge`). The
-journal is bounded at 2000 events; history older than that belongs in the pull
+journal is bounded at 2000 events (rotation trims back to 1500, so a
+rewrite happens once every few hundred appends rather than on every one);
+history older than that belongs in the pull
 request, not here.
 
 ## Security and privacy

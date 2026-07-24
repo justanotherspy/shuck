@@ -19,13 +19,14 @@ shipped and no longer tracked here.
 The monitor (`internal/monitor`) is new. These are its honest edges, not
 theoretical ones:
 
-- **`ci.passed` does not fire.** `poller.verdictEvent` will not report the
-  all-green verdict unless a failed, cancelled, or red non-Actions check has
-  registered for the commit — and any of those has already set the verdict to
-  `failed`, which is the other condition that silences it. A fully green commit
-  takes the "nothing has registered yet" branch and says nothing. Until it is
-  fixed, "CI finished and it is fine" is only visible by asking
-  (`shuck monitor status` / `monitor_status`), not by being told.
+- **A green verdict is inferred, so it needs a witness.** Nothing in the API
+  says a commit passed — the jobs listing returns only what failed, was
+  cancelled, or is still running. `ci.passed` is deduced from having watched
+  checks run and then stop, so a watch that starts *after* a run has finished
+  reports nothing about it. That is the right default (a finished run is not
+  news), but it means "is it green?" for a commit you did not watch is a
+  question to ask (`shuck monitor status` / `monitor_status`), not something
+  you will be told.
 - **No progress while something is in flight.** `shuck --watch` prints progress
   to stderr as it polls; the monitor has no equivalent. Between "checks
   running" and the next terminal event there is nothing to see, and

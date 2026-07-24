@@ -39,8 +39,9 @@ the same GitHub token the rest of shuck uses.
 Point it at a working tree and it follows that tree: it reads the branch out of
 `.git/HEAD` (worktrees included), finds the open PR for that branch, and
 re-checks on a cadence that tightens while CI is running (12s) and relaxes when
-the PR is idle (90s) or dormant (5m — a merged or closed PR, or a branch with no
-PR). Switch branches, switch worktrees, or open a PR for the branch you are on,
+the PR is idle (90s) or dormant (5m, once it is merged or closed). A branch with
+no open PR is not polled at all — the monitor just re-asks once a minute whether
+one has appeared. Switch branches, switch worktrees, or open a PR for the branch you are on,
 and it **retargets itself** — you never tell it a PR number. Two watches that
 land on the same PR are polled once between them.
 
@@ -662,7 +663,7 @@ shuck action --json github/codeql-action/init@v3
 ```
 
 Auth is optional for public repos; a token lifts the unauthenticated rate limit.
-Tags are cached for a day; `--refresh` re-fetches. To check a whole checkout at
+Tags are cached for an hour; `--refresh` re-fetches. To check a whole checkout at
 once rather than one reference, use `shuck pins` above.
 
 ## Pinning GHCR images to digests

@@ -129,9 +129,11 @@ whose cursor advances, so two consumers each see every event once.
 | `watch.target` | The watch retargeted itself: a branch switch, a PR found, a PR closed. |
 | `monitor.error` | A poll failed. Reported once, then counted into the backoff. |
 
-One known gap: `ci.passed` is defined but does not fire yet, so a clean run is
-currently something you ask about (`shuck monitor`) rather than something you
-are told — see [docs/PLAN.md](docs/PLAN.md).
+Nothing in the GitHub API says a commit is green — the jobs listing returns only
+what failed, was cancelled, or is still running — so `ci.passed` is inferred
+from having watched checks run and then stop. A commit whose checks had already
+finished when the watch began stays silent: that is a fact about the past, not
+news.
 
 Events land in a durable append-only journal under `~/.cache/shuck/monitor/`
 with a cursor per consumer, so restarting the daemon neither replays history
