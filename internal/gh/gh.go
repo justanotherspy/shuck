@@ -51,37 +51,10 @@ func New(token string) *Client {
 	}
 }
 
-// NewEnterprise builds a client like New but pointed at a non-public GitHub
-// API base URL (a GHES instance, or an httptest server in tests). The URL is
-// normalized by go-github's enterprise rules (an "/api/v3/" suffix is added
-// unless the host already looks like an API host). An empty base falls back
-// to New. Used by the v2 worker so its GitHub calls are configurable and
-// testable; the CLI keeps calling New.
-func NewEnterprise(token, baseURL string) (*Client, error) {
-	if baseURL == "" {
-		return New(token), nil
-	}
-	opts := []github.ClientOptionsFunc{github.WithEnterpriseURLs(baseURL, baseURL)}
-	if token != "" {
-		opts = append(opts, github.WithAuthToken(token))
-	}
-	gc, err := github.NewClient(opts...)
-	if err != nil {
-		return nil, fmt.Errorf("build GitHub client for %q: %w", baseURL, err)
-	}
-	return &Client{
-		gh:          gc,
-		http:        &http.Client{Timeout: 60 * time.Second},
-		token:       token,
-		graphqlURL:  graphQLEndpoint,
-		registryURL: registryHost,
-	}, nil
-}
-
 // RateRemaining reports the core REST rate limit's remaining and total
 // quota. The /rate_limit endpoint does not count against the quota, so this
-// is a free observability probe (the v2 worker exports it as a gauge — all
-// installations share one App quota).
+// is a free probe — the background monitor reads it to pace its polling and
+// to show headroom in `shuck monitor status`.
 func (c *Client) RateRemaining(ctx context.Context) (remaining, limit int, err error) {
 	rl, _, err := c.gh.RateLimit.Get(ctx)
 	if err != nil {

@@ -18,10 +18,6 @@
 - name: plugin
   color: 8250df
   description: Claude Code plugins (plugins/*)
-- name: deploy
-  color: 1d76db
-  description: Self-hosted backend deployment (deploy/*)
-
 # --- release-drafter categories ---
 - name: feature
   color: 0e8a16

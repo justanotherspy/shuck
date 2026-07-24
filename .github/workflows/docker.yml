@@ -10,12 +10,9 @@ name: Docker
 #     release.yml also gates the image publish behind the same "release"
 #     environment approval as goreleaser.
 #
-# The matrix builds five images: the portable CLI (ghcr.io/<owner>/shuck,
-# root Dockerfile — unchanged) and the four self-hosted backend binaries
-# (ghcr.io/<owner>/shuck-{ingest,worker,gateway,portal}, Dockerfile.backend
-# parameterized by COMPONENT; JUS-93). Note: the first push of a new package
-# creates it PRIVATE on GHCR — making it public is a one-time manual step in
-# the package settings.
+# One image is built: the portable CLI (ghcr.io/<owner>/shuck, root
+# Dockerfile). Note: the first push of a new package creates it PRIVATE on
+# GHCR — making it public is a one-time manual step in the package settings.
 #
 # Pushed images are cosign-signed (keyless) and get an SLSA build-provenance
 # attestation.
@@ -42,19 +39,6 @@ jobs:
         include:
           - image: shuck
             dockerfile: Dockerfile
-            component: ""
-          - image: shuck-ingest
-            dockerfile: Dockerfile.backend
-            component: ingest
-          - image: shuck-worker
-            dockerfile: Dockerfile.backend
-            component: worker
-          - image: shuck-gateway
-            dockerfile: Dockerfile.backend
-            component: gateway
-          - image: shuck-portal
-            dockerfile: Dockerfile.backend
-            component: portal
     env:
       IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
     permissions:
@@ -107,17 +91,12 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # COMPONENT is only declared by Dockerfile.backend; the CLI image's
-          # Dockerfile takes VERSION/COMMIT/DATE alone.
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
             COMMIT=${{ github.sha }}
             DATE=${{ steps.date.outputs.date }}
-            ${{ matrix.component != '' && format('COMPONENT={0}', matrix.component) || '' }}
           provenance: ${{ github.event_name != 'pull_request' }}
           sbom: ${{ github.event_name != 'pull_request' }}
-          # Per-image cache scopes: the five builds share layers only via
-          # their own scope, so mode=max writes don't evict each other.
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: ${{ github.event_name != 'pull_request' && format('type=gha,mode=max,scope={0}', matrix.image) || '' }}
 

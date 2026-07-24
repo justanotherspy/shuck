@@ -55,13 +55,13 @@ BENCHFILE   ?= bench-new.txt
 PROFPKG     ?= ./internal/logs
 PROFILE_DIR ?= profiles
 
-# Coverage filter & threshold. main.go and the cmd/ entrypoints are thin
-# mains with no unit tests, so they are dropped from coverage.out — the
-# numbers (and the gate below) reflect the internal/ packages only.
+# Coverage filter & threshold. main.go is a thin entrypoint with no unit
+# tests, so it is dropped from coverage.out — the numbers (and the gate below)
+# reflect the internal/ packages only.
 # COVER_EXCLUDE is an extended regexp matched against coverage.out paths;
 # COVER_THRESHOLD is the minimum total coverage percentage `make cover-check`
 # accepts (CI fails below it).
-COVER_EXCLUDE   ?= ^github\.com/justanotherspy/shuck/(main\.go:|cmd/)
+COVER_EXCLUDE   ?= ^github\.com/justanotherspy/shuck/main\.go:
 COVER_THRESHOLD ?= 80
 
 # ==============================================================================
@@ -195,38 +195,7 @@ plugin-validate: ## Validate the plugin + marketplace manifests (requires the cl
 	@command -v claude >/dev/null 2>&1 || { \
 		echo ">> claude CLI not found; install with: npm install -g @anthropic-ai/claude-code"; exit 1; }
 	claude plugin validate --strict ./plugins/shuck
-	claude plugin validate --strict ./plugins/shuck-channel
 	claude plugin validate --strict .claude-plugin/marketplace.json
-
-.PHONY: shim-check
-shim-check: ## Typecheck + test the channel shim plugin (requires bun)
-	@command -v bun >/dev/null 2>&1 || { \
-		echo ">> bun not found; install from https://bun.sh"; exit 1; }
-	cd plugins/shuck-channel && bun install --frozen-lockfile && bun run typecheck && bun test
-
-.PHONY: helm-check
-helm-check: ## Lint + template the deploy/helm/shuck chart (requires helm)
-	@command -v helm >/dev/null 2>&1 || { \
-		echo ">> helm not found; install from https://helm.sh/docs/intro/install/"; exit 1; }
-	helm lint deploy/helm/shuck
-	helm template shuck deploy/helm/shuck --kube-version 1.33.0 \
-		-f deploy/helm/shuck/ci/smoke-values.yaml >/dev/null
-	helm template shuck deploy/helm/shuck --kube-version 1.33.0 \
-		-f deploy/helm/shuck/ci/smoke-values.yaml \
-		-f deploy/helm/shuck/ci/combo-values.yaml >/dev/null
-	helm template shuck deploy/helm/shuck --kube-version 1.33.0 \
-		-f deploy/helm/shuck/ci/smoke-values.yaml \
-		--set observability.enabled=true \
-		--set observability.serviceMonitor.enabled=true \
-		--set observability.podMonitor.enabled=true >/dev/null
-
-.PHONY: terraform-check
-terraform-check: ## fmt-check + validate the deploy/terraform module (requires terraform)
-	@command -v terraform >/dev/null 2>&1 || { \
-		echo ">> terraform not found; install from https://developer.hashicorp.com/terraform/install"; exit 1; }
-	terraform -chdir=deploy/terraform fmt -check -recursive
-	terraform -chdir=deploy/terraform init -backend=false -input=false >/dev/null
-	terraform -chdir=deploy/terraform validate
 
 # ---- Tests ------------------------------------------------------------------
 # Drop excluded files from the profile in place, preserving the leading
@@ -340,18 +309,10 @@ pprof-mem: ## Open the memory profile in the pprof web UI
 	$(GO) tool pprof -http=: $(PROFILE_DIR)/mem.prof
 
 # ---- Build / run ------------------------------------------------------------
-# Backend mains carry their own version string (main.version), stamped the
-# same way the CLI's internal/cli.version is.
-BACKEND_LDFLAGS := -s -w -X main.version=$(VERSION)
-
 .PHONY: build
-build: ## Build the binaries into ./bin (shuck + the self-hosted ingest, gateway, worker & portal)
+build: ## Build ./bin/shuck
 	@mkdir -p $(BIN_DIR)
 	$(GO) build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/$(BINARY) $(MAIN_PKG)
-	$(GO) build -trimpath -ldflags '$(BACKEND_LDFLAGS)' -o $(BIN_DIR)/shuck-ingest ./cmd/shuck-ingest
-	$(GO) build -trimpath -ldflags '$(BACKEND_LDFLAGS)' -o $(BIN_DIR)/shuck-gateway ./cmd/shuck-gateway
-	$(GO) build -trimpath -ldflags '$(BACKEND_LDFLAGS)' -o $(BIN_DIR)/shuck-worker ./cmd/shuck-worker
-	$(GO) build -trimpath -ldflags '$(BACKEND_LDFLAGS)' -o $(BIN_DIR)/shuck-portal ./cmd/shuck-portal
 
 .PHONY: install
 install: ## go install the binary
