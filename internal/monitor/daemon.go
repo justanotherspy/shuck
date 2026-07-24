@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/justanotherspy/shuck/internal/gh"
 	"github.com/justanotherspy/shuck/internal/logs"
 	"github.com/justanotherspy/shuck/internal/pins"
 )
@@ -159,6 +160,18 @@ func (d *Daemon) serve(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// A round polls GitHub without the lock and can sit in a call for as long
+	// as the network takes. Folding the stop signal into the context is what
+	// makes `shuck monitor stop` immediate rather than "immediate once the
+	// current call returns".
+	go func() {
+		select {
+		case <-d.stop:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
 	go d.accept(ctx, ln, ep.Token)
 
 	ticker := time.NewTicker(tick)
@@ -188,13 +201,14 @@ func (d *Daemon) round(ctx context.Context, now time.Time) bool {
 	d.expire(now)
 
 	for _, st := range d.due(now) {
+		if d.stopping(ctx) {
+			return false
+		}
 		updated, events := d.poller.Poll(ctx, st, now)
 		d.store(updated, events)
-		select {
-		case <-ctx.Done():
-			return false
-		default:
-		}
+	}
+	if d.stopping(ctx) {
+		return false
 	}
 	d.auditPins(ctx, now)
 
@@ -202,6 +216,20 @@ func (d *Daemon) round(ctx context.Context, now time.Time) bool {
 	empty := d.watches.Len() == 0
 	d.mu.Unlock()
 	return empty && d.opts.ExitWhenIdle
+}
+
+// stopping reports whether the daemon is on its way down, so a round with
+// several targets to poll gives up between them instead of working through the
+// list after someone asked it to stop.
+func (d *Daemon) stopping(ctx context.Context) bool {
+	select {
+	case <-ctx.Done():
+		return true
+	case <-d.stop:
+		return true
+	default:
+		return false
+	}
 }
 
 // retarget re-reads every tree watch's working directory and follows it. This
@@ -229,7 +257,7 @@ func (d *Daemon) retargetOne(ctx context.Context, w Watch, now time.Time) {
 	checkout, err := ReadCheckout(w.Path)
 	if err != nil {
 		d.updateWatch(w.ID, func(cur *Watch) []Event {
-			return d.setNote(cur, err.Error(), now)
+			return d.setNote(cur, KindError, err.Error(), now)
 		})
 		return
 	}
@@ -237,7 +265,7 @@ func (d *Daemon) retargetOne(ctx context.Context, w Watch, now time.Time) {
 		d.updateWatch(w.ID, func(cur *Watch) []Event {
 			cur.Owner, cur.Repo, cur.Branch = checkout.Owner, checkout.Repo, ""
 			cur.Number = 0
-			return d.setNote(cur, "HEAD is detached; no branch to match a PR against", now)
+			return d.setNote(cur, KindTarget, "HEAD is detached; no branch to match a PR against", now)
 		})
 		return
 	}
@@ -259,11 +287,20 @@ func (d *Daemon) retargetOne(ctx context.Context, w Watch, now time.Time) {
 
 		if findErr != nil {
 			cur.Number = 0
+			// A branch with no PR yet and a lookup that failed are opposite
+			// situations: the first is the normal state of a branch you have
+			// not opened a PR for, the second means the monitor cannot do its
+			// job. Reporting the second as the first would send someone
+			// looking for a PR instead of at their token.
+			if !errors.Is(findErr, gh.ErrNoOpenPR) {
+				return d.setNote(cur, KindError,
+					fmt.Sprintf("could not look up the PR for %s: %v", checkout.Branch, findErr), now)
+			}
 			note := fmt.Sprintf("no open PR for %s", checkout.Branch)
 			if !moved && cur.Note == note {
 				return nil
 			}
-			return d.setNote(cur, note, now)
+			return d.setNote(cur, KindTarget, note, now)
 		}
 
 		cur.Note = ""
@@ -293,15 +330,17 @@ func targetChangeTitle(previous string, w Watch) string {
 
 // setNote records why a watch is not resolving to a PR, emitting an event only
 // when the reason changes — a detached HEAD should say so once, not once a
-// second.
-func (d *Daemon) setNote(w *Watch, note string, now time.Time) []Event {
+// second. The kind separates the two reasons a watch can be stuck: a branch
+// with no PR is just how things are (watch.target), while a lookup that failed
+// is a problem the monitor cannot fix on its own (monitor.error).
+func (d *Daemon) setNote(w *Watch, kind Kind, note string, now time.Time) []Event {
 	if w.Note == note {
 		return nil
 	}
 	w.Note = note
 	return []Event{{
 		Time:   now,
-		Kind:   KindTarget,
+		Kind:   kind,
 		Watch:  w.ID,
 		Target: w.Target(),
 		Title:  fmt.Sprintf("%s: %s", w.Path, note),
@@ -368,9 +407,20 @@ func (d *Daemon) due(now time.Time) []prState {
 }
 
 // store writes a completed poll's state back and journals its events.
+//
+// A poll runs without the lock — it is network-bound and must not block the
+// whole daemon — so anything that happened to this target while it was in
+// flight is sitting in the stored state, and a blind overwrite would lose it.
+// The one thing that actually changes mid-poll is the deadline: a poke asks
+// for an immediate re-check, and a result that arrives afterwards must not
+// push that back to its own leisurely interval.
 func (d *Daemon) store(st prState, events []Event) {
 	d.mu.Lock()
-	if _, ok := d.targets[st.Target]; ok {
+	if existing, ok := d.targets[st.Target]; ok {
+		if existing.NextPoll.Before(st.NextPoll) {
+			st.NextPoll = existing.NextPoll
+			st.Failures = existing.Failures
+		}
 		d.targets[st.Target] = &st
 		d.saveTargetsLocked()
 	}

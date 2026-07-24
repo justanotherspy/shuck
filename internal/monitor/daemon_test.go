@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/justanotherspy/shuck/internal/gh"
 	"github.com/justanotherspy/shuck/internal/model"
 )
 
@@ -87,7 +89,7 @@ func TestDaemonRetargetIsCheapWhenNothingMoved(t *testing.T) {
 // branch with no PR must not ask GitHub every second whether one appeared.
 func TestDaemonUnresolvedWatchBacksOff(t *testing.T) {
 	c := newFakeClient()
-	c.openPRErr = errors.New("no open PR found")
+	c.openPRErr = fmt.Errorf("%w: %q", gh.ErrNoOpenPR, "feature")
 	d, _ := newTestDaemon(t, c)
 
 	dir := treeAt(t, "feature")
@@ -113,6 +115,74 @@ func TestDaemonUnresolvedWatchBacksOff(t *testing.T) {
 	}
 	if targetEvents != 1 {
 		t.Errorf("%d watch.target events for one unchanging situation, want 1", targetEvents)
+	}
+}
+
+// TestDaemonLookupFailureIsNotReportedAsNoPR is a bug this found in the wild:
+// a token that cannot see the repository produced "no open PR for <branch>",
+// which sends you looking for a pull request instead of at your token.
+func TestDaemonLookupFailureIsNotReportedAsNoPR(t *testing.T) {
+	c := newFakeClient()
+	c.openPRErr = errors.New("403 GitHub access is not enabled for this session")
+	d, _ := newTestDaemon(t, c)
+
+	dir := treeAt(t, "feature")
+	d.watches.Add(Watch{ID: TreeWatchID(dir), Kind: WatchTree, Path: dir})
+	d.retarget(context.Background(), now)
+
+	events := d.journal.Since(0, 0)
+	if len(events) != 1 {
+		t.Fatalf("%d events, want 1", len(events))
+	}
+	if events[0].Kind != KindError {
+		t.Errorf("Kind = %q, want %q — a failed lookup is a problem, not a fact about the branch", events[0].Kind, KindError)
+	}
+	if strings.Contains(events[0].Title, "no open PR") {
+		t.Errorf("title = %q, want it to name the real failure", events[0].Title)
+	}
+	if !strings.Contains(events[0].Title, "403") {
+		t.Errorf("title = %q, want it to carry the underlying error", events[0].Title)
+	}
+}
+
+// TestDaemonPokeSurvivesAnInFlightPoll covers a race a review probe found: a
+// poke that lands while its target is mid-poll was overwritten by the poll's
+// own, much later, deadline — so the push you just made waited out a full
+// interval anyway.
+func TestDaemonPokeSurvivesAnInFlightPoll(t *testing.T) {
+	d, _ := newTestDaemon(t, newFakeClient())
+	d.watches.Add(Watch{ID: "pr:o/r#7", Kind: WatchPR, Owner: "o", Repo: "r", Number: 7})
+
+	due := d.due(time.Now())
+	if len(due) != 1 {
+		t.Fatalf("%d targets due, want 1", len(due))
+	}
+	inFlight := due[0]
+
+	// A client pokes while that poll is still running.
+	d.handlePoke(Request{Op: OpPoke})
+
+	// The poll finishes and stores the deadline it computed.
+	inFlight.NextPoll = time.Now().Add(IdleInterval)
+	d.store(inFlight, nil)
+
+	if got := d.targets["o/r#7"].NextPoll; got.After(time.Now().Add(time.Second)) {
+		t.Errorf("next poll in %v — the poke was lost to the in-flight poll's result", time.Until(got))
+	}
+}
+
+// TestDaemonRoundStopsWhenAskedTo covers the other half of that probe: a round
+// working through several targets must give up when someone asks the daemon to
+// stop, rather than finishing the list first.
+func TestDaemonRoundStopsWhenAskedTo(t *testing.T) {
+	d, _ := newTestDaemon(t, newFakeClient())
+	d.watches.Add(Watch{ID: "pr:o/r#7", Kind: WatchPR, Owner: "o", Repo: "r", Number: 7})
+	d.Shutdown()
+
+	d.round(context.Background(), time.Now())
+
+	if len(d.journal.Since(0, 0)) != 0 {
+		t.Error("a round after Shutdown should not have polled anything")
 	}
 }
 

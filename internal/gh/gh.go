@@ -98,7 +98,16 @@ func (c *Client) DefaultBranchSHA(ctx context.Context, owner, repo string) (stri
 	return sha, nil
 }
 
+// ErrNoOpenPR reports that a branch simply has no open pull request. It is
+// distinguished from every other failure of FindOpenPR because the two mean
+// opposite things to a caller: "there is nothing to watch yet" is the normal
+// state of a branch nobody has opened a PR for, while "the lookup failed" is a
+// problem — a bad token, a repository you cannot see — and reporting the second
+// as the first sends people looking in the wrong place.
+var ErrNoOpenPR = errors.New("no open pull request for this branch")
+
 // FindOpenPR returns the number of the open PR whose head is headOwner:branch.
+// It returns an error wrapping ErrNoOpenPR when there is no such PR.
 func (c *Client) FindOpenPR(ctx context.Context, owner, repo, headOwner, branch string) (int, error) {
 	opts := &github.PullRequestListOptions{
 		State:       "open",
@@ -110,7 +119,7 @@ func (c *Client) FindOpenPR(ctx context.Context, owner, repo, headOwner, branch 
 		return 0, fmt.Errorf("list PRs for %s/%s head %s:%s: %w", owner, repo, headOwner, branch, err)
 	}
 	if len(prs) == 0 {
-		return 0, fmt.Errorf("no open PR found for branch %q in %s/%s", branch, owner, repo)
+		return 0, fmt.Errorf("%w: %q in %s/%s", ErrNoOpenPR, branch, owner, repo)
 	}
 	return prs[0].GetNumber(), nil
 }
