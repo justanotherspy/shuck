@@ -1,3 +1,0 @@
-go test fuzz v1
-string("workflow_run")
-string("{\"ACtion\":\"completed\",\"repositorY\":{\"full_nAme\":\"0\"},\"workflow_run\":{\"ConClusion\":\"failure\",\"pull_requests\":[{}]}}")

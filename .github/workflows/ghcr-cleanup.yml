@@ -2,10 +2,9 @@ name: GHCR Cleanup
 
 # Prune old container images from GHCR. docker.yml pushes a new `sha-<short>`
 # tag (plus its signature/attestation referrers and untagged multi-arch
-# children) on every push to main — for the CLI image and the four backend
-# images (JUS-93) — so each package grows without bound.
+# children) on every push to main, so the package grows without bound.
 #
-# Retention policy (identical for every package):
+# Retention policy:
 #   - `edge`, `latest`, and the semver release tags are never touched
 #     (only `sha-*` tags are deletion candidates).
 #   - The 2 most recent `sha-*` builds are kept for rollback headroom.
@@ -45,10 +44,6 @@ jobs:
       matrix:
         package:
           - shuck
-          - shuck-ingest
-          - shuck-worker
-          - shuck-gateway
-          - shuck-portal
     permissions:
       packages: write # delete GHCR package versions
     steps:

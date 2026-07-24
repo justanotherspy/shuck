@@ -229,6 +229,8 @@ func newServer() *mcp.Server {
 		Annotations: annotations,
 	}, inspectImages)
 
+	registerMonitorTools(s, annotations)
+
 	return s
 }
 

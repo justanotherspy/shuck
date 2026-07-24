@@ -4,40 +4,54 @@ Guidance for agents working in this repository.
 
 ## What this is
 
-`shuck` is a Go CLI + MCP server + Claude Code plugin that prints the exact
-failing CI step logs for a GitHub PR. It also summarizes PR reviews, lists a
-repo's security alerts, checks live repo settings against a committed
+`shuck` is one portable Go binary — a CLI, an MCP server, and a Claude Code
+plugin — that prints the exact failing CI step logs for a GitHub PR. Its
+centrepiece is `shuck monitor`: a local background daemon that follows the
+working trees you are in, tracks whichever PR the current branch belongs to,
+and turns new CI failures, review comments, and stale action pins into events a
+session is handed as they happen. On demand it also summarizes PR reviews,
+lists a repo's security alerts, checks live repo settings against a committed
 compliance policy, audits a repo's Dependabot config against the ecosystems it
-uses, and SHA-pins GitHub Actions / GHCR images. Results are cached under
-`~/.cache/shuck`.
+uses, audits workflow action pins, and SHA-pins GitHub Actions / GHCR images.
+State lives under `~/.cache/shuck`.
 
-The v2 self-hosted event router (JUS-84) is tracked in `docs/V2.md`. It is
-strictly opt-in: the portable CLI/MCP + GitHub-token mode above stays the
-default, the two modes work independently (and compose), and v2 work must
-never change or break the existing CLI/MCP behaviour — see the compatibility
-contract in that doc.
+There is nothing to deploy: no server, no webhook, no credential beyond the
+GitHub token. `ci.yml` holds a standing portability budget — a step that fails
+the build if the binary's import graph ever picks up a cloud SDK, a serverless
+runtime, or a server framework. If a feature seems to need one, it belongs
+outside shuck.
 
 ## Dogfood shuck
 
 This repo bakes its own tool in for agents: the `shuck` skill
-(`.claude/skills/shuck/`), the `shuck` MCP server (`.mcp.json` → `shuck mcp`,
-tools `inspect_logs` / `inspect_reviews` / `inspect_security` /
-`check_compliance` / `audit_dependabot` / `inspect_action` / `inspect_images`),
-and — in dev environments — the `shuck` binary on PATH. **When a PR's CI fails
-(here or in
-any repo), reach for shuck before raw GitHub API calls or the Actions UI:**
+(`.claude/skills/shuck/`), the plugin's monitor hooks, the `shuck` MCP server
+(`.mcp.json` → `shuck mcp`, tools `inspect_logs` / `inspect_reviews` /
+`inspect_security` / `check_compliance` / `audit_dependabot` / `check_pins` /
+`inspect_action` / `inspect_images` / `monitor_status` / `monitor_events` /
+`monitor_watch` / `monitor_unwatch`), and — in dev environments — the `shuck`
+binary on PATH.
+
+**The loop here is that the monitor watches and you get told.** The plugin
+registers this working tree at `SessionStart`, so after you push you do not
+poll: the next CI failure arrives in the conversation as a `<shuck-monitor>`
+block, with the failing step's logs already in it. To wait for a verdict
+deliberately, call `monitor_events` with `wait_seconds` rather than sleeping and
+re-checking. `monitor_status` answers "is my PR green?" without spending a
+fetch.
+
+**When you do want to pull something yourself — here or in any repo — reach for
+shuck before raw GitHub API calls or the Actions UI:**
 
 ```sh
 shuck logs <owner>/<repo> <pr>   # the exact failing step logs
 shuck <pr>                       # CI + reviews + security for a PR
-shuck --watch <pr>               # poll until CI finishes, then report
+shuck pins                       # unpinned / stale workflow actions
+shuck monitor                    # what the monitor is watching, and where it stands
 ```
 
 If the binary is not on PATH, build it (`make build`, then `./bin/shuck`) or
 install a release (`curl -fsSL https://raw.githubusercontent.com/justanotherspy/shuck/main/install.sh | bash`).
 
-After you push a PR here, watch it with `shuck --watch` and fix CI from its
-output — that loop is both the fastest feedback and the best test of the tool.
 When shuck's output falls short of what you needed to debug something, that is
 a finding: record it in `docs/PLAN.md` (the agent-feedback roadmap) or open an
 issue.
@@ -68,7 +82,7 @@ Run `make help` for the full list. The essentials:
 
 ```sh
 make tools           # install the pinned dev tools (lint, releaser, gopls…)
-make build           # build ./bin/shuck (+ ./bin/shuck-ingest)
+make build           # build ./bin/shuck
 make test            # go test -race + coverage (coverage.out; main.go excluded)
 make lint            # golangci-lint run
 make fmt             # gofmt + goimports via golangci-lint
@@ -81,21 +95,24 @@ make ci              # exactly what CI runs
 
 `make fix` / `fix-check` alias `modernize` / `modernize-check`. Also there:
 `vet`, `tidy`, `bench`, `profile` / `pprof-cpu` / `pprof-mem`, `docker-build`,
-`snapshot` (local goreleaser), `hooks` (pre-commit), and the deploy-surface
-gates `shim-check`, `terraform-check`, and `helm-check` (each mirrors its own
-CI job; `make ci` stays Go-only).
+`snapshot` (local goreleaser), and `hooks` (pre-commit).
 
 ## Architecture
 
-Pipeline: resolve target → load/validate cache → fetch checks (cheap metadata)
-→ drill only new failed/cancelled jobs for logs → parse → extract errors →
-render → update cache.
+Two ways in, one engine. **On demand** (the CLI / MCP tools): resolve target →
+load/validate cache → fetch checks (cheap metadata) → drill only new
+failed/cancelled jobs for logs → parse → extract errors → render → update
+cache. **By subscription** (`shuck monitor`): a local daemon runs the same
+fetch-and-distil steps on a timer for the working trees it follows, and emits
+what changed as events.
 
 | Package | Responsibility |
 | --- | --- |
 | `main.go` | Thin entry: dispatches `mcp` and `setup`, else `cli.Run`. Holds the `go:embed` of the plugin's `SKILL.md`. |
-| `internal/cli` | Flag parsing + orchestration. Subcommands: `logs`, `reviews`, `all` (the bare-`shuck` default), `action`, `image`, `security`, `compliance` (+ `discover`), `dependabot` (+ `discover`, `fix`), `version`, `upgrade`; single-letter aliases via `subcommandAliases`. The exported cores (`Inspect`, `Security`, `Compliance`, `ComplianceDiscover`, `Dependabot`, `DependabotDiscover`, `DependabotFix`, `Action`, `Image`, `Images`) back both the CLI and the MCP server. |
-| `internal/mcp` | Stdio MCP server (`shuck mcp`): a thin typed front-end over the `cli` cores. |
+| `internal/cli` | Flag parsing + orchestration. Subcommands: `logs`, `reviews`, `all` (the bare-`shuck` default), `monitor`, `pins`, `action`, `image`, `security`, `compliance` (+ `discover`), `dependabot` (+ `discover`, `fix`), `version`, `upgrade`; single-letter aliases via `subcommandAliases` (`m` = monitor, `p` = pins). The exported cores (`Inspect`, `Security`, `Compliance`, `ComplianceDiscover`, `Dependabot`, `DependabotDiscover`, `DependabotFix`, `Action`, `Image`, `Images`, `Pins`) back both the CLI and the MCP server. `monitor.go` is a thin client over the daemon; `pins.go` also builds the cache-backed `pins.Resolver` the daemon is handed. |
+| `internal/monitor` | The background monitor (`shuck monitor`): a local daemon that follows working trees, resolves each to its open PR, polls GitHub on an adaptive cadence, and publishes events. `git.go` reads a tree's repo + branch (worktrees included, no git library); `watch.go` the watch set; `poll.go` one target's round; `event.go` the event model + agent-facing rendering; `journal.go` the durable JSONL log + per-consumer cursors; `protocol.go`/`server.go`/`client.go` the one-line-JSON local IPC; `hook.go` the Claude Code hook entry points; `pins.go` the per-tree workflow pin audit. |
+| `internal/pins` | `shuck pins` / `check_pins`: find the `uses:` references in a checkout's workflow and action files (`WorkflowFiles` → `Scan`, a schema-free `yaml.Node` walk keyed on any mapping key spelled `uses`) and classify each against its action's latest release (`Audit`, via a caller-supplied `Resolver`) into pinned / stale / unpinned / skipped, each finding carrying the corrected line. `Render` + `Document` are the text and stable-JSON views. Pure and offline-testable. |
+| `internal/mcp` | Stdio MCP server (`shuck mcp`): a thin typed front-end over the `cli` cores (`mcp.go`) plus the monitor and pin tools (`monitor.go`: `monitor_status` / `monitor_events` / `monitor_watch` / `monitor_unwatch` / `check_pins`). |
 | `internal/jsonout` | The stable, versioned `--json` schema. Its view types are deliberately separate from `model` so internal refactors don't break consumers. |
 | `internal/action` | `shuck action`: pick the latest semver tag matching an `owner/action[@version]` ref (stable preferred, prerelease fallback; `Select`) → SHA-pin line / JSON (`action.Document`). |
 | `internal/image` | `shuck image`: resolve a GHCR image ref's latest matching tag + manifest digest (`Select`) → digest-pin line / JSON (`image.Document` / `ListDocument`). |
@@ -106,21 +123,10 @@ render → update cache.
 | `internal/release` | Self-update: resolve the latest release, download + checksum-verify, replace the binary. Backs `version --check` / `upgrade`. |
 | `internal/setup` | `shuck setup`: install the embedded skill to `~/.claude/skills/shuck`, add a managed CLAUDE.md note, optionally register the MCP at user scope. |
 | `internal/target` | Resolve owner/repo/PR from args or the local repo (go-git). |
-| `internal/gh` | go-github (v89) wrappers: PR head, Actions runs/jobs/logs, checks, security alerts, compliance reads (repo settings, branch protection incl. rulesets, Actions policy), the recursive Git Trees file listing (`RepoTree`, for dependabot ecosystem detection), GHCR Packages API. Plus two hand-rolled clients: GraphQL for reviews (`reviews.go`) and anonymous OCI registry-v2 (`registry.go`). |
+| `internal/gh` | go-github (v89) wrappers: PR head (`GetPR`), open-PR lookup by branch (`FindOpenPR`), Actions runs/jobs/logs, checks, the free `RateRemaining` quota probe, security alerts, compliance reads (repo settings, branch protection incl. rulesets, Actions policy), the recursive Git Trees file listing (`RepoTree`, for dependabot ecosystem detection), GHCR Packages API. Plus two hand-rolled clients: GraphQL for reviews (`reviews.go`) and anonymous OCI registry-v2 (`registry.go`). `reviewcomments.go` is the REST review feed the monitor polls (`PRReviewsSince`, `PRReviewCommentsSince`, `PRCommentThread`). |
 | `internal/cache` | On-disk cache under `~/.cache/shuck/…`: per-PR reports + whole raw job logs, action tag lists, security reports, image listings. `Purge(ttl, keep)` sweeps stale entries on every run. |
 | `internal/logs` | Parse a job log into `##[group]`-delimited sections; extract the high-signal error excerpt. |
-| `internal/distil` | The shared distillation core (`CIFailure`): raw job log + Actions-API step metadata → per-step failure detail (`FailedSteps`) + an agent-ready `Summary`. `CapSummary` byte-budgets a summary for delivery (UTF-8-safe line-prefix cut + caller's truncation note). `ReviewComment` / `Review` (JUS-91) format review events for the v2 worker only (goldens under `testdata/review/`); the CLI's reviews view is a separate GraphQL path. Pure — layers on `logs` / `classify` / `model`; backs `cli`/`mcp` and the v2 worker. |
-| `internal/ingest` | v2 self-hosted webhook ingest core (JUS-86): constant-time HMAC verify, delivery-GUID dedupe, event→envelope filter (`ci_failure` / `pr_closed` / `review_comment` / `review`), subscription pre-filter (`DynamoSubscriptionChecker` behind `SHUCK_SUBSCRIPTION_TABLE`; allow-all when unset), and the versioned queue `Envelope` contract workers consume. Pure — AWS adapters (DynamoDB dedupe + subscription checker, SQS enqueue) live in `ingest/awsx`; the Lambda adapter is the shared `internal/lambdahttp`. Only `cmd/shuck-ingest` links them, never the `shuck` binary. |
-| `cmd/shuck-ingest` | The self-hosted ingest binary: one `ingest.Handler` served as a plain HTTP server or a Lambda (auto-detected), env-configured. Opt-in backend only. |
-| `internal/gateway` | v2 self-hosted gateway core (JUS-88): WS termination + token auth, subscriptions, write-then-push event buffer, and the versioned `/internal/deliver` contract (`DeliverRequest`, `X-Shuck-Deliver-Secret`, event_id dedupe) workers produce into. `gateway/serverless` (JUS-92) runs the same protocol and stores as per-invocation Lambda handlers behind an API Gateway WebSocket API: hello-frame auth, durable connection registry, in-band `unauthorized`/`replaced` control frames (API GW can't send close codes), drain pushes via `@connections`. Pure — DynamoDB + management-API adapters in `gateway/awsx`; only `cmd/shuck-gateway` links them (server mode, or Lambda role dispatch via `SHUCK_WS_ROLE`). |
-| `internal/worker` | v2 worker core (JUS-87 + JUS-91): consume an `ingest.Envelope` → mint a cached GitHub App installation token (`AppTokenSource`, RS256 App JWT) → fetch the run's failed/cancelled jobs + logs (`GHFetcher` over `gh`) → `distil.CIFailure` per job → `distil.CapSummary` → deliver to the gateway (`HTTPDeliverer`, 5xx retry; `event_id` = delivery GUID so redeliveries dedupe). `pr_closed` passes straight through, no fetch. Review arms (`review.go` / `fetchreview.go`): `review_comment` / `review` envelopes via `distil.ReviewComment` / `Review`, the standalone-wrapper dedupe rule, the `IgnoreAuthors` bot guard, `ErrGone` consume-on-deleted. Pure — AWS adapters (SQS consumer, Lambda SQS entrypoint, S3 raw-log store) live in `worker/awsx`; only `cmd/shuck-worker` links them, never the `shuck` binary. |
-| `cmd/shuck-worker` | The self-hosted worker binary: one `worker.Processor` run as an SQS poll loop or an SQS-event Lambda (auto-detected), env-configured (incl. `SHUCK_IGNORE_AUTHORS`, `SHUCK_REVIEW_CONTEXT_LINES`, `SHUCK_SUMMARY_LIMIT`). Opt-in backend only. |
-| `internal/portal` | v2 token portal core (JUS-90): the self-service web app that mints gateway tokens. Optional generic OIDC gate (`coreos/go-oidc`) → GitHub App user-authorization flow (state-bound; no PKCE — GitHub Apps don't support it) → org-membership / account-ownership validation (`worker.AppTokenSource` + `gh.OrgMember`; an API error is "unknown", never a refusal or a revoke) → `shk_`-prefixed crypto/rand token shown once (only `gateway.HashToken` stored; regenerate = one atomic revoke+mint `Replace`). HMAC-cookie sessions (strict base64, fail-closed), CSRF on mint, daily re-validation `Sweeper` revoking departed members, embedded `html/template` pages, audit slog by token hash. Pure — DynamoDB adapter in `portal/awsx`; only `cmd/shuck-portal` links it, never the `shuck` binary. |
-| `cmd/shuck-portal` | The self-hosted portal binary: env-configured HTTP server (org XOR personal-account validation mode) or Lambda (auto-detected; `SHUCK_PORTAL_ROLE=sweep` for scheduled re-validation); `shuck-portal sweep` runs one re-validation pass and exits for cron scheduling. Opt-in backend only. |
-| `internal/lambdahttp` | Adapts an `http.Handler` to Lambda function-URL / API GW v2 events — the shared Lambda-mode plumbing for ingest, the gateway deliver role, and the portal. Backend-only; never linked by the root binary. |
-| `deploy/terraform` | JUS-92 serverless deployment target: one `terraform apply` deploys the whole opt-in backend (4 DynamoDB tables, SQS+DLQ, lifecycle bucket, 7 Lambdas, WS + HTTP APIs, EventBridge sweeps, per-function IAM; secrets generated in-stack and env-injected). `make terraform-check` gates fmt+validate — its own CI job; `make ci` stays Go-only. |
-| `deploy/helm/shuck` | JUS-93 Kubernetes deployment target: the resident binaries (gateway server, worker poll loop, portal + sweep CronJob, in-cluster or lambda-mode ingest) with split public/private ingress, a worker-before-ingest deploy-order initContainer gate, and opt-in HPA/KEDA/NetworkPolicy/ExternalSecrets; per-component IRSA ServiceAccounts. Backend images build from `Dockerfile.backend` via the `docker.yml` matrix (`ghcr.io/justanotherspy/shuck-<component>`); releases also push the chart to `oci://ghcr.io/justanotherspy/charts/shuck`. `make helm-check` gates lint+template and a kind smoke job installs it — their own CI jobs; `make ci` stays Go-only. |
-| `internal/promexpo` | v2 opt-in metrics (JUS-96): a dependency-free Prometheus text-exposition writer + `/metrics` handler + `SHUCK_METRICS_ADDR` listener. Each backend `Metrics` type exposes `Snapshot() []promexpo.Sample`; the resident binaries serve it when the env var is set. Stdlib-only, never linked by the root binary. |
+| `internal/distil` | The shared distillation core (`CIFailure`): raw job log + Actions-API step metadata → per-step failure detail (`FailedSteps`) + an agent-ready `Summary`. `CapSummary` byte-budgets a summary for delivery (UTF-8-safe line-prefix cut + caller's truncation note) — used for event bodies and for the text a hook injects. `ReviewComment` / `Review` format a review event for the monitor (goldens under `testdata/review/`); the CLI's reviews view is a separate GraphQL path. Pure — layers on `logs` / `classify` / `model`; backs `cli`, `mcp`, and `monitor`. |
 | `internal/render` | Format a `model.Report` to text. |
 | `internal/model` | Shared domain types (imports nothing internal). |
 
@@ -154,6 +160,46 @@ render → update cache.
   groups by verdict, collapses resolved/outdated threads to one line, and caps
   comments at `--review-comment-limit`. A cheap `gh.ReviewsFingerprint`
   short-circuits the full pull when nothing changed.
+- **The monitor follows trees, not PR numbers**: a tree watch re-reads
+  `.git/HEAD` every tick (`monitor.ReadCheckout`, worktree `gitdir:` pointer and
+  shared `commondir` included) and re-resolves through `gh.FindOpenPR` when the
+  checkout moves — or once a `ResolveInterval` while a branch still has no PR.
+  Watches are what you register; *targets* (`owner/repo#42`) are what gets
+  polled, so two watches on one PR cost one poll (a watch with no PR number is
+  skipped by `due` entirely). Cadence per target: `ActiveInterval` 12s while a
+  run is in flight, `IdleInterval` 90s when terminal, `DormantInterval` 5m once
+  merged/closed, exponential `backoff` to `MaxBackoff` on errors, everything
+  doubled below `LowRateThreshold` remaining REST quota.
+- **A poll round is cheap first, expensive last**: `GetPR` → `ListJobs` +
+  `OtherChecks` → `JobLog` **only** for jobs whose `<id>/<attempt>` is not
+  already in `ReportedJobs`, since downloading a log is the one genuinely
+  expensive call. The review half leads with the one-query
+  `gh.ReviewsFingerprint`; while it is unchanged the REST listings are never
+  issued. A first sighting records high-water marks and reports nothing — a PR's
+  existing history is not news.
+- **The journal is the delivery contract**: events are appended to
+  `~/.cache/shuck/monitor/events.jsonl` with per-consumer cursors in
+  `cursors.json`, so a daemon restart neither replays history nor loses a
+  failure. `Drain` advances the cursor as it hands events over, which makes
+  delivery **at-most-once per consumer** on purpose: repeating a CI failure into
+  a session that already acted on it is worse than missing the tail of a batch
+  nobody read. `Peek` (the Stop hook) reads without advancing.
+- **Hooks may never cost a session anything**: every path in `monitor.RunHook`
+  writes nothing and exits 0 — no daemon, no token, a malformed payload, an
+  unknown event. The Stop hook stands down the instant `stop_hook_active` is
+  set (that is what keeps it from looping), blocks only on `SeverityAction`
+  events, and seeks past what it hands over. `SHUCK_MONITOR_DISABLE` /
+  `SHUCK_MONITOR_NO_STOP` opt out.
+- **Pin audit is repo-driven and ref-driven**: the checkout's own files are the
+  source of truth (`.github/workflows/*.y{a,}ml`, the root `action.y{a,}ml`,
+  `.github/actions/*/action.y{a,}ml`), walked as `yaml.Node` so line numbers and
+  trailing comments are exact and any mapping key spelled `uses` matches — job
+  steps, composite actions, and reusable-workflow `jobs.<id>.uses` alike.
+  Whether a reference is unpinned is a property of the ref, **not** of whether
+  resolution succeeded: a resolver failure costs the finding its suggested fix,
+  never the finding. A suggested pin stays on the major the author chose (`@v4`
+  → newest 4.x.x); a newer major goes in the note. A file that will not parse is
+  one skipped finding, not an aborted audit.
 - **Soft degradation, never false results**: security sources and compliance
   reads degrade independently (404 ⇒ disabled, 403 ⇒ forbidden/skipped); an
   unreadable setting is a *skipped* check, never a false pass or fail. Merge
@@ -201,10 +247,10 @@ render → update cache.
   (`COVER_EXCLUDE`) — the numbers reflect `internal/` only. CI renders the
   report on PRs and gates at 80% (`make cover-check`).
 - Every parser of untrusted input is fuzzed: `fuzz_test.go` in `logs`,
-  `distil`, `semver`, `action`, `image`, `target`, `compliance`, and
-  `release`. Targets
-  assert semantic invariants (round-trips, selection contracts, fail-closed
-  verification), not just panic-safety. Seed corpora run under `make test`;
+  `distil`, `semver`, `action`, `image`, `target`, `compliance`, `dependabot`,
+  `pins`, `monitor`, and `release`. Targets assert semantic invariants
+  (round-trips, selection contracts, fail-closed verification), not just
+  panic-safety. Seed corpora run under `make test`;
   the nightly `fuzz.yml` runs `make fuzz-all`. Keep fuzz-target names unique
   module-wide; commit minimized crashers under `testdata/fuzz/<FuzzXxx>/` as
   regression seeds, then fix the bug.
@@ -217,10 +263,11 @@ render → update cache.
   keyless signature over `checksums.txt`, SPDX SBOMs, SLSA provenance, and the
   Homebrew cask push. Versioning is `git describe`-derived (injected into
   `internal/cli.version`); there is no `VERSION` file.
-- `docker.yml` builds/pushes a multi-arch GHCR image (cosign-signed): `:edge`
-  + `:sha-*` on pushes to main, semver tags + `:latest` via a `workflow_call`
-  from `release.yml` (a `release:` trigger would never fire — token-created
-  events don't trigger workflows).
+- `docker.yml` builds/pushes the single multi-arch GHCR image
+  (`ghcr.io/justanotherspy/shuck`, cosign-signed): `:edge` + `:sha-*` on pushes
+  to main, semver tags + `:latest` via a `workflow_call` from `release.yml` (a
+  `release:` trigger would never fire — token-created events don't trigger
+  workflows).
 - `ghcr-cleanup.yml` prunes GHCR weekly: only `sha-*` tags (keeping the 2
   newest) and untagged orphans are candidates; `edge` / `latest` / semver tags
   are never touched.

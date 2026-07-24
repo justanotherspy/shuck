@@ -51,37 +51,10 @@ func New(token string) *Client {
 	}
 }
 
-// NewEnterprise builds a client like New but pointed at a non-public GitHub
-// API base URL (a GHES instance, or an httptest server in tests). The URL is
-// normalized by go-github's enterprise rules (an "/api/v3/" suffix is added
-// unless the host already looks like an API host). An empty base falls back
-// to New. Used by the v2 worker so its GitHub calls are configurable and
-// testable; the CLI keeps calling New.
-func NewEnterprise(token, baseURL string) (*Client, error) {
-	if baseURL == "" {
-		return New(token), nil
-	}
-	opts := []github.ClientOptionsFunc{github.WithEnterpriseURLs(baseURL, baseURL)}
-	if token != "" {
-		opts = append(opts, github.WithAuthToken(token))
-	}
-	gc, err := github.NewClient(opts...)
-	if err != nil {
-		return nil, fmt.Errorf("build GitHub client for %q: %w", baseURL, err)
-	}
-	return &Client{
-		gh:          gc,
-		http:        &http.Client{Timeout: 60 * time.Second},
-		token:       token,
-		graphqlURL:  graphQLEndpoint,
-		registryURL: registryHost,
-	}, nil
-}
-
 // RateRemaining reports the core REST rate limit's remaining and total
 // quota. The /rate_limit endpoint does not count against the quota, so this
-// is a free observability probe (the v2 worker exports it as a gauge — all
-// installations share one App quota).
+// is a free probe — the background monitor reads it to pace its polling and
+// to show headroom in `shuck monitor status`.
 func (c *Client) RateRemaining(ctx context.Context) (remaining, limit int, err error) {
 	rl, _, err := c.gh.RateLimit.Get(ctx)
 	if err != nil {
@@ -108,6 +81,9 @@ func (c *Client) GetPR(ctx context.Context, owner, repo string, number int) (mod
 		HeadSHA:    pr.GetHead().GetSHA(),
 		HeadBranch: pr.GetHead().GetRef(),
 		UpdatedAt:  pr.GetUpdatedAt().Time,
+		State:      pr.GetState(),
+		Draft:      pr.GetDraft(),
+		Merged:     pr.GetMerged(),
 	}, nil
 }
 
@@ -122,7 +98,16 @@ func (c *Client) DefaultBranchSHA(ctx context.Context, owner, repo string) (stri
 	return sha, nil
 }
 
+// ErrNoOpenPR reports that a branch simply has no open pull request. It is
+// distinguished from every other failure of FindOpenPR because the two mean
+// opposite things to a caller: "there is nothing to watch yet" is the normal
+// state of a branch nobody has opened a PR for, while "the lookup failed" is a
+// problem — a bad token, a repository you cannot see — and reporting the second
+// as the first sends people looking in the wrong place.
+var ErrNoOpenPR = errors.New("no open pull request for this branch")
+
 // FindOpenPR returns the number of the open PR whose head is headOwner:branch.
+// It returns an error wrapping ErrNoOpenPR when there is no such PR.
 func (c *Client) FindOpenPR(ctx context.Context, owner, repo, headOwner, branch string) (int, error) {
 	opts := &github.PullRequestListOptions{
 		State:       "open",
@@ -134,7 +119,7 @@ func (c *Client) FindOpenPR(ctx context.Context, owner, repo, headOwner, branch 
 		return 0, fmt.Errorf("list PRs for %s/%s head %s:%s: %w", owner, repo, headOwner, branch, err)
 	}
 	if len(prs) == 0 {
-		return 0, fmt.Errorf("no open PR found for branch %q in %s/%s", branch, owner, repo)
+		return 0, fmt.Errorf("%w: %q in %s/%s", ErrNoOpenPR, branch, owner, repo)
 	}
 	return prs[0].GetNumber(), nil
 }
