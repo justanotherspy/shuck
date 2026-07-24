@@ -92,6 +92,17 @@ type prState struct {
 	// ReportedReviews is the same guard for submitted reviews.
 	ReportedReviews []int64 `json:"reported_reviews,omitempty"`
 
+	// Running records that the last round saw jobs still in flight. The
+	// cadence keys off it rather than off Verdict, because a PR with no CI at
+	// all also has no verdict, and pacing that at the active interval would
+	// poll a dormant branch every twelve seconds for as long as it is watched.
+	Running bool `json:"running,omitempty"`
+	// Poked marks a deadline a client brought forward. A poll running at the
+	// time computes its own, much later, deadline and would otherwise put the
+	// poke straight back — so the flag survives the round and the store
+	// honors it.
+	Poked bool `json:"poked,omitempty"`
+
 	// NextPoll and Failures drive the cadence. Failures backs an exponential
 	// backoff so a PR that has been deleted, or a token that has expired, stops
 	// costing a request every twelve seconds.
@@ -100,6 +111,9 @@ type prState struct {
 	LastPolled time.Time `json:"last_polled,omitzero"`
 	// LastError is the most recent poll failure, kept for `monitor status`.
 	LastError string `json:"last_error,omitempty"`
+	// Unreferenced is when the last watch stopped pointing at this target;
+	// zero while one still does. See Daemon.pruneTargets.
+	Unreferenced time.Time `json:"unreferenced,omitzero"`
 }
 
 // maxRemembered bounds the "already reported" lists. They exist to suppress
@@ -186,8 +200,8 @@ func (p *poller) interval(ctx context.Context, st prState, pr model.PR) time.Dur
 	switch {
 	case pr.Lifecycle() == "merged" || pr.Lifecycle() == "closed":
 		d = DormantInterval
-	case st.Verdict == "":
-		// Checks are still running (or none have registered yet).
+	case st.Running:
+		// Something is in flight, and the answer changes every few seconds.
 		d = ActiveInterval
 	default:
 		d = IdleInterval
@@ -231,6 +245,7 @@ func (p *poller) ciEvents(ctx context.Context, st *prState, pr model.PR, now tim
 		st.HeadSHA = pr.HeadSHA
 		st.Announced = false
 		st.Verdict = ""
+		st.Running = false
 		st.ReportedJobs = nil
 	}
 
@@ -239,6 +254,14 @@ func (p *poller) ciEvents(ctx context.Context, st *prState, pr model.PR, now tim
 		p.logf("list jobs for %s: %v", st.Target, err)
 		return nil
 	}
+	// Jobs in flight on a commit that already has a verdict means a re-run:
+	// the previous conclusion is no longer the answer, so the commit is open
+	// for judgement again. Without this a job re-run after a failure could
+	// never report the pass that followed it.
+	if len(running) > 0 && st.Verdict != "" {
+		st.Verdict = ""
+	}
+	st.Running = len(running) > 0
 	// OtherChecks reports only non-Actions checks that have completed and
 	// failed — a pending external check is invisible to it, so the verdict is
 	// about the Actions jobs plus whatever non-Actions checks have already
@@ -401,37 +424,42 @@ func (p *poller) reviewEvents(ctx context.Context, st *prState, pr model.PR, now
 		p.logf("reviews fingerprint for %s: %v", st.Target, err)
 		return nil
 	}
-	first := st.ReviewFingerprint == ""
 	if fingerprint == st.ReviewFingerprint {
 		return nil
 	}
-	st.ReviewFingerprint = fingerprint
 
-	if first {
+	if st.ReviewFingerprint == "" {
 		// The first sighting of a PR is not a hundred new comments; it is the
 		// state of the world. Record the high-water marks and report from here.
+		st.ReviewFingerprint = fingerprint
 		st.ReviewsSince = now
 		st.CommentsSince = now
 		return nil
 	}
 
-	var events []Event
-	events = append(events, p.submittedReviewEvents(ctx, st, now)...)
-	events = append(events, p.commentEvents(ctx, st, pr, now)...)
-	return events
+	reviews, reviewsOK := p.submittedReviewEvents(ctx, st, now)
+	comments, commentsOK := p.commentEvents(ctx, st, pr, now)
+
+	// The fingerprint is the gate that stops the REST listings from running on
+	// every poll, so it may only advance once they have actually run. Advancing
+	// it after a failed fetch would close the gate on a review nobody ever
+	// heard about.
+	if reviewsOK && commentsOK {
+		st.ReviewFingerprint = fingerprint
+	}
+	return append(reviews, comments...)
 }
 
 // submittedReviewEvents reports reviews submitted since the last round. A
 // review is reported as one event with its inline comments folded in, rather
 // than as a verdict plus N comments, because that is how a human would read it.
-func (p *poller) submittedReviewEvents(ctx context.Context, st *prState, now time.Time) []Event {
+func (p *poller) submittedReviewEvents(ctx context.Context, st *prState, now time.Time) (events []Event, ok bool) {
 	reviews, err := p.client.PRReviewsSince(ctx, st.Owner, st.Repo, st.Number, st.ReviewsSince)
 	if err != nil {
 		p.logf("reviews for %s: %v", st.Target, err)
-		return nil
+		return nil, false
 	}
 	seen := newInt64Set(st.ReportedReviews)
-	var events []Event
 	for _, rv := range reviews {
 		if seen.has(rv.ID) {
 			continue
@@ -461,21 +489,20 @@ func (p *poller) submittedReviewEvents(ctx context.Context, st *prState, now tim
 		})
 	}
 	st.ReportedReviews = seen.slice()
-	return events
+	return events, true
 }
 
 // commentEvents reports inline review comments left since the last round, each
 // with the diff hunk it is anchored to and the surrounding lines of the file at
 // the PR head — so acting on a comment does not need a round trip to read the
 // code it is about.
-func (p *poller) commentEvents(ctx context.Context, st *prState, pr model.PR, now time.Time) []Event {
+func (p *poller) commentEvents(ctx context.Context, st *prState, pr model.PR, now time.Time) (events []Event, ok bool) {
 	comments, err := p.client.PRReviewCommentsSince(ctx, st.Owner, st.Repo, st.Number, st.CommentsSince)
 	if err != nil {
 		p.logf("review comments for %s: %v", st.Target, err)
-		return nil
+		return nil, false
 	}
 	seen := newInt64Set(st.ReportedComments)
-	var events []Event
 	for _, rc := range comments {
 		if seen.has(rc.ID) {
 			continue
@@ -489,7 +516,7 @@ func (p *poller) commentEvents(ctx context.Context, st *prState, pr model.PR, no
 		}
 	}
 	st.ReportedComments = seen.slice()
-	return events
+	return events, true
 }
 
 // commentEvent distills one review comment, gathering the thread it replies to

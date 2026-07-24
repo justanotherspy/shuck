@@ -63,11 +63,10 @@ type hookInput struct {
 	ToolInput json.RawMessage `json:"tool_input"`
 }
 
-// hookOutput is what shuck writes back. The Stop decision is emitted both at
-// the top level and inside hookSpecificOutput: the two shapes have both been
-// current, unknown fields are ignored by the reader, and a monitor that is
-// wrong about which one this build wants is a monitor that silently stops
-// working.
+// hookOutput is what shuck writes back: a top-level decision for Stop, and
+// hookSpecificOutput for the hooks that inject context. The two never carry the
+// same text — emitting a Stop reason in both places risks it being injected
+// twice, and one copy of a CI failure is enough.
 type hookOutput struct {
 	Decision string           `json:"decision,omitempty"`
 	Reason   string           `json:"reason,omitempty"`
@@ -78,7 +77,6 @@ type hookOutput struct {
 type hookSpecificOut struct {
 	HookEventName     string `json:"hookEventName"`
 	AdditionalContext string `json:"additionalContext,omitempty"`
-	Decision          string `json:"decision,omitempty"`
 }
 
 // hookEventNames maps shuck's hook subcommands to the names Claude Code uses in
@@ -180,11 +178,30 @@ func hookSessionStart(ctx context.Context, c *Client, in hookInput) *hookOutput 
 			"The shuck background monitor is not running (%v). CI and review feedback will "+
 				"not arrive on its own; use `shuck <pr>` or the shuck MCP tools when you need it.", err))
 	}
-	if _, err := c.Seek(ctx, in.SessionID); err != nil {
-		return nil
+	// Fast-forward only for a session that is genuinely starting. SessionStart
+	// also fires on resume and on compaction, and seeking then would throw
+	// away events the ongoing conversation has not been shown yet — the exact
+	// moment a CI failure is most likely to be waiting.
+	if in.SessionID != "" && isNewSession(in.Source) {
+		if _, err := c.Seek(ctx, in.SessionID); err != nil {
+			return nil
+		}
 	}
 
 	return context_(HookSessionStart, sessionStartContext(ctx, c, watch))
+}
+
+// isNewSession reports whether a SessionStart is a fresh conversation rather
+// than a resumed or compacted one. An unfamiliar source is treated as fresh:
+// the alternative is replaying an hour of another session's CI into a new one,
+// which is the worse mistake of the two.
+func isNewSession(source string) bool {
+	switch source {
+	case "resume", "compact":
+		return false
+	default:
+		return true
+	}
 }
 
 // sessionStartContext words the one paragraph a session gets at startup: what
@@ -236,6 +253,12 @@ func otherTargets(st *Status, w *Watch) string {
 // looked. It is the hook that makes the whole thing feel live: no polling, no
 // tool call, the news simply arrives with the next thing the user says.
 func hookUserPrompt(ctx context.Context, c *Client, in hookInput) *hookOutput {
+	if in.SessionID == "" {
+		// Without an identity there is no cursor, and a cursorless read hands
+		// over the whole journal — every prompt, forever. A payload shuck
+		// cannot identify is one it stays out of.
+		return nil
+	}
 	c.AutoStart = false // a prompt is not the moment to start a daemon
 	events, _, err := c.Events(ctx, Request{Consumer: in.SessionID})
 	if err != nil || len(events) == 0 {
@@ -276,7 +299,7 @@ func hookPostToolUse(ctx context.Context, c *Client, in hookInput) *hookOutput {
 // peeks rather than drains, so events it decides not to act on are still there
 // for the next prompt.
 func hookStop(ctx context.Context, c *Client, in hookInput) *hookOutput {
-	if in.StopHookActive || os.Getenv("SHUCK_MONITOR_NO_STOP") != "" {
+	if in.StopHookActive || in.SessionID == "" || os.Getenv("SHUCK_MONITOR_NO_STOP") != "" {
 		return nil
 	}
 	c.AutoStart = false
@@ -285,44 +308,38 @@ func hookStop(ctx context.Context, c *Client, in hookInput) *hookOutput {
 	if err != nil || len(events) == 0 {
 		return nil
 	}
-	actionable := make([]Event, 0, len(events))
-	for _, e := range events {
-		if e.Severity() == SeverityAction {
-			actionable = append(actionable, e)
-		}
-	}
-	if len(actionable) == 0 {
+	if countActionable(events) == 0 {
+		// Nothing here wants doing. Leave every event pending — the peek did
+		// not consume them — and let the turn end.
 		return nil
 	}
 
-	// Consume everything up to and including what we are about to hand over,
-	// so the next prompt does not deliver it again.
+	// Hand over the whole batch, not just the actionable part. The
+	// informational events are the context that makes the actionable ones
+	// make sense: a failure followed by a passing re-run reads very
+	// differently from the failure alone, and consuming the pass while
+	// delivering only the failure would be worse than saying nothing.
 	if _, err := c.Do(ctx, Request{Op: OpSeek, Consumer: in.SessionID, Since: events[len(events)-1].ID}); err != nil {
 		return nil
 	}
 
-	reason := capFeed(FormatFeed(actionable) +
-		"\n\nAct on this before finishing: fix what is broken and push, or reply to the reviewer. " +
-		"If it is genuinely not yours to fix, say so and stop.")
-	return &hookOutput{
-		Decision: "block",
-		Reason:   reason,
-		Specific: &hookSpecificOut{
-			HookEventName:     hookEventNames[HookStop],
-			AdditionalContext: reason,
-			Decision:          "block",
-		},
-	}
+	// The instruction goes first: capFeed trims from the end, and the thing
+	// that must survive truncation is what the agent is being asked to do.
+	reason := "Before finishing: act on what the monitor reports below — fix what is broken " +
+		"and push, or reply to the reviewer. If it is genuinely not yours to fix, say so and stop.\n\n" +
+		FormatFeed(events)
+	return &hookOutput{Decision: "block", Reason: capFeed(reason)}
 }
 
 // hookSessionEnd retires the session's cursor. It is a courtesy — cursors are
 // pruned as they age out of the journal anyway — but it keeps the state file
 // honest for anyone reading it.
 func hookSessionEnd(ctx context.Context, c *Client, in hookInput) *hookOutput {
-	c.AutoStart = false
-	if in.SessionID != "" {
-		_, _ = c.Seek(ctx, in.SessionID)
+	if in.SessionID == "" {
+		return nil
 	}
+	c.AutoStart = false
+	_, _ = c.Seek(ctx, in.SessionID)
 	return nil
 }
 

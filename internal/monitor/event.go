@@ -59,9 +59,13 @@ const (
 // Severity reports how much the event demands of its reader.
 func (k Kind) Severity() Severity {
 	switch k {
-	case KindCIFailed, KindReviewComment, KindReviewSubmitted, KindPinsStale, KindError:
+	case KindCIFailed, KindReviewComment, KindReviewSubmitted, KindPinsStale:
 		return SeverityAction
 	default:
+		// KindError is deliberately informational. A failed poll is worth
+		// knowing about, but it is the monitor's problem, not the agent's:
+		// making it actionable would let a network blip hold a finished turn
+		// open and tell the agent to go fix something it did not break.
 		return SeverityInfo
 	}
 }

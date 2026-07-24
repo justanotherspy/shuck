@@ -249,7 +249,7 @@ func (d *Daemon) retarget(ctx context.Context, now time.Time) {
 	for _, w := range trees {
 		d.retargetOne(ctx, w, now)
 	}
-	d.pruneTargets()
+	d.pruneTargets(now)
 }
 
 // retargetOne resolves one tree watch and records any change as an event.
@@ -373,7 +373,7 @@ func (d *Daemon) expire(now time.Time) {
 		d.logf("watch %s expired after %s idle", w.ID, d.opts.WatchTTL)
 	}
 	if len(dropped) > 0 {
-		d.pruneTargets()
+		d.pruneTargets(now)
 	}
 }
 
@@ -397,9 +397,12 @@ func (d *Daemon) due(now time.Time) []prState {
 		if st.NextPoll.After(now) {
 			continue
 		}
-		// Claim the slot now so a long poll does not queue up behind itself on
-		// the next tick.
+		// Claim the slot so a long poll does not queue up behind itself on the
+		// next tick. The real deadline comes from the poll's own result; this
+		// is only a placeholder, which is why store() decides what to keep by
+		// the Poked flag rather than by comparing the two.
 		st.NextPoll = now.Add(ActiveInterval)
+		st.Poked = false
 		out = append(out, *st)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Target < out[j].Target })
@@ -415,23 +418,34 @@ func (d *Daemon) due(now time.Time) []prState {
 // for an immediate re-check, and a result that arrives afterwards must not
 // push that back to its own leisurely interval.
 func (d *Daemon) store(st prState, events []Event) {
+	// Journal first. Either order has a crash window; this one can at worst
+	// report an event twice after a crash, while storing first would lose it
+	// outright with the state claiming it had been reported.
+	d.publish(events)
+
 	d.mu.Lock()
 	if existing, ok := d.targets[st.Target]; ok {
-		if existing.NextPoll.Before(st.NextPoll) {
+		if existing.Poked {
 			st.NextPoll = existing.NextPoll
-			st.Failures = existing.Failures
+			st.Failures = 0
+			st.Poked = false
 		}
 		d.targets[st.Target] = &st
 		d.saveTargetsLocked()
 	}
 	d.mu.Unlock()
-
-	d.publish(events)
 }
 
 // pruneTargets drops poll state for targets no watch points at any more, so a
 // session that moves through ten branches does not leave ten pollers behind.
-func (d *Daemon) pruneTargets() {
+//
+// It waits out TargetGrace first. A watch loses its PR number for two very
+// different reasons: you switched branches, or the lookup failed once. Dropping
+// the state on the second would forget which jobs had already been reported and
+// which review comments had already been delivered — so the next successful
+// resolution would replay the whole failure into a session that had already
+// acted on it. Waiting a few minutes costs a stale map entry and nothing else.
+func (d *Daemon) pruneTargets(now time.Time) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -442,8 +456,20 @@ func (d *Daemon) pruneTargets() {
 		}
 	}
 	changed := false
-	for key := range d.targets {
-		if !live[key] {
+	for key, st := range d.targets {
+		if live[key] {
+			if !st.Unreferenced.IsZero() {
+				st.Unreferenced = time.Time{}
+				changed = true
+			}
+			continue
+		}
+		if st.Unreferenced.IsZero() {
+			st.Unreferenced = now
+			changed = true
+			continue
+		}
+		if now.Sub(st.Unreferenced) > TargetGrace {
 			delete(d.targets, key)
 			changed = true
 		}

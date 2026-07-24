@@ -71,6 +71,17 @@ const (
 // nothing. A checkout that moves is re-resolved immediately regardless.
 const ResolveInterval = time.Minute
 
+// MaxWait caps how long a blocking events read may hold a connection and a
+// goroutine open. Waiting for CI is the point of the call, but the ceiling is
+// the daemon's to set: a client that asks for a day gets ten minutes and can
+// ask again.
+const MaxWait = 10 * time.Minute
+
+// TargetGrace is how long a target's poll state survives after the last watch
+// stops pointing at it. It exists so a single failed PR lookup does not throw
+// away what has already been reported — see Daemon.pruneTargets.
+const TargetGrace = 5 * time.Minute
+
 // DefaultWatchTTL is how long a watch survives without any client asking about
 // it. A laptop left closed overnight should not still be polling GitHub in the
 // morning: sessions come and go, and a watch nobody has looked at in half a day

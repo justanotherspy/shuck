@@ -90,10 +90,24 @@ func (d *Daemon) accept(ctx context.Context, ln net.Listener, token string) {
 	}()
 	for {
 		conn, err := ln.Accept()
-		if err != nil {
+		if err == nil {
+			go d.handleConn(ctx, conn, token)
+			continue
+		}
+		// A closed listener is the shutdown path and the loop is done. A
+		// transient failure — the process momentarily out of file descriptors,
+		// say — is not: giving up on it would leave a bound socket nobody
+		// serves, which is worse than any single dropped connection because it
+		// also blocks the next daemon from taking over.
+		if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
 			return
 		}
-		go d.handleConn(ctx, conn, token)
+		d.logf("accept: %v", err)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(50 * time.Millisecond):
+		}
 	}
 }
 
@@ -125,7 +139,7 @@ func (d *Daemon) handleConn(ctx context.Context, conn net.Conn, token string) {
 	}
 
 	if req.Op == OpEvents && req.Wait > 0 {
-		_ = conn.SetReadDeadline(time.Now().Add(req.Wait + 30*time.Second))
+		_ = conn.SetReadDeadline(time.Now().Add(min(req.Wait, MaxWait) + 30*time.Second))
 	}
 	writeResponse(conn, d.handle(ctx, req))
 }
@@ -235,7 +249,7 @@ func (d *Daemon) handleUnwatch(req Request) Response {
 	if !removed {
 		return errResponse(fmt.Errorf("no watch %q", req.ID))
 	}
-	d.pruneTargets()
+	d.pruneTargets(time.Now())
 	return Response{OK: true, Message: "stopped watching " + req.ID}
 }
 
@@ -248,23 +262,30 @@ func (d *Daemon) handleEvents(ctx context.Context, req Request) Response {
 		return Response{OK: true, Events: d.journal.Since(0, req.Limit), Cursor: d.journal.Latest()}
 	}
 
+	// Take the wake channel BEFORE looking for events. The other order loses
+	// an event published in the gap: it closes the channel this call has not
+	// taken yet, and the caller then waits on a fresh one for something that
+	// has already happened.
+	wake := d.waiter()
 	events := d.drain(req)
 	if len(events) > 0 || req.Wait <= 0 {
 		return Response{OK: true, Events: events, Cursor: d.journal.Latest()}
 	}
 
 	// Nothing pending and the caller is willing to wait: this is how an agent
-	// blocks on "tell me when CI finishes" without polling.
-	timer := time.NewTimer(req.Wait)
+	// blocks on "tell me when CI finishes" without polling. The wait is capped
+	// server-side — the handler holds a goroutine and a connection for its
+	// duration, and neither should be a client's to reserve indefinitely.
+	timer := time.NewTimer(min(req.Wait, MaxWait))
 	defer timer.Stop()
 	for {
-		wake := d.waiter()
 		select {
 		case <-ctx.Done():
 			return Response{OK: true, Cursor: d.journal.Latest()}
 		case <-timer.C:
 			return Response{OK: true, Cursor: d.journal.Latest()}
 		case <-wake:
+			wake = d.waiter()
 			if events := d.drain(req); len(events) > 0 {
 				return Response{OK: true, Events: events, Cursor: d.journal.Latest()}
 			}
@@ -314,6 +335,10 @@ func (d *Daemon) handlePoke(req Request) Response {
 		}
 		st.NextPoll = now
 		st.Failures = 0
+		// A poll may be in flight right now, and its result carries the
+		// deadline it computed before the poke arrived. The flag is what tells
+		// store() to keep this one instead.
+		st.Poked = true
 		poked++
 	}
 	d.watches.TouchAll()

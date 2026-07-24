@@ -9,8 +9,11 @@ import (
 func TestKindSeverity(t *testing.T) {
 	// The Stop hook only speaks up for actionable events, so this mapping is
 	// what decides whether a passing build can delay an agent from finishing.
-	actionable := []Kind{KindCIFailed, KindReviewComment, KindReviewSubmitted, KindPinsStale, KindError}
-	informational := []Kind{KindCIPassed, KindCIStarted, KindPRState, KindTarget}
+	actionable := []Kind{KindCIFailed, KindReviewComment, KindReviewSubmitted, KindPinsStale}
+	// monitor.error is informational on purpose: a failed poll is the
+	// monitor's problem, and making it actionable would let a network blip
+	// hold a finished turn open.
+	informational := []Kind{KindCIPassed, KindCIStarted, KindPRState, KindTarget, KindError}
 
 	for _, k := range actionable {
 		if k.Severity() != SeverityAction {

@@ -108,7 +108,7 @@ func TestHookSessionStartDoesNotReplayHistory(t *testing.T) {
 	d.publish([]Event{{Kind: KindCIFailed, Title: "an hour-old failure"}})
 
 	tree := treeAt(t, "feature")
-	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": tree}, home)
+	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": tree, "source": "startup"}, home)
 
 	if out := runHook(t, HookUserPromptSubmit, map[string]any{"session_id": "sess-1"}, home); out != nil {
 		t.Errorf("the first prompt replayed history:\n%s", out.Specific.AdditionalContext)
@@ -117,7 +117,7 @@ func TestHookSessionStartDoesNotReplayHistory(t *testing.T) {
 
 func TestHookUserPromptDeliversNewEvents(t *testing.T) {
 	d, home := hookDaemon(t, newFakeClient())
-	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature")}, home)
+	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature"), "source": "startup"}, home)
 
 	d.publish([]Event{{Kind: KindCIFailed, Target: "o/r#7", Title: "test failed", Body: "the error"}})
 
@@ -149,7 +149,7 @@ func TestHookUserPromptIsSilentWhenNothingHappened(t *testing.T) {
 
 func TestHookUserPromptCapsWhatItInjects(t *testing.T) {
 	d, home := hookDaemon(t, newFakeClient())
-	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature")}, home)
+	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature"), "source": "startup"}, home)
 
 	// Claude Code truncates a large additionalContext silently, so shuck has
 	// to do the cut itself and say where the rest is.
@@ -226,7 +226,7 @@ func TestHookPostToolUseIgnoresEverythingElse(t *testing.T) {
 
 func TestHookStopBlocksOnActionableEvents(t *testing.T) {
 	d, home := hookDaemon(t, newFakeClient())
-	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature")}, home)
+	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature"), "source": "startup"}, home)
 
 	d.publish([]Event{{Kind: KindCIFailed, Target: "o/r#7", Title: "test failed", Body: "the error"}})
 
@@ -237,16 +237,86 @@ func TestHookStopBlocksOnActionableEvents(t *testing.T) {
 	if out.Decision != "block" {
 		t.Errorf("decision = %q, want block", out.Decision)
 	}
-	// Both spellings are emitted so the hook works whichever one this build
-	// reads.
-	if out.Specific == nil || out.Specific.Decision != "block" {
-		t.Error("the decision should also ride in hookSpecificOutput")
+	// One copy of the reason, not two: emitting it in both shapes risks it
+	// being injected twice.
+	if out.Specific != nil {
+		t.Errorf("the Stop response should carry only the top-level reason, got %+v", out.Specific)
 	}
 	if !strings.Contains(out.Reason, "test failed") {
 		t.Errorf("reason should carry the event:\n%s", out.Reason)
 	}
-	if !strings.Contains(out.Reason, "before finishing") {
-		t.Errorf("reason should say what is expected:\n%s", out.Reason)
+	// The instruction leads, so truncation can never remove it.
+	if !strings.HasPrefix(out.Reason, "Before finishing:") {
+		t.Errorf("reason should open with what is expected:\n%s", out.Reason)
+	}
+}
+
+// TestHookStopHandsOverTheWholeBatch covers a defect a review found: blocking
+// on a failure while consuming the passing re-run that followed it would leave
+// the agent acting on news the monitor already knew was out of date.
+func TestHookStopHandsOverTheWholeBatch(t *testing.T) {
+	d, home := hookDaemon(t, newFakeClient())
+	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature"), "source": "startup"}, home)
+
+	d.publish([]Event{
+		{Kind: KindCIFailed, Title: "test failed"},
+		{Kind: KindCIPassed, Title: "all checks passed on the re-run"},
+	})
+
+	out := runHook(t, HookStop, map[string]any{"session_id": "sess-1"}, home)
+	if out == nil {
+		t.Fatal("expected a block on the failure")
+	}
+	if !strings.Contains(out.Reason, "all checks passed on the re-run") {
+		t.Errorf("the passing re-run was consumed but not handed over:\n%s", out.Reason)
+	}
+}
+
+// TestHookStopIgnoresAMonitorError checks that a failed poll does not hold a
+// finished turn open: it is the monitor's problem, not the agent's.
+func TestHookStopIgnoresAMonitorError(t *testing.T) {
+	d, home := hookDaemon(t, newFakeClient())
+	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature"), "source": "startup"}, home)
+
+	d.publish([]Event{{Kind: KindError, Title: "could not check o/r#7", Body: "dial tcp: timeout"}})
+
+	if out := runHook(t, HookStop, map[string]any{"session_id": "sess-1"}, home); out != nil {
+		t.Errorf("a transient poll failure must not block the turn, got %+v", out)
+	}
+}
+
+// TestHookSessionStartKeepsPendingEventsOnResume covers the other half of the
+// fast-forward rule: SessionStart also fires on resume and compaction, and
+// seeking then would throw away what the ongoing conversation has not seen.
+func TestHookSessionStartKeepsPendingEventsOnResume(t *testing.T) {
+	d, home := hookDaemon(t, newFakeClient())
+	tree := treeAt(t, "feature")
+	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": tree, "source": "startup"}, home)
+
+	d.publish([]Event{{Kind: KindCIFailed, Title: "test failed"}})
+
+	for _, source := range []string{"resume", "compact"} {
+		runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": tree, "source": source}, home)
+		if got := d.journal.Pending("sess-1"); got != 1 {
+			t.Fatalf("source %q left %d pending, want the failure still waiting", source, got)
+		}
+	}
+	if out := runHook(t, HookUserPromptSubmit, map[string]any{"session_id": "sess-1"}, home); out == nil {
+		t.Error("the pending failure should still be delivered after a resume")
+	}
+}
+
+// TestHooksIgnoreAnUnidentifiedSession is the guard on the worst failure mode
+// of a malformed payload: with no session id there is no cursor, and a
+// cursorless read hands over the whole journal on every prompt.
+func TestHooksIgnoreAnUnidentifiedSession(t *testing.T) {
+	d, home := hookDaemon(t, newFakeClient())
+	d.publish([]Event{{Kind: KindCIFailed, Title: "test failed"}})
+
+	for _, event := range []HookEvent{HookUserPromptSubmit, HookStop, HookSessionEnd} {
+		if out := runHook(t, event, map[string]any{"cwd": "/tmp"}, home); out != nil {
+			t.Errorf("%s spoke up for a session it cannot identify: %+v", event, out)
+		}
 	}
 }
 
@@ -254,7 +324,7 @@ func TestHookStopBlocksOnActionableEvents(t *testing.T) {
 // hook that keeps finding something to say never lets the agent finish.
 func TestHookStopStandsDownWhenAlreadyActive(t *testing.T) {
 	d, home := hookDaemon(t, newFakeClient())
-	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature")}, home)
+	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature"), "source": "startup"}, home)
 	d.publish([]Event{{Kind: KindCIFailed, Title: "test failed"}})
 
 	if out := runHook(t, HookStop, map[string]any{"session_id": "sess-1", "stop_hook_active": true}, home); out != nil {
@@ -264,7 +334,7 @@ func TestHookStopStandsDownWhenAlreadyActive(t *testing.T) {
 
 func TestHookStopIgnoresInformationalEvents(t *testing.T) {
 	d, home := hookDaemon(t, newFakeClient())
-	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature")}, home)
+	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature"), "source": "startup"}, home)
 
 	d.publish([]Event{{Kind: KindCIPassed, Title: "all checks passed"}})
 
@@ -280,7 +350,7 @@ func TestHookStopIgnoresInformationalEvents(t *testing.T) {
 
 func TestHookStopDoesNotRepeatWhatItHandedOver(t *testing.T) {
 	d, home := hookDaemon(t, newFakeClient())
-	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature")}, home)
+	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature"), "source": "startup"}, home)
 	d.publish([]Event{{Kind: KindCIFailed, Title: "test failed"}})
 
 	if out := runHook(t, HookStop, map[string]any{"session_id": "sess-1"}, home); out == nil {
@@ -293,7 +363,7 @@ func TestHookStopDoesNotRepeatWhatItHandedOver(t *testing.T) {
 
 func TestHookStopRespectsItsOptOut(t *testing.T) {
 	d, home := hookDaemon(t, newFakeClient())
-	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature")}, home)
+	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature"), "source": "startup"}, home)
 	d.publish([]Event{{Kind: KindCIFailed, Title: "test failed"}})
 
 	t.Setenv("SHUCK_MONITOR_NO_STOP", "1")
@@ -304,7 +374,7 @@ func TestHookStopRespectsItsOptOut(t *testing.T) {
 
 func TestHooksRespectTheGlobalOptOut(t *testing.T) {
 	d, home := hookDaemon(t, newFakeClient())
-	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature")}, home)
+	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature"), "source": "startup"}, home)
 	d.publish([]Event{{Kind: KindCIFailed, Title: "test failed"}})
 
 	t.Setenv("SHUCK_MONITOR_DISABLE", "1")
@@ -317,7 +387,7 @@ func TestHooksRespectTheGlobalOptOut(t *testing.T) {
 
 func TestHookSessionEnd(t *testing.T) {
 	d, home := hookDaemon(t, newFakeClient())
-	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature")}, home)
+	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature"), "source": "startup"}, home)
 	d.publish([]Event{{Kind: KindCIFailed, Title: "test failed"}})
 
 	if out := runHook(t, HookSessionEnd, map[string]any{"session_id": "sess-1"}, home); out != nil {

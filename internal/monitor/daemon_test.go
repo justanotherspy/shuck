@@ -296,9 +296,56 @@ func TestDaemonPrunesTargetsOfRemovedWatches(t *testing.T) {
 	}
 
 	d.watches.Remove("pr:o/r#7")
-	d.pruneTargets()
+
+	// The first prune only marks it: a watch can lose its PR because a lookup
+	// failed, and dropping the state then would replay everything it had
+	// already reported.
+	d.pruneTargets(now)
+	if len(d.targets) != 1 {
+		t.Fatalf("%d targets immediately after removal, want the state kept through the grace period", len(d.targets))
+	}
+	d.pruneTargets(now.Add(TargetGrace + time.Minute))
 	if len(d.targets) != 0 {
-		t.Errorf("%d targets after removing the only watch, want 0 — a session that moves through ten branches must not leave ten pollers behind", len(d.targets))
+		t.Errorf("%d targets after the grace period, want 0 — a session that moves through ten branches must not leave ten pollers behind", len(d.targets))
+	}
+}
+
+// TestDaemonKeepsStateThroughATransientLookupFailure is the bug that grace
+// period exists for: one failed FindOpenPR must not make the monitor forget
+// which failures it had already reported.
+func TestDaemonKeepsStateThroughATransientLookupFailure(t *testing.T) {
+	c := newFakeClient()
+	c.openPR = 42
+	c.pr = openPR("abc1234def")
+	c.pr.Number = 42
+	c.fingerprint = "fp-1"
+	d, _ := newTestDaemon(t, c)
+
+	dir := treeAt(t, "feature")
+	d.watches.Add(Watch{ID: TreeWatchID(dir), Kind: WatchTree, Path: dir})
+	d.retarget(context.Background(), now)
+
+	// Give the target some remembered state.
+	for _, st := range d.due(now) {
+		st.ReportedJobs = []string{"11/1"}
+		d.store(st, nil)
+	}
+	target := "justanotherspy/shuck#42"
+	if _, ok := d.targets[target]; !ok {
+		t.Fatalf("no state for %s; have %v", target, d.targets)
+	}
+
+	// The next resolution fails transiently.
+	c.openPRErr = errors.New("502 bad gateway")
+	c.openPR = 0
+	d.retarget(context.Background(), now.Add(ResolveInterval+time.Second))
+
+	st, ok := d.targets[target]
+	if !ok {
+		t.Fatal("a single failed lookup threw away the target's poll state")
+	}
+	if len(st.ReportedJobs) != 1 {
+		t.Errorf("ReportedJobs = %v, want what had already been reported to survive", st.ReportedJobs)
 	}
 }
 
