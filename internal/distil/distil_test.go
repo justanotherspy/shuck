@@ -4,8 +4,17 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/justanotherspy/shuck/internal/logs"
 	"github.com/justanotherspy/shuck/internal/model"
 )
+
+// defaultOptions is the tuning the tests distil under: the same defaults the
+// CLI's flags carry, so a golden recorded here is what a plain `shuck logs`
+// prints. It lives in the tests because nothing in production wants it —
+// each caller builds Options from the flags it parsed.
+func defaultOptions() Options {
+	return Options{Extract: logs.DefaultOptions(), MaxCommandLines: logs.DefaultMaxCommandLines}
+}
 
 const failLog = `2024-05-01T10:00:00.0000000Z ##[group]Run actions/checkout@v4
 2024-05-01T10:00:00.0000001Z ##[endgroup]
@@ -25,7 +34,7 @@ func TestCIFailureAssociatesErrorSection(t *testing.T) {
 			{Number: 2, Name: "Run tests", Conclusion: "failure"},
 		},
 		RawLog:  failLog,
-		Options: DefaultOptions(),
+		Options: defaultOptions(),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -71,7 +80,7 @@ func TestCIFailureCancelledJob(t *testing.T) {
 			{Number: 4, Name: "Notify", Conclusion: "cancelled"},
 		},
 		RawLog:  cancelLog,
-		Options: DefaultOptions(),
+		Options: defaultOptions(),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -102,7 +111,7 @@ func TestCIFailureCancelledJobNoErrorMarker(t *testing.T) {
 		JobConclusion: "cancelled",
 		Steps:         []model.StepOverview{{Number: 1, Name: "Run e2e", Conclusion: "cancelled"}},
 		RawLog:        raw,
-		Options:       DefaultOptions(),
+		Options:       defaultOptions(),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -125,7 +134,7 @@ func TestCIFailureFallbackNoErrorMarker(t *testing.T) {
 		JobConclusion: "failure",
 		Steps:         []model.StepOverview{{Number: 1, Name: "Build", Conclusion: "failure"}},
 		RawLog:        raw,
-		Options:       DefaultOptions(),
+		Options:       defaultOptions(),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -159,7 +168,7 @@ func TestCIFailureFullCommand(t *testing.T) {
 	steps := []model.StepOverview{{Number: 1, Name: "Run script", Conclusion: "failure"}}
 
 	// MaxCommandLines = 0 (no limit): the full multi-line script is recovered.
-	opts := DefaultOptions()
+	opts := defaultOptions()
 	opts.MaxCommandLines = 0
 	res, err := CIFailure(Input{JobConclusion: "failure", Steps: steps, RawLog: multiStepLog, Options: opts})
 	if err != nil {
@@ -196,7 +205,7 @@ const actionLog = `2024-05-01T10:00:00.0000000Z ##[group]Run actions/github-scri
 `
 
 func TestCIFailureActionInputs(t *testing.T) {
-	opts := DefaultOptions()
+	opts := defaultOptions()
 	opts.MaxCommandLines = 0
 	res, err := CIFailure(Input{
 		JobConclusion: "failure",
@@ -227,7 +236,7 @@ func TestCIFailureOptionValidation(t *testing.T) {
 		{"negative tail", func(o *Options) { o.Extract.Tail = -1 }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			opts := DefaultOptions()
+			opts := defaultOptions()
 			tc.mut(&opts)
 			if _, err := CIFailure(Input{RawLog: failLog, Options: opts}); err == nil {
 				t.Errorf("expected error for %s", tc.name)
@@ -237,7 +246,7 @@ func TestCIFailureOptionValidation(t *testing.T) {
 }
 
 func TestDefaultOptions(t *testing.T) {
-	opts := DefaultOptions()
+	opts := defaultOptions()
 	if opts.Extract.ShortThreshold != 100 || opts.Extract.Context != 10 || opts.Extract.Tail != 100 {
 		t.Errorf("extract defaults = %+v", opts.Extract)
 	}
@@ -258,7 +267,7 @@ func TestSummaryFormat(t *testing.T) {
 			{Number: 2, Name: "Run tests", Conclusion: "failure"},
 		},
 		RawLog:  failLog,
-		Options: DefaultOptions(),
+		Options: defaultOptions(),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -272,7 +281,7 @@ func TestSummaryFormat(t *testing.T) {
 func TestSummaryDefaultsAndTruncation(t *testing.T) {
 	long := strings.Repeat("x", 130)
 	raw := "##[group]Run go build\n##[endgroup]\nerror: " + long + "\n"
-	res, err := CIFailure(Input{RawLog: raw, Options: DefaultOptions()})
+	res, err := CIFailure(Input{RawLog: raw, Options: defaultOptions()})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

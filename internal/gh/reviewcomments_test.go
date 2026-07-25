@@ -48,113 +48,6 @@ func sameIDs(got, want []int64) bool {
 	return true
 }
 
-func TestPRReviewComment(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/repos/acme/widgets/pulls/comments/9001" {
-			t.Errorf("unexpected path %q", r.URL.Path)
-		}
-		_, _ = w.Write([]byte(`{
-			"id": 9001,
-			"pull_request_review_id": 77,
-			"in_reply_to_id": 42,
-			"path": "internal/foo/foo.go",
-			"line": 12,
-			"start_line": 10,
-			"side": "RIGHT",
-			"body": "This swallows the error.",
-			"diff_hunk": "@@ -8,7 +8,9 @@\n-old\n+new",
-			"commit_id": "abc123",
-			"user": {"id": 583231, "login": "octocat"}
-		}`))
-	}))
-	defer srv.Close()
-
-	got, err := testClient(t, srv).PRReviewComment(context.Background(), "acme", "widgets", 9001)
-	if err != nil {
-		t.Fatalf("PRReviewComment: %v", err)
-	}
-	want := PRReviewComment{
-		ID: 9001, ReviewID: 77, InReplyTo: 42,
-		Path: "internal/foo/foo.go", Line: 12, StartLine: 10, Side: "RIGHT",
-		Body: "This swallows the error.", DiffHunk: "@@ -8,7 +8,9 @@\n-old\n+new",
-		CommitID: "abc123", UserID: 583231, UserLogin: "octocat",
-	}
-	if got != want {
-		t.Errorf("got %+v\nwant %+v", got, want)
-	}
-}
-
-func TestPRReview(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/repos/acme/widgets/pulls/5/reviews/77" {
-			t.Errorf("unexpected path %q", r.URL.Path)
-		}
-		_, _ = w.Write([]byte(`{
-			"id": 77,
-			"state": "CHANGES_REQUESTED",
-			"body": "Needs work.",
-			"submitted_at": "2026-05-01T10:00:05Z",
-			"user": {"id": 583231, "login": "octocat"}
-		}`))
-	}))
-	defer srv.Close()
-
-	got, err := testClient(t, srv).PRReview(context.Background(), "acme", "widgets", 5, 77)
-	if err != nil {
-		t.Fatalf("PRReview: %v", err)
-	}
-	want := PRReview{
-		ID: 77, State: "CHANGES_REQUESTED", Body: "Needs work.",
-		UserID: 583231, UserLogin: "octocat",
-		SubmittedAt: mustTime(t, "2026-05-01T10:00:05Z"),
-	}
-	// SubmittedAt is the field the whole watermark design rests on: a review
-	// fetched by ID is what the hook renders and what the poller advances its
-	// watermark from, so a dropped timestamp here would re-deliver the verdict
-	// on every poll.
-	if !got.SubmittedAt.Equal(want.SubmittedAt) {
-		t.Errorf("SubmittedAt = %v, want %v", got.SubmittedAt, want.SubmittedAt)
-	}
-	got.SubmittedAt = want.SubmittedAt
-	if got != want {
-		t.Errorf("got %+v, want %+v", got, want)
-	}
-}
-
-func TestPRReviewCommentsPaginates(t *testing.T) {
-	requests := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/repos/acme/widgets/pulls/5/reviews/77/comments" {
-			t.Errorf("unexpected path %q", r.URL.Path)
-		}
-		// See TestPRReviewsSincePaginates: a loop that re-requests page 1 must
-		// fail the test, not hang it.
-		requests++
-		if requests > 2 {
-			http.Error(w, `{"message":"pagination did not advance"}`, http.StatusInternalServerError)
-			return
-		}
-		switch r.URL.Query().Get("page") {
-		case "", "1":
-			w.Header().Set("Link", fmt.Sprintf(`<http://%s%s?page=2>; rel="next"`, r.Host, r.URL.Path))
-			_, _ = w.Write([]byte(`[{"id": 1, "body": "a", "user": {"id": 7, "login": "alice"}}]`))
-		case "2":
-			_, _ = w.Write([]byte(`[{"id": 2, "body": "b", "user": {"id": 7, "login": "alice"}}]`))
-		default:
-			t.Errorf("unexpected page %q", r.URL.Query().Get("page"))
-		}
-	}))
-	defer srv.Close()
-
-	got, err := testClient(t, srv).PRReviewComments(context.Background(), "acme", "widgets", 5, 77)
-	if err != nil {
-		t.Fatalf("PRReviewComments: %v", err)
-	}
-	if len(got) != 2 || got[0].ID != 1 || got[1].ID != 2 {
-		t.Errorf("got %+v, want ids [1 2]", got)
-	}
-}
-
 func TestPRCommentThread(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/repos/acme/widgets/pulls/5/comments" {
@@ -184,64 +77,39 @@ func TestReviewCommentErrorsPropagate(t *testing.T) {
 		http.Error(w, `{"message":"boom"}`, http.StatusInternalServerError)
 	}))
 	defer srv.Close()
-	c := testClient(t, srv)
-	ctx := context.Background()
 
-	if _, err := c.PRReviewComment(ctx, "a", "b", 1); err == nil || !strings.Contains(err.Error(), "review comment 1 in a/b") {
-		t.Errorf("PRReviewComment error = %v, want named comment", err)
-	}
-	if _, err := c.PRReview(ctx, "a", "b", 1, 2); err == nil || !strings.Contains(err.Error(), "review 2 on a/b#1") {
-		t.Errorf("PRReview error = %v, want named review", err)
-	}
-	// An error that names neither the review nor the PR gives a session nothing
-	// to act on but "500". (These two fail on their first page, so they hold
-	// nothing to leak yet; that the *slice* stays nil when a later page fails is
-	// pinned by TestReviewCommentListingsFailMidPagination.)
-	if _, err := c.PRReviewComments(ctx, "a", "b", 1, 2); err == nil || !strings.Contains(err.Error(), "comments of review 2 on a/b#1") {
-		t.Errorf("PRReviewComments error = %v, want it to name the review and PR", err)
-	}
-	if _, err := c.PRCommentThread(ctx, "a", "b", 1, 2); err == nil || !strings.Contains(err.Error(), "review comments on a/b#1") {
+	// An error that does not name the PR gives a session nothing to act on but
+	// "500". (This fails on its first page, so it holds nothing to leak yet;
+	// that the *slice* stays nil when a later page fails is pinned by
+	// TestPRCommentThreadFailsMidPagination.)
+	_, err := testClient(t, srv).PRCommentThread(context.Background(), "a", "b", 1, 2)
+	if err == nil || !strings.Contains(err.Error(), "review comments on a/b#1") {
 		t.Errorf("PRCommentThread error = %v, want it to name the PR", err)
 	}
 }
 
-func TestReviewCommentListingsFailMidPagination(t *testing.T) {
+func TestPRCommentThreadFailsMidPagination(t *testing.T) {
 	// Page 1 answers, page 2 500s. Handing back page 1 with a nil error would
 	// tell the caller it has the whole thread, and the reply that lived on page
 	// 2 is one nothing will ever look for again — the same silent truncation the
-	// PRReviewsSince pair guards against, on the paths that reconstruct a thread.
-	newSrv := func(t *testing.T) *httptest.Server {
-		t.Helper()
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Query().Get("page") == "2" {
-				http.Error(w, `{"message":"boom"}`, http.StatusInternalServerError)
-				return
-			}
-			w.Header().Set("Link", fmt.Sprintf(`<http://%s%s?page=2>; rel="next"`, r.Host, r.URL.Path))
-			_, _ = w.Write([]byte(`[{"id": 42, "body": "root", "user": {"id": 1, "login": "alice"}}]`))
-		}))
-		t.Cleanup(srv.Close)
-		return srv
-	}
+	// PRReviewsSince pair guards against, on the path that reconstructs a thread.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") == "2" {
+			http.Error(w, `{"message":"boom"}`, http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Link", fmt.Sprintf(`<http://%s%s?page=2>; rel="next"`, r.Host, r.URL.Path))
+		_, _ = w.Write([]byte(`[{"id": 42, "body": "root", "user": {"id": 1, "login": "alice"}}]`))
+	}))
+	defer srv.Close()
 
-	t.Run("PRReviewComments", func(t *testing.T) {
-		got, err := testClient(t, newSrv(t)).PRReviewComments(context.Background(), "acme", "widgets", 5, 77)
-		if err == nil {
-			t.Fatalf("PRReviewComments = %+v, want an error when page 2 fails", got)
-		}
-		if got != nil {
-			t.Errorf("PRReviewComments = %+v alongside an error, want nil", got)
-		}
-	})
-	t.Run("PRCommentThread", func(t *testing.T) {
-		got, err := testClient(t, newSrv(t)).PRCommentThread(context.Background(), "acme", "widgets", 5, 42)
-		if err == nil {
-			t.Fatalf("PRCommentThread = %+v, want an error when page 2 fails", got)
-		}
-		if got != nil {
-			t.Errorf("PRCommentThread = %+v alongside an error, want nil", got)
-		}
-	})
+	got, err := testClient(t, srv).PRCommentThread(context.Background(), "acme", "widgets", 5, 42)
+	if err == nil {
+		t.Fatalf("PRCommentThread = %+v, want an error when page 2 fails", got)
+	}
+	if got != nil {
+		t.Errorf("PRCommentThread = %+v alongside an error, want nil", got)
+	}
 }
 
 // reviewsPage is the reviews listing every PRReviewsSince test is filtered
@@ -316,7 +184,7 @@ func TestPRReviewsSinceMapsFields(t *testing.T) {
 	}
 	want := PRReview{
 		ID: 2, State: "CHANGES_REQUESTED", Body: "needs work",
-		UserID: 8, UserLogin: "bob",
+		UserLogin:   "bob",
 		SubmittedAt: mustTime(t, "2026-05-01T10:00:05Z"),
 	}
 	// SubmittedAt is what the caller advances its watermark from, so it has to
@@ -515,7 +383,7 @@ func TestPRReviewCommentsSinceMapsFields(t *testing.T) {
 		ID: 9001, ReviewID: 77, InReplyTo: 42,
 		Path: "internal/foo/foo.go", Line: 12, StartLine: 10, Side: "RIGHT",
 		Body: "This swallows the error.", DiffHunk: "@@ -8,7 +8,9 @@\n-old\n+new",
-		CommitID: "abc123", UserID: 583231, UserLogin: "octocat",
+		CommitID: "abc123", UserLogin: "octocat",
 		CreatedAt: mustTime(t, "2026-05-01T10:00:00Z"),
 		UpdatedAt: mustTime(t, "2026-05-01T10:30:00Z"),
 	}
@@ -609,16 +477,5 @@ func TestPRReviewCommentsSinceErrorPropagates(t *testing.T) {
 				t.Errorf("got %+v alongside an error, want nil", got)
 			}
 		})
-	}
-}
-
-func TestIsNotFoundSeesReviewCommentGone(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
-	}))
-	defer srv.Close()
-	_, err := testClient(t, srv).PRReviewComment(context.Background(), "a", "b", 1)
-	if !IsNotFound(err) {
-		t.Errorf("IsNotFound(%v) = false, want true", err)
 	}
 }

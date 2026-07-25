@@ -72,6 +72,11 @@ Subcommands (single-letter shorthands in parentheses):
 Auth:
   Set GITHUB_TOKEN (or GH_TOKEN), or pass --token.
 
+Exit codes:
+  0 a report was produced (even one showing failures); 2 an operational error.
+  --exit-code gates on the CI verdict alone: a repo's security alerts are
+  reported but never flip the exit code (use "shuck security --exit-code").
+
 Flags:
 `
 
@@ -147,8 +152,9 @@ func init() {
 }
 
 // Run executes shuck and returns the process exit code:
-// 0 = report produced, 2 = operational error. With --exit-code, failing
-// checks exit 1 (for CI gating).
+// 0 = report produced, 2 = operational error. With --exit-code, failing CI
+// checks exit 1 (for CI gating); the security half of the default report is
+// never part of that verdict — see emitAll.
 func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 {
 		cmd := args[0]
@@ -261,7 +267,7 @@ func registerInspectFlags(fs *flag.FlagSet, o *options) {
 	fs.BoolVar(&o.noCache, "no-cache", false, "do not read or write the cache")
 	fs.BoolVar(&o.offline, "offline", false, "render only from cache, without network access")
 	fs.BoolVar(&o.json, "json", false, "emit machine-readable JSON (stable schema) instead of text")
-	fs.BoolVar(&o.exitCode, "exit-code", false, "exit 1 when failing checks are found (for CI gating)")
+	fs.BoolVar(&o.exitCode, "exit-code", false, "exit 1 when failing CI checks are found (for CI gating; security alerts never flip it)")
 }
 
 // registerArtifactFlags registers the artifact-download flag on the paths that
@@ -370,56 +376,6 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 		return true
 	}
 }
-
-// InspectOptions controls a single inspection: the log-extraction tuning that
-// mirrors the CLI flags plus the cache behavior. It is the front-end-agnostic
-// input to [Inspect], used by alternative entry points and embedders.
-type InspectOptions struct {
-	Context            int
-	ShortThreshold     int
-	Tail               int
-	Pattern            string
-	Full               bool
-	MaxCommandLines    int
-	ReviewCommentLimit int
-	CIOnly             bool
-	ReviewsOnly        bool
-	// ArtifactsDir, when non-empty, downloads the inspected run's artifacts
-	// into this directory (run targets only); each artifact's zip archive is
-	// extracted to <dir>/<artifact-name>/.
-	ArtifactsDir string
-	Token        string
-	Refresh      bool
-	NoCache      bool
-	Offline      bool
-}
-
-// Inspect runs shuck's pipeline for an already-resolved target and returns the
-// report without rendering it. It is the reusable core behind the CLI and the
-// embedders: callers decide how to present the result (text, JSON, or a
-// structured tool response).
-func Inspect(ctx context.Context, tgt target.Target, opts InspectOptions) (*model.Report, error) {
-	return inspectWith(ctx, tgt, options{
-		context:            opts.Context,
-		shortThreshold:     opts.ShortThreshold,
-		tail:               opts.Tail,
-		pattern:            opts.Pattern,
-		full:               opts.Full,
-		maxCommandLines:    opts.MaxCommandLines,
-		reviewCommentLimit: opts.ReviewCommentLimit,
-		ciOnly:             opts.CIOnly,
-		reviewsOnly:        opts.ReviewsOnly,
-		artifactsDir:       opts.ArtifactsDir,
-		token:              opts.Token,
-		refresh:            opts.Refresh,
-		noCache:            opts.NoCache,
-		offline:            opts.Offline,
-	})
-}
-
-// Version reports the shuck version for non-CLI callers (e.g. an embedder
-// server advertises it in its server info).
-func Version() string { return versionString() }
 
 // inspectWith builds the report for a resolved target: it validates the
 // extraction options, then dispatches to the offline, run, or PR path.
