@@ -4,7 +4,7 @@ import "testing"
 
 // The full truth table: every State the API can hand us crossed with Draft and
 // Merged. The monitor stores this word on a target, picks DormantInterval off
-// it, and prints it in the pr.state event, so each cell is behaviour someone
+// it, and prints it in the pr.state event, so each cell is behavior someone
 // reads.
 func TestPRLifecycle(t *testing.T) {
 	tests := []struct {
@@ -35,7 +35,7 @@ func TestPRLifecycle(t *testing.T) {
 		{"no state merged", PR{Merged: true}, "merged"},
 		{"no state draft merged", PR{Draft: true, Merged: true}, "merged"},
 
-		// Matching is exact and fails closed: an unrecognised state reports
+		// Matching is exact and fails closed: an unrecognized state reports
 		// nothing rather than guessing a lifecycle the caller would act on.
 		// GraphQL casing would land here if a PR were ever sourced that way.
 		{"uppercase open", PR{State: "OPEN"}, ""},
