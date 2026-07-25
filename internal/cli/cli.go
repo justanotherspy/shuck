@@ -44,10 +44,13 @@ func versionString() string {
 	return "dev"
 }
 
-const usage = `shuck — show the exact failing CI step logs, reviews, and security alerts for a PR.
+const usage = `shuck — be told what is wrong with the branch you are on, and show it.
 
-By default (and via "shuck all") shuck reports a PR's failing CI, its reviews,
-and the repo's security alerts together. Use a subcommand to focus on one.
+"shuck monitor" follows this working tree in the background and hands over CI
+failures, review comments, and stale action pins as they happen. The report
+commands answer the same question on demand: by default (and via "shuck all")
+shuck reports a PR's failing CI, its reviews, and the repo's security alerts
+together. Use a subcommand to focus on one.
 
 Usage:
   shuck monitor               follow this working tree in the background and stream what changes

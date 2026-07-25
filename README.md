@@ -6,12 +6,17 @@
 **shuck the husk, keep the kernel.**
 
 `shuck` is a Go CLI for GitHub PR triage, built for developers and agents who
-want the signal without the fluff. Its core trick: when CI goes red, `shuck <pr>`
-drills GitHub Actions failures down to the failing **steps** and prints just
-their error logs — no tab-hopping, no log scrolling. Each failed step is tagged
-with a coarse class (`lint`/`test`/`build`/`timeout`/`oom`/`infra`) and shown
-alongside the job's check-run **annotations** — the `file:line` pointers problem
-matchers emit — so you land on the offending line, not in a wall of log.
+want the signal without the fluff. Everything it does answers one question:
+**what is wrong with the branch I am on right now?** `shuck monitor` answers it
+without being asked — it follows your working tree and tells you when CI goes
+red or a reviewer comments — and the report commands answer it on demand.
+
+Either way you get the same thing: a red build drilled down to the failing
+**steps**, with just their error logs — no tab-hopping, no log scrolling. Each
+failed step is tagged with a coarse class
+(`lint`/`test`/`build`/`timeout`/`oom`/`infra`) and shown alongside the job's
+check-run **annotations** — the `file:line` pointers problem matchers emit — so
+you land on the offending line, not in a wall of log.
 
 It is one portable binary and a GitHub token. Nothing to deploy, no webhook, no
 account: a standing CI gate fails the build if the binary ever links a cloud
