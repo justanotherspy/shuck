@@ -6,19 +6,22 @@
 # prerequisites the plugin needs and reports any that are missing, without
 # blocking the session or touching the network:
 #
-#   1. the `shuck` binary is on PATH (the monitor hooks and the /shuck skill
-#      both run it);
-#   2. it is new enough to have the background monitor (`shuck monitor`);
+#   1. the `shuck` binary is on PATH (the plugin's monitor, its hooks and the
+#      /shuck skill all run it);
+#   2. it is new enough to have the event stream the plugin's monitor runs
+#      (`shuck monitor stream`);
 #   3. a GitHub token is available (GITHUB_TOKEN or GH_TOKEN).
 #
 # Stays silent when everything is in order.
 set -euo pipefail
 
-# First release with the background monitor (`shuck monitor`), which the
-# plugin's hooks drive. v0.4.3 was the last release before it, so there is no
-# 0.5.x — the monitor and this floor both arrive in 1.0.0. Bump this when a
-# future release changes the minimum the plugin relies on.
-MIN_VERSION="1.0.0"
+# First release with `shuck monitor stream`, the command the plugin's monitor
+# runs — the monitor arrived in 1.0.0, the stream that feeds it notifications in
+# 1.1.0. This floor matters most for the stream: a monitor speaks only through
+# stdout, so an older binary rejects the subcommand on stderr and the session
+# simply never hears anything. Bump it when a future release changes the
+# minimum the plugin relies on.
+MIN_VERSION="1.1.0"
 
 problems=""
 
@@ -42,10 +45,20 @@ else
   cur="$(shuck version 2>/dev/null | awk 'NR==1{print $2}' | sed 's/^v//')" || true
   core="${cur%%-*}"
   core="${core%%+*}"
+  # A `git describe` build carries a '-<commits>-g<sha>' suffix, and its core is
+  # the tag it is built *after* — 1.0.0-2-g34cc959 is two commits newer than
+  # v1.0.0, not older. Comparing on the core alone would tell every contributor
+  # working between releases that their binary is too old, which is both wrong
+  # and the fastest way to teach people to ignore this warning. Trust a dev
+  # build the way the branch below trusts any version it cannot parse: whether
+  # it has the feature is the business of whoever built it.
+  if printf '%s' "$cur" | grep -Eq -- '-[0-9]+-g[0-9a-f]+'; then
+    core=""
+  fi
   if printf '%s' "$core" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
     lowest="$(printf '%s\n%s\n' "$MIN_VERSION" "$core" | sort -V | head -1)"
     if [ "$lowest" != "$MIN_VERSION" ]; then
-      problems+="\\n  - your shuck (v${cur}) predates the background monitor (needs >= v${MIN_VERSION}); update it with: shuck upgrade"
+      problems+="\\n  - your shuck (v${cur}) predates the monitor's event stream, so this session will get no notifications (needs >= v${MIN_VERSION}); update it with: shuck upgrade"
     fi
   fi
 fi
