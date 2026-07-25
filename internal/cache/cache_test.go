@@ -311,6 +311,9 @@ func TestJobLogPathSurfacesBaseError(t *testing.T) {
 	t.Setenv("HOME", "")
 	t.Setenv("LocalAppData", "")
 	t.Setenv("home", "") // plan9
+	// If the error ever is swallowed, the relative cache tree that SaveJobLog
+	// then creates lands here rather than in the package directory.
+	t.Chdir(t.TempDir())
 
 	if _, err := Base(); err == nil {
 		t.Fatal("Base() err=nil with SHUCK_HOME and every cache-dir variable cleared; the rest of this test needs a failing Base")
