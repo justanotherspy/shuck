@@ -444,6 +444,93 @@ func TestCapFeed(t *testing.T) {
 	}
 }
 
+// TestOtherTargets covers the sentence a session gets when the monitor is
+// following more than its own pull request. It is the warning that the feed may
+// name a PR this session never asked about — so the one thing it must not do is
+// list the session's own target back at it.
+func TestOtherTargets(t *testing.T) {
+	// The order is the one handleStatus produced, and otherTargets is expected
+	// to leave it alone: the status view is already sorted, and re-ordering it
+	// here would make the same monitor word the same sentence two ways.
+	watched := []TargetStatus{
+		{Target: "o/r#7", Verdict: "failed"},
+		{Target: "o/r#8"},
+		{Target: "other/repo#1"},
+	}
+
+	tests := []struct {
+		name  string
+		watch *Watch
+		want  string
+	}{
+		{
+			name:  "the session's own target is the one left out",
+			watch: &Watch{Owner: "o", Repo: "r", Number: 7},
+			want:  "o/r#8, other/repo#1",
+		},
+		{
+			name:  "a watch whose branch has no PR yet excludes nothing",
+			watch: &Watch{Owner: "o", Repo: "r"},
+			want:  "o/r#7, o/r#8, other/repo#1",
+		},
+		{
+			name:  "a watch on a PR nobody is polling excludes nothing",
+			watch: &Watch{Owner: "o", Repo: "r", Number: 99},
+			want:  "o/r#7, o/r#8, other/repo#1",
+		},
+		{
+			// SessionStart words its paragraph before the daemon has
+			// necessarily answered, so a nil watch has to be survivable.
+			name:  "no watch at all",
+			watch: nil,
+			want:  "o/r#7, o/r#8, other/repo#1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := otherTargets(&Status{Targets: watched}, tt.watch); got != tt.want {
+				t.Errorf("otherTargets = %q, want %q", got, tt.want)
+			}
+		})
+	}
+
+	// Nothing but your own PR is not "also watching: " with nothing after it.
+	own := &Status{Targets: []TargetStatus{{Target: "o/r#7"}}}
+	if got := otherTargets(own, &Watch{Owner: "o", Repo: "r", Number: 7}); got != "" {
+		t.Errorf("otherTargets = %q with only the session's own target, want empty", got)
+	}
+}
+
+// TestSessionStartContextNamesTheOtherPRs is the same rule end to end: two
+// sessions on two branches share one daemon, and each is told what the other
+// brought along.
+func TestSessionStartContextNamesTheOtherPRs(t *testing.T) {
+	d, _ := hookDaemon(t, newFakeClient())
+	dir, err := Dir() // hookDaemon already pointed SHUCK_HOME here
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	d.watches.Add(Watch{ID: "pr:o/r#7", Kind: WatchPR, Owner: "o", Repo: "r", Number: 7})
+	d.watches.Add(Watch{ID: "pr:o/r#8", Kind: WatchPR, Owner: "o", Repo: "r", Number: 8})
+	d.due(time.Now()) // materialize both targets, as a poll round would
+
+	mine := &Watch{ID: "pr:o/r#7", Kind: WatchPR, Owner: "o", Repo: "r", Number: 7, Branch: "feature"}
+	got := sessionStartContext(context.Background(), &Client{dir: dir}, mine)
+
+	if !strings.Contains(got, "It is following o/r#7 (branch feature).") {
+		t.Errorf("context should open with this session's own target:\n%s", got)
+	}
+	_, also, ok := strings.Cut(got, "\nIt is also watching: ")
+	if !ok {
+		t.Fatalf("a second target should be named:\n%s", got)
+	}
+	if also != "o/r#8." {
+		t.Errorf("also watching = %q, want just the other session's target", also)
+	}
+}
+
 func TestHookTimeoutIsShort(t *testing.T) {
 	// Hooks run between the user pressing enter and the agent starting to
 	// think. A wedged monitor must cost that moment a fraction of a second.

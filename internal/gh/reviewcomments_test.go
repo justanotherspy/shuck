@@ -370,7 +370,7 @@ func TestPRReviewCommentsSinceRequest(t *testing.T) {
 				}
 				switch {
 				case tc.since.IsZero():
-					// A zero watermark must be omitted, not serialised as year
+					// A zero watermark must be omitted, not serialized as year
 					// 1: the first sighting asks for the whole history.
 					if q.Has("since") {
 						t.Errorf("since = %q on a first sighting, want it omitted", q.Get("since"))

@@ -95,6 +95,63 @@ func FuzzJournalRecovery(f *testing.F) {
 	})
 }
 
+// FuzzMonitorDrain fuzzes the read the delivery contract rests on against
+// arbitrary client requests. The fields arrive over the socket from a client
+// that may be any build of shuck, so every combination of consumer, floor, cap
+// and peek has to hold the two invariants: a peek consumes nothing, and a read
+// that hands events to a named consumer always leaves that consumer's cursor
+// covering them — a cursor left behind what was delivered is a CI failure
+// repeated into a session that already acted on it.
+func FuzzMonitorDrain(f *testing.F) {
+	f.Add("sess", 0, uint64(0), false, uint64(0))
+	f.Add("sess", 2, uint64(1), true, uint64(1))
+	f.Add("", 0, uint64(2), false, uint64(0))
+	f.Add("sess", -1, uint64(0), false, uint64(3))
+	f.Add("sess", 1, ^uint64(0), false, uint64(0))
+	f.Add("\x00", 1000000, uint64(4), true, ^uint64(0))
+
+	f.Fuzz(func(t *testing.T, consumer string, limit int, since uint64, peek bool, cursor uint64) {
+		d, _ := newTestDaemon(t, newFakeClient())
+		d.publish([]Event{
+			{Kind: KindCIFailed, Title: "one"},
+			{Kind: KindCIPassed, Title: "two"},
+			{Kind: KindReviewComment, Title: "three"},
+			{Kind: KindPinsStale, Title: "four"},
+		})
+		d.journal.Seek(consumer, cursor)
+		before := d.journal.Cursor(consumer, 0)
+
+		events := d.drain(Request{Consumer: consumer, Limit: limit, Since: since, Peek: peek})
+
+		// Whatever comes back is a window on the journal: ascending, distinct,
+		// and never more than was asked for.
+		var previous uint64
+		for _, e := range events {
+			if e.ID <= previous {
+				t.Fatalf("IDs out of order: %d after %d", e.ID, previous)
+			}
+			previous = e.ID
+		}
+		if limit > 0 && len(events) > limit {
+			t.Errorf("returned %d events for a limit of %d", len(events), limit)
+		}
+
+		after := d.journal.Cursor(consumer, 0)
+		switch {
+		case peek:
+			if after != before {
+				t.Errorf("a peek moved the cursor from %d to %d", before, after)
+			}
+		case consumer == "":
+			if after != 0 {
+				t.Errorf("an anonymous read invented a cursor at %d", after)
+			}
+		case len(events) > 0 && after < previous:
+			t.Errorf("cursor left at %d after delivering up to %d — the next read would repeat it", after, previous)
+		}
+	})
+}
+
 // FuzzReadCheckoutGitFiles fuzzes the git reading the monitor does on every
 // tick against arbitrary HEAD and config contents. A repository can be in any
 // state mid-rebase, and reading it must never panic or hang.

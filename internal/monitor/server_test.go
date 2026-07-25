@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net"
 	"os"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -376,6 +378,196 @@ func TestClientRejectsAnUnusableEndpoint(t *testing.T) {
 	if _, err := client.Do(context.Background(), Request{Op: OpPing}); !errors.Is(err, ErrNotRunning) {
 		t.Errorf("err = %v, want ErrNotRunning for an endpoint file naming nothing", err)
 	}
+}
+
+// titles reduces an event batch to what it delivered, for compact assertions.
+func titles(events []Event) []string {
+	out := make([]string, 0, len(events))
+	for _, e := range events {
+		out = append(out, e.Title)
+	}
+	return out
+}
+
+// TestDaemonDrainDeliveryPaths pins the three reads the journal serves, which
+// together are the at-most-once delivery contract: a peek must leave a consumer
+// exactly where it was, an explicit Since must beat the stored cursor, and only
+// a named consumer has a cursor to move at all.
+func TestDaemonDrainDeliveryPaths(t *testing.T) {
+	tests := []struct {
+		name string
+		// cursor is where "sess" sits before the read; 0 means it has seen
+		// nothing.
+		cursor     uint64
+		req        Request
+		want       []string
+		wantCursor uint64
+	}{
+		{
+			name:       "a peek hands over the backlog without consuming it",
+			req:        Request{Consumer: "sess", Peek: true},
+			want:       []string{"one", "two", "three"},
+			wantCursor: 0,
+		},
+		{
+			name:       "a peek starts from the consumer's own cursor",
+			cursor:     2,
+			req:        Request{Consumer: "sess", Peek: true},
+			want:       []string{"three"},
+			wantCursor: 2,
+		},
+		{
+			// The Stop hook peeks to decide whether to act; a caller that also
+			// names a floor must get that floor, and still consume nothing.
+			name:       "a peek takes an explicit since over the stored cursor",
+			cursor:     3,
+			req:        Request{Consumer: "sess", Peek: true, Since: 1},
+			want:       []string{"two", "three"},
+			wantCursor: 3,
+		},
+		{
+			name:       "a peek respects the limit",
+			req:        Request{Consumer: "sess", Peek: true, Limit: 1},
+			want:       []string{"three"},
+			wantCursor: 0,
+		},
+		{
+			name:       "since overrides the cursor and drags the consumer forward",
+			req:        Request{Consumer: "sess", Since: 1},
+			want:       []string{"two", "three"},
+			wantCursor: 3,
+		},
+		{
+			name:       "since re-delivers what the consumer already saw, and leaves it caught up",
+			cursor:     3,
+			req:        Request{Consumer: "sess", Since: 1},
+			want:       []string{"two", "three"},
+			wantCursor: 3,
+		},
+		{
+			// The cursor follows what was handed over, not what was asked for:
+			// seeking to Since would silently swallow events 2 and 3.
+			name:       "since with a limit advances only past what it delivered",
+			req:        Request{Consumer: "sess", Since: 1, Limit: 1},
+			want:       []string{"three"},
+			wantCursor: 3,
+		},
+		{
+			name:       "a since past the end delivers nothing and moves nothing",
+			cursor:     1,
+			req:        Request{Consumer: "sess", Since: 99},
+			wantCursor: 1,
+		},
+		{
+			// `shuck monitor events --since` with no session behind it: the
+			// events come back, but nobody's backlog is spent on them.
+			name:       "since without a consumer moves no cursor",
+			cursor:     1,
+			req:        Request{Since: 1},
+			want:       []string{"two", "three"},
+			wantCursor: 1,
+		},
+		{
+			name:       "the plain read drains and advances",
+			cursor:     1,
+			req:        Request{Consumer: "sess"},
+			want:       []string{"two", "three"},
+			wantCursor: 3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, _ := newTestDaemon(t, newFakeClient())
+			d.publish([]Event{
+				{Kind: KindCIFailed, Title: "one"},
+				{Kind: KindCIPassed, Title: "two"},
+				{Kind: KindReviewComment, Title: "three"},
+			})
+			if tt.cursor > 0 {
+				d.journal.Seek("sess", tt.cursor)
+			}
+
+			got := titles(d.drain(tt.req))
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("drain returned %v, want %v", got, tt.want)
+			}
+			if cursor := d.journal.Cursor("sess", 0); cursor != tt.wantCursor {
+				t.Errorf("sess cursor = %d after the read, want %d", cursor, tt.wantCursor)
+			}
+
+			// A read that consumes nothing must be repeatable — that is the
+			// whole reason Stop peeks instead of draining, and the reason an
+			// anonymous caller cannot spend a session's backlog.
+			if tt.req.Peek || tt.req.Consumer == "" {
+				if again := titles(d.drain(tt.req)); !slices.Equal(again, got) {
+					t.Errorf("the same read returned %v the second time, want %v", again, got)
+				}
+			}
+		})
+	}
+}
+
+// TestSortTargetsIsDeterministic guards the diffability of `shuck monitor
+// status`: the targets come out of a map, so the order they arrive in is
+// whatever the runtime felt like that second.
+func TestSortTargetsIsDeterministic(t *testing.T) {
+	// Ordering is byte-wise, which puts #10 before #2. That is the price of a
+	// stable order that needs no parsing, and it is the order tests and readers
+	// diff against.
+	input := []TargetStatus{
+		{Target: "o/r#2", Verdict: "failed"},
+		{Target: "a/a#1", Verdict: "passed"},
+		{Target: "o/r#10", Verdict: "passed"},
+		{Target: "o/s#2", Verdict: "failed"},
+	}
+	want := []TargetStatus{
+		{Target: "a/a#1", Verdict: "passed"},
+		{Target: "o/r#10", Verdict: "passed"},
+		{Target: "o/r#2", Verdict: "failed"},
+		{Target: "o/s#2", Verdict: "failed"},
+	}
+
+	for _, p := range permutations(input) {
+		sortTargets(p)
+		// The verdicts ride along: sorting a projection and reassembling would
+		// pass a target-only check and report the wrong PR as red.
+		if !reflect.DeepEqual(p, want) {
+			t.Fatalf("sortTargets produced %+v, want %+v", p, want)
+		}
+	}
+
+	// Already sorted stays sorted, so a status read twice in a row does not
+	// shuffle under a reader.
+	sorted := slices.Clone(want)
+	sortTargets(sorted)
+	if !reflect.DeepEqual(sorted, want) {
+		t.Errorf("sorting an ordered list changed it to %+v", sorted)
+	}
+
+	// Degenerate inputs are what the daemon actually has most of the time.
+	sortTargets(nil)
+	one := []TargetStatus{{Target: "o/r#1"}}
+	sortTargets(one)
+	if len(one) != 1 || one[0].Target != "o/r#1" {
+		t.Errorf("sorting a single target changed it to %+v", one)
+	}
+}
+
+// permutations enumerates every ordering of in, which is how a test over a
+// map-derived slice covers "whatever order the runtime hands it over in".
+func permutations(in []TargetStatus) [][]TargetStatus {
+	if len(in) <= 1 {
+		return [][]TargetStatus{slices.Clone(in)}
+	}
+	var out [][]TargetStatus
+	for i := range in {
+		rest := slices.Concat(in[:i], in[i+1:])
+		for _, tail := range permutations(rest) {
+			out = append(out, append([]TargetStatus{in[i]}, tail...))
+		}
+	}
+	return out
 }
 
 func TestNewToken(t *testing.T) {
