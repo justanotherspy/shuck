@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/justanotherspy/shuck/internal/cache"
 	"github.com/justanotherspy/shuck/internal/distil"
 	"github.com/justanotherspy/shuck/internal/gh"
 	"github.com/justanotherspy/shuck/internal/logs"
@@ -16,11 +17,19 @@ import (
 	"github.com/justanotherspy/shuck/internal/target"
 )
 
-// summaryLimit bounds one event's body. A failing job's log can run to
-// megabytes; what an agent needs is the first error and its context, and what a
-// session can afford is a few kilobytes. distil.CapSummary does the cut on a
-// line boundary and says so.
-const summaryLimit = 12 << 10
+// Body budgets for a CI failure event.
+//
+// The right amount of log to hand an agent depends on how much log there is.
+// Under wholeLogLimit the whole thing is cheaper to read than to reason about
+// in fragments, so it goes in verbatim — no excerpting, nothing to wonder about
+// having been cut. Above it the distilled failing steps go in instead, and past
+// summaryLimit even those are trimmed. Either way the event names the file the
+// raw log is cached at, so an agent that wants the rest never has to go back to
+// GitHub for it.
+const (
+	wholeLogLimit = 8 << 10
+	summaryLimit  = 12 << 10
+)
 
 // prClient is the slice of gh.Client the poller needs. It is an interface so
 // the whole polling round — the part with all the interesting logic — is
@@ -337,10 +346,17 @@ func (p *poller) failureEvents(ctx context.Context, st *prState, pr model.PR, jo
 	return events
 }
 
-// failureBody renders a failed job the way `shuck logs` would: the step
-// overview, then each failed step's command and its error excerpt. Sharing the
-// renderer matters — an agent should not have to learn a second format for the
-// same information depending on whether it asked or was told.
+// failureBody builds the text an agent is handed for a failed job.
+//
+// A short log goes in whole: under wholeLogLimit there is nothing to gain by
+// excerpting it, and an agent reading the complete output never has to wonder
+// what was cut. A long one is rendered the way `shuck logs` renders it — the
+// step overview, then each failed step's command and its error excerpt —
+// because sharing the renderer means an agent does not learn a second format
+// for the same information depending on whether it asked or was told.
+//
+// Either way the raw log is cached and the body says where, so the full text is
+// a file read away rather than another round trip to GitHub.
 //
 // A job whose log cannot be downloaded still produces an event. Knowing a job
 // failed matters even when the reason is out of reach.
@@ -349,24 +365,55 @@ func (p *poller) failureBody(ctx context.Context, st *prState, job model.JobResu
 	if err != nil {
 		return fmt.Sprintf("(logs unavailable: %v)", err)
 	}
-	res, err := distil.CIFailure(distil.Input{
-		JobName:       job.Name,
-		JobConclusion: job.Conclusion,
-		Steps:         job.Steps,
-		RawLog:        raw,
-		Options:       distil.Options{Extract: p.extract, MaxCommandLines: logs.DefaultMaxCommandLines},
-	})
-	if err != nil {
-		return fmt.Sprintf("(could not distil the log: %v)", err)
+	logPath := p.cacheLog(st, job, raw)
+
+	body := strings.TrimRight(logs.StripTimestamps(raw), "\n")
+	if len(raw) > wholeLogLimit {
+		res, derr := distil.CIFailure(distil.Input{
+			JobName:       job.Name,
+			JobConclusion: job.Conclusion,
+			Steps:         job.Steps,
+			RawLog:        raw,
+			Options:       distil.Options{Extract: p.extract, MaxCommandLines: logs.DefaultMaxCommandLines},
+		})
+		if derr != nil {
+			return fmt.Sprintf("(could not distil the log: %v)", derr)
+		}
+		job.FailedSteps = res.FailedSteps
+		var b strings.Builder
+		render.Job(&b, job)
+		body = strings.TrimSpace(b.String())
 	}
 
-	job.FailedSteps = res.FailedSteps
-	var b strings.Builder
-	render.Job(&b, job)
+	body, _ = distil.CapSummary(body, summaryLimit, "… trimmed.")
+	return body + "\n\n" + fullLogNote(st, logPath)
+}
 
-	body, _ := distil.CapSummary(strings.TrimSpace(b.String()), summaryLimit,
-		fmt.Sprintf("… truncated. Full logs: shuck logs %s/%s %d", st.Owner, st.Repo, st.Number))
-	return body
+// cacheLog stores the raw log beside the rest of shuck's cache for this PR and
+// returns its path, or "" when it could not be written. It is the same file
+// `shuck logs` reuses on a repeat run, so the monitor warms that cache as a
+// side effect of reporting.
+func (p *poller) cacheLog(st *prState, job model.JobResult, raw string) string {
+	path, err := cache.JobLogPath(st.Owner, st.Repo, st.Number, job.ID, job.RunAttempt)
+	if err != nil {
+		return ""
+	}
+	if err := cache.SaveJobLog(st.Owner, st.Repo, st.Number, job.ID, job.RunAttempt, raw); err != nil {
+		p.logf("cache job log for %s: %v", st.Target, err)
+		return ""
+	}
+	return path
+}
+
+// fullLogNote tells the reader where the rest is. The file comes first because
+// it is free to read; the command is the fallback for when the cache has been
+// swept.
+func fullLogNote(st *prState, logPath string) string {
+	if logPath == "" {
+		return fmt.Sprintf("Full log: shuck logs %s/%s %d", st.Owner, st.Repo, st.Number)
+	}
+	return fmt.Sprintf("Full log on disk: %s\n(or re-fetch it with: shuck logs %s/%s %d)",
+		logPath, st.Owner, st.Repo, st.Number)
 }
 
 // verdictEvent reports the moment every check on a head commit has finished.

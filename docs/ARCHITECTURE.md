@@ -253,6 +253,15 @@ watch began stays silent, which is correct: it is a fact, not news. The
 consequence to know about is the converse — a watch started mid-run reports the
 verdict, one started after the run does not.
 
+A CI failure's body is sized to the log rather than to a fixed budget: under
+`wholeLogLimit` (8 KiB) the raw log goes in verbatim with GitHub's per-line
+timestamps stripped, and above it `render.Job` produces the same digest
+`shuck logs` prints. Both are then capped at `summaryLimit` (12 KiB) for the
+journal, and the body always ends with the path the raw log was cached at
+(`cache.JobLogPath`) — so an agent handed a trimmed excerpt reads the rest off
+disk instead of going back to GitHub. Caching it there also warms the cache
+`shuck logs` reuses.
+
 Every event carries an id, a time, the watch and target it came from, a
 one-line `Title`, an optional `Body`, and a URL. `Title` is enough to decide
 whether to care; `Body` is enough to act without a follow-up call. That split is

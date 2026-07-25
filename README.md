@@ -119,7 +119,7 @@ whose cursor advances, so two consumers each see every event once.
 
 | Event | What it carries |
 | --- | --- |
-| `ci.failed` | One job went red. Body: the distilled failing-step logs, same as `shuck logs`. |
+| `ci.failed` | One job went red. Body: the log (whole if short, distilled if long) plus where the raw log is cached. |
 | `ci.passed` | Every check on a head commit finished green. Once per commit. |
 | `ci.started` | First sighting of checks for a new head commit — your push registered. |
 | `review.comment` | A new inline comment, with its diff hunk, ±10 lines of the file at the commit it is anchored to, and the thread it replies to. |
@@ -134,6 +134,12 @@ what failed, was cancelled, or is still running — so `ci.passed` is inferred
 from having watched checks run and then stop. A commit whose checks had already
 finished when the watch began stays silent: that is a fact about the past, not
 news.
+
+How much log you get depends on how much log there is. Under 8 KiB the whole
+thing goes in verbatim — there is nothing to gain by excerpting it, and nothing
+to wonder about having been cut. Above that you get the distilled failing steps
+instead. Either way the event ends with the path the raw log was cached at, so
+the full text is a file read away rather than another round trip to GitHub.
 
 Events land in a durable append-only journal under `~/.cache/shuck/monitor/`
 with a cursor per consumer, so restarting the daemon neither replays history

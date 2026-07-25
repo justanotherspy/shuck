@@ -3,10 +3,12 @@ package monitor
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/justanotherspy/shuck/internal/cache"
 	"github.com/justanotherspy/shuck/internal/gh"
 	"github.com/justanotherspy/shuck/internal/model"
 )
@@ -207,6 +209,84 @@ func TestPollFailedJobReportedOncePerAttempt(t *testing.T) {
 	c.failed[0].RunAttempt = 2
 	if _, events = p.Poll(context.Background(), st, now.Add(2*time.Minute)); hasKind(events, KindCIFailed) == nil {
 		t.Error("a re-run attempt should be reported again")
+	}
+}
+
+// TestPollShortLogGoesInWhole covers the sizing rule: under wholeLogLimit
+// there is nothing to gain by excerpting, and an agent reading the complete
+// output never has to wonder what was cut.
+func TestPollShortLogGoesInWhole(t *testing.T) {
+	c := newFakeClient()
+	c.pr = openPR("abc1234def")
+	c.fingerprint = "fp-1"
+	c.failed = []model.JobResult{failedJob(11, "test")}
+	c.jobLog = failingLog
+	t.Setenv("SHUCK_HOME", t.TempDir())
+
+	before := baseState()
+	before.Verdict = ""
+	_, events := testPoller(c).Poll(context.Background(), before, now)
+
+	e := hasKind(events, KindCIFailed)
+	if e == nil {
+		t.Fatal("expected a failure event")
+	}
+	// Every line of the log, not a distilled subset.
+	for _, want := range []string{"##[group]Run make test", "--- FAIL: TestThing", "thing_test.go:42", "exit code 1"} {
+		if !strings.Contains(e.Body, want) {
+			t.Errorf("body is missing %q from the whole log:\n%s", want, e.Body)
+		}
+	}
+	if strings.Contains(e.Body, "▸ Step") {
+		t.Errorf("a short log should go in verbatim, not as a rendered digest:\n%s", e.Body)
+	}
+}
+
+// TestPollLongLogIsExcerptedWithItsPath covers the other half: past the limit
+// the distilled failing steps go in instead, and the body says where the rest
+// is so the agent never has to go back to GitHub for it.
+func TestPollLongLogIsExcerptedWithItsPath(t *testing.T) {
+	c := newFakeClient()
+	c.pr = openPR("abc1234def")
+	c.fingerprint = "fp-1"
+	c.failed = []model.JobResult{failedJob(11, "test")}
+	// Pad past wholeLogLimit with noise the excerpt should drop.
+	c.jobLog = failingLog + strings.Repeat("2026-07-24T12:00:03.0000000Z noise\n", 500)
+	home := t.TempDir()
+	t.Setenv("SHUCK_HOME", home)
+
+	before := baseState()
+	before.Verdict = ""
+	_, events := testPoller(c).Poll(context.Background(), before, now)
+
+	e := hasKind(events, KindCIFailed)
+	if e == nil {
+		t.Fatal("expected a failure event")
+	}
+	if !strings.Contains(e.Body, "thing_test.go:42") {
+		t.Errorf("the excerpt should still carry the error:\n%s", e.Body)
+	}
+	if strings.Count(e.Body, "noise") > 20 {
+		t.Errorf("a long log should be excerpted, not pasted whole:\n%s", e.Body[:400])
+	}
+	if !strings.Contains(e.Body, "Full log on disk:") {
+		t.Errorf("the body must say where the rest is:\n%s", e.Body)
+	}
+
+	// And the path it names is real, and holds the whole log.
+	path, err := cache.JobLogPath("o", "r", 7, 11, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(e.Body, path) {
+		t.Errorf("body should name the cached log's path %q:\n%s", path, e.Body)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("the log the event points at is not on disk: %v", err)
+	}
+	if string(raw) != c.jobLog {
+		t.Error("the cached log should be the whole raw log, byte for byte")
 	}
 }
 

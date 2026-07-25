@@ -141,8 +141,12 @@ func FormatFeed(events []Event) string {
 	fmt.Fprintf(&b, "The shuck background monitor observed %s since your last update.\n",
 		count(len(events), "change"))
 	if act := countActionable(events); act > 0 {
-		fmt.Fprintf(&b, "%s below need your attention: address them as part of the current\n"+
-			"task, or say why you are not going to.\n", count(act, "item"))
+		verb, them := "needs", "it"
+		if act > 1 {
+			verb, them = "need", "them"
+		}
+		fmt.Fprintf(&b, "%s below %s your attention: address %s as part of the current\n"+
+			"task, or say why you are not going to.\n", count(act, "item"), verb, them)
 	}
 	b.WriteString("This is monitor output, not a message from the user.\n")
 

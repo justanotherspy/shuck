@@ -134,6 +134,14 @@ func logFile(owner, repo string, pr int, jobID int64, attempt int) (string, erro
 	return filepath.Join(dir, "logs", name), nil
 }
 
+// JobLogPath reports where a job attempt's raw log is cached, whether or not
+// it has been written yet. The background monitor puts this path in a CI
+// failure event so an agent handed a trimmed excerpt can read the whole log
+// off disk instead of going back to GitHub for it.
+func JobLogPath(owner, repo string, pr int, jobID int64, attempt int) (string, error) {
+	return logFile(owner, repo, pr, jobID, attempt)
+}
+
 // SaveJobLog persists a job attempt's whole raw log so a later run can re-parse
 // it locally (e.g. under different context flags) without re-downloading.
 func SaveJobLog(owner, repo string, pr int, jobID int64, attempt int, raw string) error {

@@ -49,7 +49,7 @@ It emits **events**, each with a one-line title and an agent-ready body:
 
 | Kind | What happened | Body |
 | --- | --- | --- |
-| `ci.failed` | a job went red | the distilled failing-step logs — the same excerpt `shuck logs` prints |
+| `ci.failed` | a job went red | the log itself: whole when it is under 8 KiB, the distilled failing steps when it is longer — plus the path the raw log was cached at |
 | `ci.passed` | every check on the head commit finished green (once per commit) | — |
 | `ci.started` | checks registered for a new head commit | — |
 | `review.comment` | a new inline review comment | the diff hunk, ±10 lines of the file at the PR head, and the earlier thread comments when it is a reply |
