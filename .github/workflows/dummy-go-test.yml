@@ -1,0 +1,126 @@
+# Scenario: the two failure shapes a real Go CI job produces, which the other
+# dummy workflows do not cover — those exit non-zero from a shell line or from a
+# marketplace action, never from a toolchain.
+#
+#   go-test-fail  — a genuine `go test` failure: `--- FAIL:` lines, named
+#                   failing subtests, and `file:line: want/got` output. The real
+#                   signal sits below a wall of `=== RUN` chatter, and the
+#                   failing step's command is `go test -v ./...` rather than
+#                   `exit 1`.
+#   go-build-fail — a compile error: a `# package` header followed by
+#                   `file:line:col: message` diagnostics on stderr, the shape
+#                   that carries file:line annotations.
+#
+# Each job writes its module under RUNNER_TEMP with printf (not a heredoc — a
+# heredoc terminator cannot sit at column 0 inside a YAML block scalar), so this
+# workflow never touches the repository's own `make test` / `make build`.
+name: Dummy Go Test Fail
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go-test-fail:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (passes)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Set up Go (passes)
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.25'
+      - name: Write a throwaway module with a failing test
+        run: |
+          mkdir -p "${RUNNER_TEMP}/kernel"
+          cd "${RUNNER_TEMP}/kernel"
+          printf '%s\n' \
+            'module example.com/kernel' \
+            '' \
+            'go 1.25' > go.mod
+          printf '%s\n' \
+            'package kernel' \
+            '' \
+            '// Shuck strips the husk from an ear and returns the kernel.' \
+            'func Shuck(ear string) string {' \
+            'if len(ear) < 4 {' \
+            'return ear' \
+            '}' \
+            'return ear[4:]' \
+            '}' \
+            '' \
+            '// Ears counts the ears in a crate.' \
+            'func Ears(crate []string) int {' \
+            'return len(crate) - 1' \
+            '}' > kernel.go
+          printf '%s\n' \
+            'package kernel' \
+            '' \
+            'import "testing"' \
+            '' \
+            'func TestShuck(t *testing.T) {' \
+            'cases := []struct{ name, ear, want string }{' \
+            '{name: "husked", ear: "huskkernel", want: "kernel"},' \
+            '{name: "bare", ear: "husk", want: "kernel"},' \
+            '{name: "empty", ear: "", want: ""},' \
+            '}' \
+            'for _, tc := range cases {' \
+            't.Run(tc.name, func(t *testing.T) {' \
+            'if got := Shuck(tc.ear); got != tc.want {' \
+            't.Errorf("Shuck(%q) = %q, want %q", tc.ear, got, tc.want)' \
+            '}' \
+            '})' \
+            '}' \
+            '}' \
+            '' \
+            'func TestEars(t *testing.T) {' \
+            'crate := []string{"a", "b", "c"}' \
+            'if got := Ears(crate); got != len(crate) {' \
+            't.Fatalf("Ears(%v) = %d, want %d", crate, got, len(crate))' \
+            '}' \
+            '}' > kernel_test.go
+          gofmt -w kernel.go kernel_test.go
+          echo "throwaway module written to ${RUNNER_TEMP}/kernel"
+      - name: Run the tests
+        run: |
+          cd "${RUNNER_TEMP}/kernel"
+          go test -v ./...
+
+  go-build-fail:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Go (passes)
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.25'
+      - name: Write a throwaway module that will not compile
+        run: |
+          mkdir -p "${RUNNER_TEMP}/husk"
+          cd "${RUNNER_TEMP}/husk"
+          printf '%s\n' \
+            'module example.com/husk' \
+            '' \
+            'go 1.25' > go.mod
+          printf '%s\n' \
+            'package husk' \
+            '' \
+            'import "strings"' \
+            '' \
+            '// Trim drops the husk prefix. This file does not compile on' \
+            '// purpose: strings.Trimm is misspelled, count is declared and' \
+            '// never used, and Ratio returns the wrong type.' \
+            'func Trim(ear string) string {' \
+            'count := len(ear)' \
+            'return strings.Trimm(ear, "husk")' \
+            '}' \
+            '' \
+            'func Ratio(kernels, ears int) string {' \
+            'return kernels / ears' \
+            '}' > husk.go
+          echo "throwaway module written to ${RUNNER_TEMP}/husk"
+      - name: Build it
+        run: |
+          cd "${RUNNER_TEMP}/husk"
+          go build ./...
