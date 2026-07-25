@@ -12,7 +12,7 @@
     {
       "name": "shuck",
       "source": "./plugins/shuck",
-      "description": "A background monitor that keeps Claude current on your PR: new CI failures with their exact failing step logs, review comments with code context, and stale GitHub Action pins \u2014 delivered into the session as they happen. Plus the on-demand shuck commands (logs, reviews, security, compliance, Dependabot, pins, SHA-pinning) as a skill."
+      "description": "A background monitor that keeps Claude current on your PR: new CI failures with their exact failing step logs, review comments with code context, and stale GitHub Action pins \u2014 delivered into the session as they happen. Plus the on-demand shuck commands (logs, reviews, security alerts, action pinning) as a skill."
     }
   ]
 }

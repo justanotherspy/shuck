@@ -46,10 +46,7 @@ The command set — the monitor above, and everything else one shot, no daemon:
 | `shuck reviews` | A PR's reviews and review-comment threads. |
 | `shuck pins` | Workflow actions that are not SHA-pinned, or whose pin has gone stale. |
 | `shuck security` | A repo's security alerts (code scanning, secrets, Dependabot). |
-| `shuck compliance` | Check a repo's live settings against a committed `.github/compliance.yml`. |
-| `shuck dependabot` | Audit `.github/dependabot.yml` against the ecosystems the repo uses. |
 | `shuck action` | Resolve a GitHub Action to its latest tag + commit SHA for pinning. |
-| `shuck image` | Resolve a GHCR container image to its latest tag + digest for pinning. |
 
 It is one binary and one command surface. Add `--json` to any report for stable,
 machine-readable output, and install the
@@ -182,13 +179,7 @@ shuck logs (l) [target] [--run <id|url>]        # failing CI step logs only
 shuck reviews (r) [target]                      # reviews only
 shuck pins (p) [dir]                            # unpinned / stale workflow actions
 shuck action (a) <owner>/<action>[@<version>]   # SHA-pin a GitHub Action
-shuck image (i) [owner | ghcr.io/owner/name[:tag]]  # list / digest-pin GHCR images
 shuck security (s) [owner/repo | url]           # security alerts
-shuck compliance (c) [owner/repo | url]         # settings vs .github/compliance.yml
-shuck compliance discover [owner/repo]          # snapshot live settings into the config
-shuck dependabot (d) [owner/repo | url]         # audit .github/dependabot.yml vs the repo's ecosystems
-shuck dependabot discover [owner/repo]          # scaffold/extend .github/dependabot.yml
-shuck dependabot fix [owner/repo]               # fill best-practice gaps in existing entries
 shuck setup                                     # install the Claude Code skill + CLAUDE.md note
 shuck version [--check] | shuck upgrade         # version / self-update
 ```
@@ -200,8 +191,7 @@ already downloaded are re-parsed locally instead of re-fetched.
 **Exit codes are operational, gating is opt-in**: `0` means the report was
 produced (even if it shows failures), `2` means an operational error. Pass
 `--exit-code` to make failing checks (or open security alerts, or unpinned
-actions) exit `1` for CI gating. `shuck compliance` is the exception: drift
-exits `1` by default (suppress with `--exit-zero`).
+actions) exit `1` for CI gating.
 
 ### Flags
 
@@ -349,7 +339,7 @@ limit. Tag lists are cached for an hour (`--refresh` re-fetches). The background
 monitor runs the same audit against watched trees, re-auditing when the workflow
 files change.
 
-## Pinning actions and images
+## Pinning actions
 
 `shuck action` resolves a GitHub Action to its latest matching release tag and
 the immutable commit SHA it points to — a ready-to-paste SHA pin for `uses:`
@@ -363,20 +353,13 @@ actions/checkout
   pin: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v4.2.2
 ```
 
-`shuck image` does the same for GHCR container images, resolving to the latest
-matching tag and its manifest digest (for multi-arch images, the image-index
-digest — the correct pin target):
+It prefers the latest **stable** semver tag, falling back to a prerelease only
+when nothing stable matches, and keeps you on the major you already chose (`@v4`
+resolves within 4.x.x; a newer major is mentioned in a note rather than applied
+silently). Results are cached for an hour; `--refresh` re-fetches.
 
-```sh
-shuck image chainguard                       # list every image under an owner
-shuck image ghcr.io/justanotherspy/shuck:v1  # resolve the latest v1.x.x to its digest
-```
-
-Both prefer the latest **stable** semver tag (prereleases only when nothing
-stable matches); cosign signature/attestation referrer tags are never selected.
-Resolving a single public image works without a token; **listing** an owner's
-images uses the GitHub Packages API, which requires a classic token with
-`read:packages`. Results are cached for an hour; `--refresh` re-fetches.
+For a whole checkout at once, use [`shuck pins`](#action-pin-audit) — it finds
+every `uses:` that is unpinned or stale and prints the corrected line for each.
 
 ## Security alerts
 
@@ -392,90 +375,6 @@ shuck security --exit-code owner/repo    # exit 1 on open findings (CI gating)
 ```
 
 Needs a token with `security_events` (or `repo`) scope for most sources.
-
-## Settings compliance
-
-`shuck compliance` checks a repo's live GitHub settings — merge options,
-features, security, Actions policies, and branch protection (classic rules
-**and** rulesets) — against a `.github/compliance.yml` committed in the repo:
-
-```yaml
-# .github/compliance.yml — the intended settings for this repo.
-repository:
-  allow_merge_commit: false
-  delete_branch_on_merge: true
-security:
-  secret_scanning: true
-  vulnerability_alerts: true
-actions:
-  default_workflow_permissions: read
-branch_protection:
-  main:
-    required_approving_review_count: 1
-    required_status_checks: [test, lint]
-```
-
-The config is **partial by design** — only declared keys are checked — and
-strict: unknown keys and invalid values are rejected, never silently skipped.
-Settings the token cannot read (branch protection, security, and Actions
-policies need admin access; merge settings need a classic token) are reported
-as **skipped**, never a false pass. Exit is `0` when compliant, `1` on drift
-(for CI gating; `--exit-zero` makes it report-only), `2` on error.
-
-Don't write the config by hand — bootstrap or refresh it from the live settings:
-
-```sh
-shuck compliance discover            # snapshot live settings into .github/compliance.yml
-shuck compliance discover --dry-run  # preview without writing
-```
-
-A missing config gets a complete snapshot; an existing one keeps only its
-declared keys and has drifted values patched in place (comments preserved).
-
-## Dependabot audit
-
-`shuck dependabot` checks a repo's `.github/dependabot.yml` against the package
-ecosystems the repo **actually uses** — detected from its manifest files
-(`go.mod`, `package.json`, `Dockerfile`, `*.tf`, `*.csproj`, Actions workflows,
-…). It flags ecosystems that are used but have no update entry, and best-practice
-gaps in each entry (missing `groups`, `assignees`, `labels`, a `cooldown`,
-`open-pull-requests-limit`, or a `commit-message` prefix):
-
-```sh
-shuck dependabot                         # audit the local checkout
-shuck dependabot owner/repo              # detect ecosystems from the repo's file tree
-shuck dependabot --json owner/repo       # stable JSON document
-shuck dependabot --exit-code --error-on-missing-ecosystem owner/repo  # gate CI on coverage
-```
-
-Findings are `error` / `warning` / `info`. Exit is `0` whenever a report is
-produced and `2` on an operational error; `--exit-code` gates on errors,
-`--error-on-missing-ecosystem` makes an uncovered ecosystem an error, and
-`--strict` makes warnings gate too.
-
-Don't write the config by hand — scaffold or extend it from the detected
-ecosystems:
-
-```sh
-shuck dependabot discover            # scaffold/extend .github/dependabot.yml
-shuck dependabot discover --dry-run  # preview without writing
-```
-
-A missing config is scaffolded in full (weekly schedule, a minor/patch group, a
-label, a cooldown, an open-PR limit, a commit-message prefix per ecosystem); an
-existing one gets an entry appended for each uncovered ecosystem, comments
-preserved. Add assignees yourself — shuck can't know who should own the PRs.
-
-`discover` only closes coverage gaps; it never edits the entries already in the
-config. To clear the best-practice findings on existing entries, use `fix`,
-which fills in each entry's missing `groups`, `labels`, `cooldown`,
-`open-pull-requests-limit`, and `commit-message` prefix in place (comments and
-key order preserved, present fields untouched, no network):
-
-```sh
-shuck dependabot fix             # patch .github/dependabot.yml in place
-shuck dependabot fix --dry-run   # preview without writing
-```
 
 ## Claude Code plugin
 

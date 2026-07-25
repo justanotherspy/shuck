@@ -5,15 +5,20 @@ Guidance for agents working in this repository.
 ## What this is
 
 `shuck` is one portable Go binary — a CLI and a Claude Code plugin — that
-prints the exact failing CI step logs for a GitHub PR. Its
-centrepiece is `shuck monitor`: a local background daemon that follows the
-working trees you are in, tracks whichever PR the current branch belongs to,
-and turns new CI failures, review comments, and stale action pins into events a
-session is handed as they happen. On demand it also summarizes PR reviews,
-lists a repo's security alerts, checks live repo settings against a committed
-compliance policy, audits a repo's Dependabot config against the ecosystems it
-uses, audits workflow action pins, and SHA-pins GitHub Actions / GHCR images.
-State lives under `~/.cache/shuck`.
+prints the exact failing CI step logs for a GitHub PR. Its centrepiece is
+`shuck monitor`: a local background daemon that follows the working trees you
+are in, tracks whichever PR the current branch belongs to, and turns new CI
+failures, review comments, and stale action pins into events a session is
+handed as they happen. On demand it also summarizes PR reviews, lists a repo's
+security alerts, audits a checkout's workflow action pins, and SHA-pins a
+single GitHub Action. State lives under `~/.cache/shuck`.
+
+The command surface is deliberately narrow, and the monitor is the point:
+everything shuck does answers "what is wrong with the branch I am on right
+now?". Repo-hygiene audits that answer a quarterly question instead — settings
+against a policy file, Dependabot config coverage, GHCR image digests — were
+removed rather than carried; if a proposed feature is not something you would
+want pushed into a session mid-task, it probably does not belong here.
 
 There is nothing to deploy: no server, no webhook, no credential beyond the
 GitHub token. `ci.yml` holds a standing portability budget — a step that fails
@@ -69,8 +74,6 @@ issue.
   comment on PRs.
 - Issue and PR templates live in `.github/`. Security vulnerabilities go
   through `SECURITY.md`, not public issues.
-- The repo's own `.github/compliance.yml` is a full snapshot of its settings —
-  if repo settings change, re-sync it with `shuck compliance discover`.
 
 ## Commands
 
@@ -105,21 +108,18 @@ what changed as events.
 | Package | Responsibility |
 | --- | --- |
 | `main.go` | Thin entry: dispatches `setup`, else `cli.Run`. Holds the `go:embed` of the plugin's `SKILL.md`. |
-| `internal/cli` | Flag parsing + orchestration. Subcommands: `logs`, `reviews`, `all` (the bare-`shuck` default), `monitor`, `pins`, `action`, `image`, `security`, `compliance` (+ `discover`), `dependabot` (+ `discover`, `fix`), `version`, `upgrade`; single-letter aliases via `subcommandAliases` (`m` = monitor, `p` = pins). The exported cores (`Inspect`, `Security`, `Compliance`, `ComplianceDiscover`, `Dependabot`, `DependabotDiscover`, `DependabotFix`, `Action`, `Image`, `Images`, `Pins`) are the front-end-agnostic pipeline embedders reuse. `monitor.go` is a thin client over the daemon; `pins.go` also builds the cache-backed `pins.Resolver` the daemon is handed. |
+| `internal/cli` | Flag parsing + orchestration. Subcommands: `logs`, `reviews`, `all` (the bare-`shuck` default), `monitor`, `pins`, `action`, `security`, `version`, `upgrade`; single-letter aliases via `subcommandAliases` (`m` = monitor, `p` = pins, `s` = security). The exported cores (`Inspect`, `Security`, `Action`, `Pins`) are the front-end-agnostic pipeline embedders reuse. `monitor.go` is a thin client over the daemon; `pins.go` also builds the cache-backed `pins.Resolver` the daemon is handed. |
 | `internal/monitor` | The background monitor (`shuck monitor`): a local daemon that follows working trees, resolves each to its open PR, polls GitHub on an adaptive cadence, and publishes events. `git.go` reads a tree's repo + branch (worktrees included, no git library); `watch.go` the watch set; `poll.go` one target's round; `event.go` the event model + agent-facing rendering; `journal.go` the durable JSONL log + per-consumer cursors; `protocol.go`/`server.go`/`client.go` the one-line-JSON local IPC; `hook.go` the Claude Code hook entry points; `pins.go` the per-tree workflow pin audit. |
 | `internal/pins` | `shuck pins` / `check_pins`: find the `uses:` references in a checkout's workflow and action files (`WorkflowFiles` → `Scan`, a schema-free `yaml.Node` walk keyed on any mapping key spelled `uses`) and classify each against its action's latest release (`Audit`, via a caller-supplied `Resolver`) into pinned / stale / unpinned / skipped, each finding carrying the corrected line. `Render` + `Document` are the text and stable-JSON views. Pure and offline-testable. |
 | `internal/jsonout` | The stable, versioned `--json` schema. Its view types are deliberately separate from `model` so internal refactors don't break consumers. |
 | `internal/action` | `shuck action`: pick the latest semver tag matching an `owner/action[@version]` ref (stable preferred, prerelease fallback; `Select`) → SHA-pin line / JSON (`action.Document`). |
-| `internal/image` | `shuck image`: resolve a GHCR image ref's latest matching tag + manifest digest (`Select`) → digest-pin line / JSON (`image.Document` / `ListDocument`). |
-| `internal/semver` | Tiny dependency-free semver (`Parse` / `Compare` / `Constraint.Matches`) shared by `action` / `image`. |
+| `internal/semver` | Tiny dependency-free semver (`Parse` / `Compare` / `Constraint.Matches`) behind `action`'s tag selection. |
 | `internal/security` | Sort + render a `model.SecurityReport` (code scanning, secret scanning, Dependabot) to text / JSON. Pure presentation. |
-| `internal/compliance` | Strict-parse `.github/compliance.yml` (`Parse`) and `Evaluate` it against live settings into a `model.ComplianceReport`; the inverse snapshot (`Discover` / `FromActual`, comment-preserving yaml.Node patching) lives in `discover.go`. Pure logic. |
-| `internal/dependabot` | Strict-parse `.github/dependabot.yml` (`Parse`), detect the repo's ecosystems from its file paths (`Detect`, `ecosystem.go`), and `Audit` the two into a `model.DependabotReport` (coverage + best-practice findings). `Discover` scaffolds/extends a best-practice config (comment-preserving yaml.Node append); `Fix` fills best-practice fields onto existing entries in place (comment-preserving yaml.Node patch). Pure logic. |
 | `internal/release` | Self-update: resolve the latest release, download + checksum-verify, replace the binary. Backs `version --check` / `upgrade`. |
 | `internal/setup` | `shuck setup`: install the embedded skill to `~/.claude/skills/shuck` and add a managed CLAUDE.md note. |
 | `internal/target` | Resolve owner/repo/PR from args or the local repo (go-git). |
-| `internal/gh` | go-github (v89) wrappers: PR head (`GetPR`), open-PR lookup by branch (`FindOpenPR`), Actions runs/jobs/logs, checks, the free `RateRemaining` quota probe, security alerts, compliance reads (repo settings, branch protection incl. rulesets, Actions policy), the recursive Git Trees file listing (`RepoTree`, for dependabot ecosystem detection), GHCR Packages API. Plus two hand-rolled clients: GraphQL for reviews (`reviews.go`) and anonymous OCI registry-v2 (`registry.go`). `reviewcomments.go` is the REST review feed the monitor polls (`PRReviewsSince`, `PRReviewCommentsSince`, `PRCommentThread`). |
-| `internal/cache` | On-disk cache under `~/.cache/shuck/…`: per-PR reports + whole raw job logs, action tag lists, security reports, image listings. `Purge(ttl, keep)` sweeps stale entries on every run. |
+| `internal/gh` | go-github (v89) wrappers: PR head (`GetPR`), open-PR lookup by branch (`FindOpenPR`), Actions runs/jobs/logs, checks, the free `RateRemaining` quota probe, security alerts, and `content.go`'s `FileContent`/`FileNotFound` (the file at a PR head, for review-comment context). Plus one hand-rolled client: GraphQL for reviews (`reviews.go`). `reviewcomments.go` is the REST review feed the monitor polls (`PRReviewsSince`, `PRReviewCommentsSince`, `PRCommentThread`). |
+| `internal/cache` | On-disk cache under `~/.cache/shuck/…`: per-PR reports + whole raw job logs, action tag lists, security reports. `Purge(ttl, keep)` sweeps stale entries on every run. |
 | `internal/logs` | Parse a job log into `##[group]`-delimited sections; extract the high-signal error excerpt. |
 | `internal/distil` | The shared distillation core (`CIFailure`): raw job log + Actions-API step metadata → per-step failure detail (`FailedSteps`) + an agent-ready `Summary`. `CapSummary` byte-budgets a summary for delivery (UTF-8-safe line-prefix cut + caller's truncation note) — used for event bodies and for the text a hook injects. `ReviewComment` / `Review` format a review event for the monitor (goldens under `testdata/review/`); the CLI's reviews view is a separate GraphQL path. Pure — layers on `logs` / `classify` / `model`; backs `cli` and `monitor`. |
 | `internal/render` | Format a `model.Report` to text. |
@@ -142,14 +142,13 @@ what changed as events.
 - **Exit codes are operational, gating is opt-in**: report commands exit `0`
   whenever a report is produced (even one showing failures) and `2` on an
   operational error; `--exit-code` makes failures exit `1` for CI gating.
-  Exception: `compliance` gates by default (`1` on drift; `--exit-zero`
-  suppresses). See `cli.exitFor`.
+  See `cli.exitFor`.
 - **Caching is advisory**: cheap metadata is always re-validated. On the same
   head commit, whole raw job logs are cached and re-parsed locally under the
   current `--full` / `--context` / `--pattern` flags, so re-runs cost no
   network. `logs` / `reviews` each persist their own dimension and copy the
   other from the existing cache, so neither clobbers the other. Action /
-  security / image caches are TTL'd (1h) and keyed on a cheap
+  Action / security caches are TTL'd (1h) and keyed on a cheap
   `gh.DefaultBranchSHA` probe; `--refresh` forces a re-fetch.
 - **Reviews**: `gh.PRReviews` (GraphQL — thread resolution is GraphQL-only)
   groups by verdict, collapses resolved/outdated threads to one line, and caps
@@ -195,32 +194,14 @@ what changed as events.
   never the finding. A suggested pin stays on the major the author chose (`@v4`
   → newest 4.x.x); a newer major goes in the note. A file that will not parse is
   one skipped finding, not an aborted audit.
-- **Soft degradation, never false results**: security sources and compliance
-  reads degrade independently (404 ⇒ disabled, 403 ⇒ forbidden/skipped); an
-  unreadable setting is a *skipped* check, never a false pass or fail. Merge
-  settings are only visible to classic tokens; branch protection unions
-  classic rules with repository rulesets (stricter wins). The raw secret value
-  is never read from the API, so it cannot leak.
-- **Compliance config is the source of truth and partial**: only declared keys
-  are checked; `compliance.Parse` rejects unknown keys and invalid enum values
-  so a typo can't silently skip a check.
-- **Dependabot audit is repo-driven**: the repo's *files* are the source of
-  truth for which ecosystems exist (`dependabot.Detect` maps manifest paths to
-  ecosystems), and the config is checked against them. Detection is conservative
-  — an ecosystem the config declares but no manifest matched is an *info* note,
-  never a false failure; coverage gaps are warnings (errors with
-  `--error-on-missing-ecosystem`). `dependabot.Parse` is strict (unknown keys,
-  bad ecosystems/intervals rejected). A missing config is a finding, not a fatal
-  error; report exit codes follow the same opt-in `--exit-code` gating as the
-  other report commands. Detection reads the local working tree for the local
-  repo and `gh.RepoTree` (recursive Git Trees) for an explicit one.
-- **Image pinning**: listing an owner's packages requires a classic token with
-  `read:packages`; resolving one image falls back to the anonymous OCI
-  registry-v2 API when tokenless or rejected. Cosign/referrer tags
-  (`image.IsReferrerTag`) never win tag selection.
+- **Soft degradation, never false results**: security sources degrade
+  independently (404 ⇒ disabled, 403 ⇒ forbidden/skipped), so an unreadable
+  source is *skipped*, never a false all-clear. A repo that 404s on every
+  source would read as "everything disabled", so `cli.Security` confirms the
+  repository exists (`gh.IsNotFound` on a cheap probe) before reporting that.
+  The raw secret value is never read from the API, so it cannot leak.
 - **Network clients are stubbable package vars** (`cli.NewTagLister`,
-  `cli.NewImageLister`, `newSecurityLister`, `newComplianceLister`) so tests
-  and embedders never hit the network.
+  `newSecurityLister`) so tests and embedders never hit the network.
 
 ## Conventions
 
@@ -242,8 +223,8 @@ what changed as events.
   (`COVER_EXCLUDE`) — the numbers reflect `internal/` only. CI renders the
   report on PRs and gates at 80% (`make cover-check`).
 - Every parser of untrusted input is fuzzed: `fuzz_test.go` in `logs`,
-  `distil`, `semver`, `action`, `image`, `target`, `compliance`, `dependabot`,
-  `pins`, `monitor`, and `release`. Targets assert semantic invariants
+  `distil`, `semver`, `action`, `target`, `pins`, `monitor`, `cache`, `gh`,
+  `model`, `render`, and `release`. Targets assert semantic invariants
   (round-trips, selection contracts, fail-closed verification), not just
   panic-safety. Seed corpora run under `make test`;
   the nightly `fuzz.yml` runs `make fuzz-all`. Keep fuzz-target names unique

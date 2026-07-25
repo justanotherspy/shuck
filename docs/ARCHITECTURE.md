@@ -11,8 +11,8 @@ is in `internal/`; where it describes a number, the number is a named constant.
 
 shuck answers one question well — *why is this pull request red?* — and a
 handful of adjacent ones: what did reviewers ask for, what security alerts are
-open, do the repo's settings match its policy, is Dependabot covering the
-ecosystems in the tree, are the workflow actions SHA-pinned.
+open, what did reviewers ask for, what security alerts are outstanding, are
+the workflow actions SHA-pinned.
 
 The constraint that shapes everything: **shuck is one portable binary you drop
 on a laptop.** A CLI and a local background monitor in the same executable,
@@ -92,8 +92,8 @@ failures ─▸ parse log ─▸ extract errors ─▸ render ─▸ update cach
 
 Exit codes are operational: `0` whenever a report was produced (even one full
 of failures), `2` on an operational error, `1` only when `--exit-code` opts into
-gating. `shuck compliance` inverts that default because drift is the whole
-point of running it.
+gating. Producing a report is the success condition; whether the report is
+happy reading is the caller's business.
 
 ## The background monitor
 
@@ -413,7 +413,6 @@ variable.
 ~/.cache/shuck/
 ├── cache/<owner>/<repo>/<pr>/     per-PR report + whole raw job logs
 ├── actions/<owner>/<repo>/        action tag lists (1h TTL)
-├── images/<owner>/                GHCR image listings (1h TTL)
 ├── security/<owner>/<repo>/       security reports (1h TTL)
 └── monitor/
     ├── daemon.sock                the listener, and the single-instance lock

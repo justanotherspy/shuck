@@ -22,11 +22,10 @@ func testClient(t *testing.T, srv *httptest.Server) *Client {
 		t.Fatalf("build github client: %v", err)
 	}
 	return &Client{
-		gh:          gc,
-		http:        srv.Client(),
-		token:       token,
-		graphqlURL:  srv.URL + "/graphql",
-		registryURL: srv.URL,
+		gh:         gc,
+		http:       srv.Client(),
+		token:      token,
+		graphqlURL: srv.URL + "/graphql",
 	}
 }
 

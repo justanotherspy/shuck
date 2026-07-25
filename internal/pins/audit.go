@@ -139,7 +139,7 @@ func auditUse(ctx context.Context, u Use, cache *resolveCache) Finding {
 		f.Note = "local action reference — it ships with this repository, nothing to pin"
 		return f
 	case UseDocker:
-		f.Note = "docker image reference — pin its digest with `shuck image`"
+		f.Note = "docker image reference — shuck audits Action refs, not container images"
 		return f
 	case UseRemote:
 	}

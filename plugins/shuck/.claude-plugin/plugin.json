@@ -1,7 +1,7 @@
 {
   "name": "shuck",
   "version": "0.5.0",
-  "description": "Keep Claude up to date on the pull request you are actually working on. shuck runs a local background monitor that follows your working tree \u2014 it reads the branch from HEAD, finds the open PR for it, and retargets itself when you switch branches or worktrees \u2014 then feeds the session new CI failures (with the exact failing step logs), review comments (with the diff hunk and surrounding code), and GitHub Actions that are unpinned or whose SHA pin has gone stale, as they happen. No webhook and no server: one binary, your GitHub token, a local socket. Also adds the /shuck skill, which drives the same binary on demand for logs, reviews, security alerts, compliance, Dependabot coverage, and SHA-pinning. Install shuck yourself and keep it current with `shuck upgrade`.",
+  "description": "Keep Claude up to date on the pull request you are actually working on. shuck runs a local background monitor that follows your working tree \u2014 it reads the branch from HEAD, finds the open PR for it, and retargets itself when you switch branches or worktrees \u2014 then feeds the session new CI failures (with the exact failing step logs), review comments (with the diff hunk and surrounding code), and GitHub Actions that are unpinned or whose SHA pin has gone stale, as they happen. No webhook and no server: one binary, your GitHub token, a local socket. Also adds the /shuck skill, which drives the same binary on demand for failing CI logs, PR reviews, security alerts, and SHA-pinning GitHub Actions. Install shuck yourself and keep it current with `shuck upgrade`.",
   "author": {
     "name": "justanotherspy",
     "email": "daniel.schwartz@hey.com"

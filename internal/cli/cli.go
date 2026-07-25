@@ -62,14 +62,9 @@ Subcommands (single-letter shorthands in parentheses):
   shuck logs (l) [target] [--run <id|url>]   failing CI step logs for a PR or a single run
   shuck reviews (r) [target]                 a PR's reviews and review-comment threads
   shuck all [target]                         CI + reviews + security (the default)
-  shuck action (a) <owner>/<action>[@<version>]  resolve an Action to its latest tag + SHA for pinning
-  shuck image (i) [owner | ghcr.io/owner/name[:tag]]  list GHCR images, or resolve one to its latest digest
   shuck security (s) [owner/repo | url]      a repo's security alerts (code scanning, secrets, Dependabot)
-  shuck compliance (c) [owner/repo | url]    check a repo's settings against its .github/compliance.yml
-  shuck compliance discover [owner/repo]     snapshot the live settings into .github/compliance.yml
-  shuck dependabot (d) [owner/repo | url]    audit .github/dependabot.yml against the repo's ecosystems
-  shuck dependabot discover [owner/repo]     scaffold or extend .github/dependabot.yml from detected ecosystems
   shuck pins (p) [dir]                       find workflow actions that are unpinned or whose SHA pin is stale
+  shuck action (a) <owner>/<action>[@<version>]  resolve one Action to its latest tag + SHA for pinning
   shuck setup                 install the shuck skill + CLAUDE.md note for Claude Code
   shuck version [--check]     print the installed version; --check looks for a newer release
   shuck upgrade               download and install the latest release in place
@@ -113,9 +108,42 @@ var subcommandAliases = map[string]string{
 	"m": "monitor",
 	"p": "pins",
 	"s": "security",
-	"c": "compliance",
-	"d": "dependabot",
-	"i": "image",
+}
+
+// removedCommands are subcommands shuck used to carry. They stay in the dispatch
+// on purpose: a script, a habit, or a stale MCP registration should get a
+// sentence explaining what happened, not `invalid PR number "compliance"` from
+// the target parser, which explains nothing and reads like a bug.
+//
+// The three audits were dropped because they answered a quarterly question
+// about a repository, while everything shuck keeps answers "what is wrong with
+// the branch I am on right now?" — which is the question the monitor exists to
+// answer without being asked.
+var removedCommands = map[string][]string{
+	"mcp": {
+		"shuck: the MCP server was removed — every tool it exposed is a subcommand now",
+		"  (inspect_logs → `shuck logs`, monitor_events → `shuck monitor events`, check_pins → `shuck pins`, …)",
+		"Run `shuck --help` for the full list, and drop the shuck entry from your MCP config:",
+		"  claude mcp remove --scope user shuck",
+	},
+	"compliance": {
+		"shuck: `shuck compliance` was removed — shuck no longer checks repo settings against a policy file.",
+		"For branch protection and settings drift, use GitHub's own rulesets, or `gh api` in a workflow.",
+	},
+	"dependabot": {
+		"shuck: `shuck dependabot` was removed — shuck no longer audits .github/dependabot.yml coverage.",
+		"Dependabot *alerts* are still reported: `shuck security` covers them alongside code and secret scanning.",
+	},
+	"image": {
+		"shuck: `shuck image` was removed — shuck no longer resolves GHCR image digests.",
+		"For Action pins, `shuck pins` audits a checkout and `shuck action <ref>` resolves one reference.",
+	},
+}
+
+func init() {
+	for alias, cmd := range map[string]string{"c": "compliance", "d": "dependabot", "i": "image"} {
+		removedCommands[alias] = removedCommands[cmd]
+	}
 }
 
 // Run executes shuck and returns the process exit code:
@@ -124,6 +152,14 @@ var subcommandAliases = map[string]string{
 func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 {
 		cmd := args[0]
+		if note, ok := removedCommands[cmd]; ok {
+			// Checked before alias resolution so a retired shorthand (`shuck c`)
+			// lands here too rather than being parsed as a target.
+			for _, line := range note {
+				fmt.Fprintln(stderr, line)
+			}
+			return 2
+		}
 		if canon, ok := subcommandAliases[cmd]; ok {
 			cmd = canon
 		}
@@ -138,24 +174,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			return runMonitor(args[1:], stdout, stderr)
 		case "pins", "pin":
 			return runPins(args[1:], stdout, stderr)
-		case "image", "images":
-			return runImage(args[1:], stdout, stderr)
 		case "security":
 			return runSecurity(args[1:], stdout, stderr)
-		case "compliance":
-			return runCompliance(args[1:], stdout, stderr)
-		case "dependabot":
-			return runDependabot(args[1:], stdout, stderr)
-		case "mcp":
-			// The MCP server is gone: everything it exposed is a subcommand
-			// here. Say so plainly — an MCP client that still has `shuck mcp`
-			// registered spawns this on every session start, and a target-parse
-			// error would leave whoever sees it guessing.
-			fmt.Fprintln(stderr, "shuck: the MCP server was removed — every tool it exposed is a subcommand now")
-			fmt.Fprintln(stderr, "  (inspect_logs → `shuck logs`, monitor_events → `shuck monitor events`, check_pins → `shuck pins`, …)")
-			fmt.Fprintln(stderr, "Run `shuck --help` for the full list, and drop the shuck entry from your MCP config:")
-			fmt.Fprintln(stderr, "  claude mcp remove --scope user shuck")
-			return 2
 		case "logs":
 			return runLogs(args[1:], stdout, stderr)
 		case "reviews":

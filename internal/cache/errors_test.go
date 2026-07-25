@@ -61,7 +61,7 @@ func TestSaveMkdirFailures(t *testing.T) {
 	t.Setenv("SHUCK_HOME", home)
 	// Occupy every top-level cache root with a regular file so MkdirAll under it
 	// cannot create the needed subdirectories.
-	for _, root := range []string{"cache", "actions", "images", "security"} {
+	for _, root := range []string{"cache", "actions", "security"} {
 		if err := os.WriteFile(filepath.Join(home, root), []byte("x"), filePerm); err != nil {
 			t.Fatalf("seed %s file: %v", root, err)
 		}
@@ -74,9 +74,6 @@ func TestSaveMkdirFailures(t *testing.T) {
 	}
 	if err := SaveActionTags("o", "r", "sha", nil); err == nil {
 		t.Error("SaveActionTags with an unwritable cache root err=nil, want error")
-	}
-	if err := SaveImages("ghcr.io", "o", "sha", nil); err == nil {
-		t.Error("SaveImages with an unwritable cache root err=nil, want error")
 	}
 	if err := SaveSecurityReport(&model.SecurityReport{Owner: "o", Repo: "r", State: "open"}, "sha"); err == nil {
 		t.Error("SaveSecurityReport with an unwritable cache root err=nil, want error")
@@ -113,38 +110,5 @@ func TestActionTagsRejectBadSegment(t *testing.T) {
 	}
 	if _, _, _, _, err := LoadActionTags("../evil", "checkout"); err == nil {
 		t.Error("LoadActionTags with a traversal owner err=nil, want error")
-	}
-}
-
-// LoadImages treats corrupt JSON as a miss.
-func TestLoadImagesCorrupt(t *testing.T) {
-	t.Setenv("SHUCK_HOME", t.TempDir())
-	path, err := imageFile("acme")
-	if err != nil {
-		t.Fatalf("imageFile: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), dirPerm); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(path, []byte("}{"), filePerm); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	_, _, _, ok, err := LoadImages("acme")
-	if err != nil {
-		t.Fatalf("LoadImages: %v", err)
-	}
-	if ok {
-		t.Error("expected ok=false for corrupt image cache")
-	}
-}
-
-// SaveImages / LoadImages reject a bad segment up front.
-func TestImagesRejectBadSegment(t *testing.T) {
-	t.Setenv("SHUCK_HOME", t.TempDir())
-	if err := SaveImages("ghcr.io", "../evil", "sha", nil); err == nil {
-		t.Error("SaveImages with a traversal owner err=nil, want error")
-	}
-	if _, _, _, _, err := LoadImages("../evil"); err == nil {
-		t.Error("LoadImages with a traversal owner err=nil, want error")
 	}
 }

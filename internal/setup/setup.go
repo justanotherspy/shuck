@@ -55,13 +55,10 @@ const claudeNote = "## shuck — GitHub PR & CI triage (skill + CLI)\n" +
 	"- **See what reviewers asked for.** `shuck reviews <pr>`.\n" +
 	"- **Triage security alerts.** `shuck security` — code scanning, secret\n" +
 	"  scanning, Dependabot.\n" +
-	"- **Check settings against policy.** `shuck compliance` vs a committed\n" +
-	"  `.github/compliance.yml`.\n" +
-	"- **Audit Dependabot coverage.** `shuck dependabot`.\n" +
-	"- **Pin Actions and images.** `shuck pins` audits a checkout's workflows for\n" +
-	"  unpinned or stale `uses:` references and prints the corrected line;\n" +
+	"- **Keep Actions SHA-pinned.** `shuck pins` audits a checkout's workflows\n" +
+	"  for unpinned or stale `uses:` references and prints the corrected line;\n" +
 	"  `shuck action actions/checkout@v4` resolves one Action's latest tag +\n" +
-	"  commit SHA, and `shuck image` a GHCR image's latest digest.\n" +
+	"  commit SHA.\n" +
 	"\n" +
 	"Install/keep current with `shuck upgrade`; manage this note and the skill with\n" +
 	"`shuck setup`."

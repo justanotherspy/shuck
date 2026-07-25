@@ -521,8 +521,8 @@ func TestNew(t *testing.T) {
 	if authed.gh == nil || authed.http == nil || authed.token != "tok" {
 		t.Errorf("authed client malformed: %+v", authed)
 	}
-	if authed.graphqlURL != graphQLEndpoint || authed.registryURL != registryHost {
-		t.Errorf("default endpoints not set: %q %q", authed.graphqlURL, authed.registryURL)
+	if authed.graphqlURL != graphQLEndpoint {
+		t.Errorf("default GraphQL endpoint not set: %q", authed.graphqlURL)
 	}
 	anon := New("")
 	if anon.gh == nil || anon.token != "" {
