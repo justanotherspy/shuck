@@ -47,6 +47,29 @@ func TestPRLifecycle(t *testing.T) {
 		{"state says merged, draft", PR{State: "merged", Draft: true}, "draft"},
 		{"nonsense state", PR{State: "banana"}, ""},
 		{"nonsense state merged", PR{State: "banana", Merged: true}, "merged"},
+
+		// Exactness, spelled out as the near misses that separate `==` from a
+		// prefix/suffix/substring match. "OPEN"/"banana" above only prove the
+		// comparison is not case-insensitive or wide open; each of these is a
+		// real state with characters glued on, so a loosened comparison would
+		// hand the monitor a lifecycle to act on for a word GitHub never sent.
+		{"open plus a suffix", PR{State: "open0"}, ""},
+		{"open as a suffix", PR{State: "reopen"}, ""},
+		{"open as a substring", PR{State: "unopened"}, ""},
+		{"closed plus a suffix", PR{State: "closed-ish"}, ""},
+		{"closed as a suffix", PR{State: "not-closed"}, ""},
+		{"closed as a substring", PR{State: "half-closed-ish"}, ""},
+
+		// The arms are ordered, so a loose match on an earlier one outranks a
+		// later one: "closed-ish" matching the closed arm would downgrade a
+		// live draft to ended, and the monitor would park it on
+		// DormantInterval and stop reporting its CI.
+		{"closed-ish draft", PR{State: "closed-ish", Draft: true}, "draft"},
+		{"reopen draft", PR{State: "reopen", Draft: true}, "draft"},
+		// Draft outranks an unknown state in the other direction too: the flag
+		// is news even when the word is not, so dropping the draft arm cannot
+		// hide behind "" being a legitimate answer for "banana".
+		{"nonsense state draft", PR{State: "banana", Draft: true}, "draft"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

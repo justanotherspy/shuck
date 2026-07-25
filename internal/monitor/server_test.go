@@ -3,6 +3,7 @@ package monitor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"reflect"
@@ -391,23 +392,33 @@ func titles(events []Event) []string {
 
 // TestDaemonDrainDeliveryPaths pins the three reads the journal serves, which
 // together are the at-most-once delivery contract: a peek must leave a consumer
-// exactly where it was, an explicit Since must beat the stored cursor, and only
-// a named consumer has a cursor to move at all.
+// exactly where it was, an explicit Since must beat the stored cursor, and a
+// read with no session behind it must spend nobody's backlog.
 func TestDaemonDrainDeliveryPaths(t *testing.T) {
 	tests := []struct {
 		name string
 		// cursor is where "sess" sits before the read; 0 means it has seen
 		// nothing.
-		cursor     uint64
-		req        Request
-		want       []string
+		cursor uint64
+		req    Request
+		want   []string
+		// wantCursor is where the read leaves the consumer it names. An
+		// anonymous read has no cursor of its own, so it is wantOwed below —
+		// what the next session-shaped read hands over — that pins its half of
+		// the contract.
 		wantCursor uint64
+		// wantOwed is what a plain read as "sess" gets once the read under test
+		// is done: the same contract stated as delivery rather than as state. A
+		// read that consumed nothing must leave sess owed everything it was
+		// owed before.
+		wantOwed []string
 	}{
 		{
 			name:       "a peek hands over the backlog without consuming it",
 			req:        Request{Consumer: "sess", Peek: true},
 			want:       []string{"one", "two", "three"},
 			wantCursor: 0,
+			wantOwed:   []string{"one", "two", "three"},
 		},
 		{
 			name:       "a peek starts from the consumer's own cursor",
@@ -415,6 +426,7 @@ func TestDaemonDrainDeliveryPaths(t *testing.T) {
 			req:        Request{Consumer: "sess", Peek: true},
 			want:       []string{"three"},
 			wantCursor: 2,
+			wantOwed:   []string{"three"},
 		},
 		{
 			// The Stop hook peeks to decide whether to act; a caller that also
@@ -430,6 +442,7 @@ func TestDaemonDrainDeliveryPaths(t *testing.T) {
 			req:        Request{Consumer: "sess", Peek: true, Limit: 1},
 			want:       []string{"three"},
 			wantCursor: 0,
+			wantOwed:   []string{"one", "two", "three"},
 		},
 		{
 			name:       "since overrides the cursor and drags the consumer forward",
@@ -445,9 +458,10 @@ func TestDaemonDrainDeliveryPaths(t *testing.T) {
 			wantCursor: 3,
 		},
 		{
-			// The cursor follows what was handed over, not what was asked for:
-			// seeking to Since would silently swallow events 2 and 3.
-			name:       "since with a limit advances only past what it delivered",
+			// The cursor follows what was handed over, not the floor that was
+			// asked for: seeking back to Since would hand this consumer the
+			// same events again on its next read.
+			name:       "since with a limit still advances past what it delivered",
 			req:        Request{Consumer: "sess", Since: 1, Limit: 1},
 			want:       []string{"three"},
 			wantCursor: 3,
@@ -457,15 +471,29 @@ func TestDaemonDrainDeliveryPaths(t *testing.T) {
 			cursor:     1,
 			req:        Request{Consumer: "sess", Since: 99},
 			wantCursor: 1,
+			wantOwed:   []string{"two", "three"},
 		},
 		{
-			// `shuck monitor events --since` with no session behind it: the
-			// events come back, but nobody's backlog is spent on them.
-			name:       "since without a consumer moves no cursor",
-			cursor:     1,
-			req:        Request{Since: 1},
-			want:       []string{"two", "three"},
-			wantCursor: 1,
+			// `shuck monitor events --since` run from a shell: the events come
+			// back, but the session sitting at cursor 1 is still owed them. A
+			// read that spent them would leave that session never told about
+			// the failure it swallowed.
+			name:     "since without a consumer spends nobody's backlog",
+			cursor:   1,
+			req:      Request{Since: 1},
+			want:     []string{"two", "three"},
+			wantOwed: []string{"two", "three"},
+		},
+		{
+			// The same anonymous read without a floor, which is the path
+			// through journal.Drain rather than journal.Since: with no cursor
+			// to start from it hands over the whole journal, and still
+			// consumes none of it.
+			name:     "a plain read without a consumer starts from the beginning and keeps it",
+			cursor:   1,
+			req:      Request{},
+			want:     []string{"one", "two", "three"},
+			wantOwed: []string{"two", "three"},
 		},
 		{
 			name:       "the plain read drains and advances",
@@ -492,17 +520,86 @@ func TestDaemonDrainDeliveryPaths(t *testing.T) {
 			if !slices.Equal(got, tt.want) {
 				t.Errorf("drain returned %v, want %v", got, tt.want)
 			}
-			if cursor := d.journal.Cursor("sess", 0); cursor != tt.wantCursor {
-				t.Errorf("sess cursor = %d after the read, want %d", cursor, tt.wantCursor)
-			}
 
 			// A read that consumes nothing must be repeatable — that is the
-			// whole reason Stop peeks instead of draining, and the reason an
-			// anonymous caller cannot spend a session's backlog.
+			// whole reason Stop peeks instead of draining, and the reason a
+			// shell command cannot spend a session's backlog.
 			if tt.req.Peek || tt.req.Consumer == "" {
 				if again := titles(d.drain(tt.req)); !slices.Equal(again, got) {
 					t.Errorf("the same read returned %v the second time, want %v", again, got)
 				}
+			}
+
+			if tt.req.Consumer != "" {
+				if cursor := d.journal.Cursor(tt.req.Consumer, 0); cursor != tt.wantCursor {
+					t.Errorf("%s cursor = %d after the read, want %d", tt.req.Consumer, cursor, tt.wantCursor)
+				}
+			}
+
+			// Read last, because this one consumes: what the session is still
+			// owed is the only visible consequence of an anonymous read, and
+			// the check that a peek really did leave the backlog alone.
+			if owed := titles(d.drain(Request{Consumer: "sess"})); !slices.Equal(owed, tt.wantOwed) {
+				t.Errorf("sess was owed %v after the read, want %v", owed, tt.wantOwed)
+			}
+		})
+	}
+}
+
+// TestDaemonDrainPastTheRetainedWindow covers the reads that outlive the
+// journal. The window is bounded and rotation drops the oldest events, so a
+// session that has been away long enough — or a --since naming an event from
+// last week — asks for events that are no longer there. The rule is that such a
+// read gets the whole retained window and lands caught up: what aged out is
+// gone, not replayed forever, and not a reason to hand back nothing.
+func TestDaemonDrainPastTheRetainedWindow(t *testing.T) {
+	d, _ := newTestDaemon(t, newFakeClient())
+
+	// One event past the cap is what triggers a rotation: the window is trimmed
+	// back to rotateTo while the IDs keep climbing.
+	published := make([]Event, 0, maxJournalEvents+1)
+	for i := 1; i <= maxJournalEvents+1; i++ {
+		published = append(published, Event{Kind: KindCIFailed, Title: fmt.Sprintf("failure %d", i)})
+	}
+	d.publish(published)
+
+	latest := uint64(maxJournalEvents + 1)
+	oldest := latest - rotateTo + 1
+	if got := d.journal.Latest(); got != latest {
+		t.Fatalf("Latest = %d after rotation, want %d — IDs must keep climbing", got, latest)
+	}
+
+	// A cursor and a Since, both pointing at an event that has aged out.
+	reads := []struct {
+		name string
+		req  Request
+	}{
+		{"a cursor from before the rotation", Request{Consumer: "stale"}},
+		{"an explicit since naming an event that aged out", Request{Consumer: "asker", Since: 1}},
+	}
+	for _, r := range reads {
+		t.Run(r.name, func(t *testing.T) {
+			d.journal.Seek(r.req.Consumer, 1)
+
+			got := d.drain(r.req)
+			if len(got) != rotateTo {
+				t.Fatalf("delivered %d events, want the whole retained window of %d", len(got), rotateTo)
+			}
+			if got[0].ID != oldest || got[0].Title != fmt.Sprintf("failure %d", oldest) {
+				t.Errorf("the window starts at %d (%q), want %d — a stale floor must clamp to what is retained",
+					got[0].ID, got[0].Title, oldest)
+			}
+			if last := got[len(got)-1]; last.ID != latest {
+				t.Errorf("the window ends at %d, want the newest event %d", last.ID, latest)
+			}
+			if cursor := d.journal.Cursor(r.req.Consumer, 0); cursor != latest {
+				t.Errorf("cursor = %d after the read, want %d", cursor, latest)
+			}
+			// And it is caught up rather than stuck re-reading a window it can
+			// never exhaust, which is what a cursor advanced by count instead
+			// of by delivered ID would leave behind.
+			if again := d.drain(Request{Consumer: r.req.Consumer}); len(again) != 0 {
+				t.Errorf("the next read returned %d events, want 0", len(again))
 			}
 		})
 	}

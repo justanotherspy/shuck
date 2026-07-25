@@ -460,27 +460,45 @@ func TestOtherChecksStatusError(t *testing.T) {
 }
 
 func TestRateRemaining(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/rate_limit" {
-			t.Errorf("unexpected path %q", r.URL.Path)
-		}
-		// Search and graphql carry deliberately different numbers: the monitor
-		// paces itself on the core REST budget, and reading the wrong resource
-		// would have it double its intervals against a quota it never spends.
-		_, _ = w.Write([]byte(`{"resources":{
-			"core":{"limit":5000,"remaining":4321,"used":679,"reset":1777777777},
-			"search":{"limit":30,"remaining":2,"used":28,"reset":1777777777},
-			"graphql":{"limit":5000,"remaining":11,"used":4989,"reset":1777777777}
-		}}`))
-	}))
-	defer srv.Close()
-
-	remaining, limit, err := testClient(t, srv).RateRemaining(context.Background())
-	if err != nil {
-		t.Fatalf("RateRemaining: %v", err)
+	tests := []struct {
+		name          string
+		core          string
+		wantRemaining int
+		wantLimit     int
+	}{
+		{"headroom", `"core":{"limit":5000,"remaining":4321,"used":679,"reset":1777777777},`, 4321, 5000},
+		// An exhausted budget is the exact state this probe exists to detect,
+		// and it is an ordinary answer, not a failure: the monitor reads 0 and
+		// backs off. Turning it into an error would instead put the daemon on
+		// its error backoff with no idea why, and blank the headroom line in
+		// `shuck monitor status`.
+		{"exhausted", `"core":{"limit":5000,"remaining":0,"used":5000,"reset":1777777777},`, 0, 5000},
 	}
-	if remaining != 4321 || limit != 5000 {
-		t.Errorf("RateRemaining = %d/%d, want 4321/5000", remaining, limit)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/rate_limit" {
+					t.Errorf("unexpected path %q", r.URL.Path)
+				}
+				// Search and graphql carry deliberately different numbers: the
+				// monitor paces itself on the core REST budget, and reading the
+				// wrong resource would have it double its intervals against a
+				// quota it never spends.
+				_, _ = w.Write([]byte(`{"resources":{` + tc.core + `
+					"search":{"limit":30,"remaining":2,"used":28,"reset":1777777777},
+					"graphql":{"limit":5000,"remaining":11,"used":4989,"reset":1777777777}
+				}}`))
+			}))
+			defer srv.Close()
+
+			remaining, limit, err := testClient(t, srv).RateRemaining(context.Background())
+			if err != nil {
+				t.Fatalf("RateRemaining: %v", err)
+			}
+			if remaining != tc.wantRemaining || limit != tc.wantLimit {
+				t.Errorf("RateRemaining = %d/%d, want %d/%d", remaining, limit, tc.wantRemaining, tc.wantLimit)
+			}
+		})
 	}
 }
 

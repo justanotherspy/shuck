@@ -449,13 +449,15 @@ func TestCapFeed(t *testing.T) {
 // name a PR this session never asked about — so the one thing it must not do is
 // list the session's own target back at it.
 func TestOtherTargets(t *testing.T) {
-	// The order is the one handleStatus produced, and otherTargets is expected
-	// to leave it alone: the status view is already sorted, and re-ordering it
-	// here would make the same monitor word the same sentence two ways.
+	// Deliberately not in the order sortTargets would produce. otherTargets
+	// hands back the order it was given, and the list arrives already ordered
+	// by the one place that decides that — a second sort here would be a copy
+	// of that policy, silently disagreeing with `shuck monitor status` the day
+	// the first one changes. Sorted input could not tell the two apart.
 	watched := []TargetStatus{
+		{Target: "other/repo#1"},
 		{Target: "o/r#7", Verdict: "failed"},
 		{Target: "o/r#8"},
-		{Target: "other/repo#1"},
 	}
 
 	tests := []struct {
@@ -466,24 +468,24 @@ func TestOtherTargets(t *testing.T) {
 		{
 			name:  "the session's own target is the one left out",
 			watch: &Watch{Owner: "o", Repo: "r", Number: 7},
-			want:  "o/r#8, other/repo#1",
+			want:  "other/repo#1, o/r#8",
 		},
 		{
 			name:  "a watch whose branch has no PR yet excludes nothing",
 			watch: &Watch{Owner: "o", Repo: "r"},
-			want:  "o/r#7, o/r#8, other/repo#1",
+			want:  "other/repo#1, o/r#7, o/r#8",
 		},
 		{
 			name:  "a watch on a PR nobody is polling excludes nothing",
 			watch: &Watch{Owner: "o", Repo: "r", Number: 99},
-			want:  "o/r#7, o/r#8, other/repo#1",
+			want:  "other/repo#1, o/r#7, o/r#8",
 		},
 		{
 			// SessionStart words its paragraph before the daemon has
 			// necessarily answered, so a nil watch has to be survivable.
 			name:  "no watch at all",
 			watch: nil,
-			want:  "o/r#7, o/r#8, other/repo#1",
+			want:  "other/repo#1, o/r#7, o/r#8",
 		},
 	}
 
@@ -528,6 +530,32 @@ func TestSessionStartContextNamesTheOtherPRs(t *testing.T) {
 	}
 	if also != "o/r#8." {
 		t.Errorf("also watching = %q, want just the other session's target", also)
+	}
+}
+
+// TestSessionStartContextStaysQuietAboutOneTarget is the other side of that
+// rule, and the reason it is keyed on more than one target rather than on any:
+// when the only PR being polled is this session's own there is nothing to warn
+// about, and the sentence would come out as "It is also watching: ." — a
+// promise of detail with nothing behind it.
+func TestSessionStartContextStaysQuietAboutOneTarget(t *testing.T) {
+	d, _ := hookDaemon(t, newFakeClient())
+	dir, err := Dir() // hookDaemon already pointed SHUCK_HOME here
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	d.watches.Add(Watch{ID: "pr:o/r#7", Kind: WatchPR, Owner: "o", Repo: "r", Number: 7})
+	d.due(time.Now()) // materialize the one target, as a poll round would
+
+	mine := &Watch{ID: "pr:o/r#7", Kind: WatchPR, Owner: "o", Repo: "r", Number: 7, Branch: "feature"}
+	got := sessionStartContext(context.Background(), &Client{dir: dir}, mine)
+
+	if !strings.Contains(got, "It is following o/r#7 (branch feature).") {
+		t.Errorf("context should still open with this session's own target:\n%s", got)
+	}
+	if strings.Contains(got, "also watching") {
+		t.Errorf("the monitor is watching nothing else, so it should not say it is:\n%s", got)
 	}
 }
 

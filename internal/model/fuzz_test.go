@@ -15,6 +15,9 @@ func FuzzPRLifecycle(f *testing.F) {
 	f.Add("OPEN", false, false)   // GraphQL casing
 	f.Add("", true, false)
 	f.Add("", false, false)
+	f.Add("open", true, false)       // the draft/open precedence boundary
+	f.Add("open0", false, false)     // a real state with a character glued on
+	f.Add("closed-ish", true, false) // …and one that must lose to the Draft flag
 
 	f.Fuzz(func(t *testing.T, state string, draft, merged bool) {
 		pr := PR{State: state, Draft: draft, Merged: merged}
@@ -37,6 +40,21 @@ func FuzzPRLifecycle(f *testing.F) {
 			t.Fatalf("state %q reported as closed", state)
 		case got == "open" && state != "open":
 			t.Fatalf("state %q reported as open", state)
+		}
+
+		// The other direction. Every arm above is of the form "if it came out
+		// X, X was earned", which a Lifecycle that has stopped returning X
+		// satisfies for free — delete the draft arm and nothing above notices.
+		// These say the input forces the output, in the precedence order that
+		// is itself the contract: merged (asserted above), then ended, then
+		// draft, then open.
+		switch {
+		case !merged && state == "closed" && got != "closed":
+			t.Fatalf("closed PR (draft=%v) reported as %q, want %q", draft, got, "closed")
+		case !merged && state != "closed" && draft && got != "draft":
+			t.Fatalf("draft PR (state %q) reported as %q, want %q", state, got, "draft")
+		case !merged && !draft && state == "open" && got != "open":
+			t.Fatalf("open PR reported as %q, want %q", got, "open")
 		}
 
 		// Nothing known means nothing reported: "" is what tells the monitor's

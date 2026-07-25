@@ -106,6 +106,10 @@ func FuzzMonitorDrain(f *testing.F) {
 	f.Add("sess", 0, uint64(0), false, uint64(0))
 	f.Add("sess", 2, uint64(1), true, uint64(1))
 	f.Add("", 0, uint64(2), false, uint64(0))
+	// An anonymous read with no floor is the one that goes through
+	// journal.Drain rather than journal.Since — the path that has a cursor to
+	// write and must not.
+	f.Add("", 0, uint64(0), false, uint64(0))
 	f.Add("sess", -1, uint64(0), false, uint64(3))
 	f.Add("sess", 1, ^uint64(0), false, uint64(0))
 	f.Add("\x00", 1000000, uint64(4), true, ^uint64(0))
@@ -136,17 +140,31 @@ func FuzzMonitorDrain(f *testing.F) {
 			t.Errorf("returned %d events for a limit of %d", len(events), limit)
 		}
 
+		// A read that consumes nothing is a read that can be repeated: the Stop
+		// hook peeks and expects the events to still be waiting at the next
+		// prompt, and a shell running `shuck monitor events` has no session
+		// behind it to spend. Asking again, identically, must hand back
+		// identically — which is the observable form of "no cursor moved",
+		// rather than a look at a cursor an anonymous caller does not have.
+		if peek || consumer == "" {
+			again := d.drain(Request{Consumer: consumer, Limit: limit, Since: since, Peek: peek})
+			if len(again) != len(events) {
+				t.Fatalf("a read that consumes nothing returned %d events and then %d", len(events), len(again))
+			}
+			for i := range again {
+				if again[i].ID != events[i].ID {
+					t.Fatalf("the second read handed over event %d where the first handed over %d", again[i].ID, events[i].ID)
+				}
+			}
+		}
+
 		after := d.journal.Cursor(consumer, 0)
 		switch {
 		case peek:
 			if after != before {
 				t.Errorf("a peek moved the cursor from %d to %d", before, after)
 			}
-		case consumer == "":
-			if after != 0 {
-				t.Errorf("an anonymous read invented a cursor at %d", after)
-			}
-		case len(events) > 0 && after < previous:
+		case consumer != "" && len(events) > 0 && after < previous:
 			t.Errorf("cursor left at %d after delivering up to %d — the next read would repeat it", after, previous)
 		}
 	})

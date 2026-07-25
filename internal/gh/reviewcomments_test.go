@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -92,6 +93,7 @@ func TestPRReview(t *testing.T) {
 			"id": 77,
 			"state": "CHANGES_REQUESTED",
 			"body": "Needs work.",
+			"submitted_at": "2026-05-01T10:00:05Z",
 			"user": {"id": 583231, "login": "octocat"}
 		}`))
 	}))
@@ -101,16 +103,36 @@ func TestPRReview(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PRReview: %v", err)
 	}
-	want := PRReview{ID: 77, State: "CHANGES_REQUESTED", Body: "Needs work.", UserID: 583231, UserLogin: "octocat"}
+	want := PRReview{
+		ID: 77, State: "CHANGES_REQUESTED", Body: "Needs work.",
+		UserID: 583231, UserLogin: "octocat",
+		SubmittedAt: mustTime(t, "2026-05-01T10:00:05Z"),
+	}
+	// SubmittedAt is the field the whole watermark design rests on: a review
+	// fetched by ID is what the hook renders and what the poller advances its
+	// watermark from, so a dropped timestamp here would re-deliver the verdict
+	// on every poll.
+	if !got.SubmittedAt.Equal(want.SubmittedAt) {
+		t.Errorf("SubmittedAt = %v, want %v", got.SubmittedAt, want.SubmittedAt)
+	}
+	got.SubmittedAt = want.SubmittedAt
 	if got != want {
 		t.Errorf("got %+v, want %+v", got, want)
 	}
 }
 
 func TestPRReviewCommentsPaginates(t *testing.T) {
+	requests := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/repos/acme/widgets/pulls/5/reviews/77/comments" {
 			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+		// See TestPRReviewsSincePaginates: a loop that re-requests page 1 must
+		// fail the test, not hang it.
+		requests++
+		if requests > 2 {
+			http.Error(w, `{"message":"pagination did not advance"}`, http.StatusInternalServerError)
+			return
 		}
 		switch r.URL.Query().Get("page") {
 		case "", "1":
@@ -165,18 +187,61 @@ func TestReviewCommentErrorsPropagate(t *testing.T) {
 	c := testClient(t, srv)
 	ctx := context.Background()
 
-	if _, err := c.PRReviewComment(ctx, "a", "b", 1); err == nil || !strings.Contains(err.Error(), "review comment 1") {
+	if _, err := c.PRReviewComment(ctx, "a", "b", 1); err == nil || !strings.Contains(err.Error(), "review comment 1 in a/b") {
 		t.Errorf("PRReviewComment error = %v, want named comment", err)
 	}
-	if _, err := c.PRReview(ctx, "a", "b", 1, 2); err == nil || !strings.Contains(err.Error(), "review 2") {
+	if _, err := c.PRReview(ctx, "a", "b", 1, 2); err == nil || !strings.Contains(err.Error(), "review 2 on a/b#1") {
 		t.Errorf("PRReview error = %v, want named review", err)
 	}
-	if _, err := c.PRReviewComments(ctx, "a", "b", 1, 2); err == nil {
-		t.Error("PRReviewComments: want error on 500")
+	// An error that names neither the review nor the PR gives a session nothing
+	// to act on but "500". (These two fail on their first page, so they hold
+	// nothing to leak yet; that the *slice* stays nil when a later page fails is
+	// pinned by TestReviewCommentListingsFailMidPagination.)
+	if _, err := c.PRReviewComments(ctx, "a", "b", 1, 2); err == nil || !strings.Contains(err.Error(), "comments of review 2 on a/b#1") {
+		t.Errorf("PRReviewComments error = %v, want it to name the review and PR", err)
 	}
-	if _, err := c.PRCommentThread(ctx, "a", "b", 1, 2); err == nil {
-		t.Error("PRCommentThread: want error on 500")
+	if _, err := c.PRCommentThread(ctx, "a", "b", 1, 2); err == nil || !strings.Contains(err.Error(), "review comments on a/b#1") {
+		t.Errorf("PRCommentThread error = %v, want it to name the PR", err)
 	}
+}
+
+func TestReviewCommentListingsFailMidPagination(t *testing.T) {
+	// Page 1 answers, page 2 500s. Handing back page 1 with a nil error would
+	// tell the caller it has the whole thread, and the reply that lived on page
+	// 2 is one nothing will ever look for again — the same silent truncation the
+	// PRReviewsSince pair guards against, on the paths that reconstruct a thread.
+	newSrv := func(t *testing.T) *httptest.Server {
+		t.Helper()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Query().Get("page") == "2" {
+				http.Error(w, `{"message":"boom"}`, http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Link", fmt.Sprintf(`<http://%s%s?page=2>; rel="next"`, r.Host, r.URL.Path))
+			_, _ = w.Write([]byte(`[{"id": 42, "body": "root", "user": {"id": 1, "login": "alice"}}]`))
+		}))
+		t.Cleanup(srv.Close)
+		return srv
+	}
+
+	t.Run("PRReviewComments", func(t *testing.T) {
+		got, err := testClient(t, newSrv(t)).PRReviewComments(context.Background(), "acme", "widgets", 5, 77)
+		if err == nil {
+			t.Fatalf("PRReviewComments = %+v, want an error when page 2 fails", got)
+		}
+		if got != nil {
+			t.Errorf("PRReviewComments = %+v alongside an error, want nil", got)
+		}
+	})
+	t.Run("PRCommentThread", func(t *testing.T) {
+		got, err := testClient(t, newSrv(t)).PRCommentThread(context.Background(), "acme", "widgets", 5, 42)
+		if err == nil {
+			t.Fatalf("PRCommentThread = %+v, want an error when page 2 fails", got)
+		}
+		if got != nil {
+			t.Errorf("PRCommentThread = %+v alongside an error, want nil", got)
+		}
+	})
 }
 
 // reviewsPage is the reviews listing every PRReviewsSince test is filtered
@@ -215,6 +280,13 @@ func TestPRReviewsSinceFilters(t *testing.T) {
 		{"one second inside the gap", mustTime(t, "2026-05-01T10:00:01Z"), []int64{2}},
 		{"exactly the newest review", mustTime(t, "2026-05-01T10:00:05Z"), nil},
 		{"after everything", mustTime(t, "2026-05-01T10:00:06Z"), nil},
+		// The draft guard is a separate rule from the boundary, and this is the
+		// only watermark that can tell them apart: a review carrying no
+		// submitted_at decodes to the zero instant, which *is* strictly after a
+		// watermark older than year 1. Drop the IsZero check and carol's unsent
+		// draft is delivered as a real verdict — with an empty body and no
+		// timestamp to advance the watermark to.
+		{"watermark older than the zero timestamp", time.Time{}.AddDate(-1, 0, 0), []int64{1, 2}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -266,6 +338,13 @@ func TestPRReviewsSincePaginates(t *testing.T) {
 		pages = append(pages, page)
 		if got := r.URL.Query().Get("per_page"); got != "100" {
 			t.Errorf("per_page = %q, want 100", got)
+		}
+		// A loop that never advances opts.Page asks for page 1 forever. Cutting
+		// the third request off makes that a failed assertion a second later
+		// instead of a test binary that hangs until the CI job times out.
+		if len(pages) > 2 {
+			http.Error(w, `{"message":"pagination did not advance"}`, http.StatusInternalServerError)
+			return
 		}
 		switch page {
 		case "", "1":
@@ -355,41 +434,48 @@ func TestPRReviewCommentsSinceRequest(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			// The handler runs on the server's goroutine, where FailNow (and so
+			// t.Fatalf) is not allowed to be called; it records the request and
+			// the assertions run below, on the test's own goroutine.
+			var (
+				path string
+				q    url.Values
+			)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path != "/repos/acme/widgets/pulls/5/comments" {
-					t.Errorf("unexpected path %q", r.URL.Path)
-				}
-				q := r.URL.Query()
-				// Newest last: the caller renders comments in the order it gets
-				// them and folds replies onto their root.
-				if q.Get("sort") != "created" || q.Get("direction") != "asc" {
-					t.Errorf("sort/direction = %q/%q, want created/asc", q.Get("sort"), q.Get("direction"))
-				}
-				if q.Get("per_page") != "100" {
-					t.Errorf("per_page = %q, want 100", q.Get("per_page"))
-				}
-				switch {
-				case tc.since.IsZero():
-					// A zero watermark must be omitted, not serialized as year
-					// 1: the first sighting asks for the whole history.
-					if q.Has("since") {
-						t.Errorf("since = %q on a first sighting, want it omitted", q.Get("since"))
-					}
-				default:
-					got, err := time.Parse(time.RFC3339, q.Get("since"))
-					if err != nil {
-						t.Fatalf("since = %q, unparseable: %v", q.Get("since"), err)
-					}
-					if !got.Equal(tc.since) {
-						t.Errorf("since = %v, want %v", got, tc.since)
-					}
-				}
+				path, q = r.URL.Path, r.URL.Query()
 				_, _ = w.Write([]byte(`[]`))
 			}))
 			defer srv.Close()
 
 			if _, err := testClient(t, srv).PRReviewCommentsSince(context.Background(), "acme", "widgets", 5, tc.since); err != nil {
 				t.Fatalf("PRReviewCommentsSince: %v", err)
+			}
+
+			if path != "/repos/acme/widgets/pulls/5/comments" {
+				t.Errorf("unexpected path %q", path)
+			}
+			// Newest last: the caller renders comments in the order it gets
+			// them and folds replies onto their root.
+			if q.Get("sort") != "created" || q.Get("direction") != "asc" {
+				t.Errorf("sort/direction = %q/%q, want created/asc", q.Get("sort"), q.Get("direction"))
+			}
+			if q.Get("per_page") != "100" {
+				t.Errorf("per_page = %q, want 100", q.Get("per_page"))
+			}
+			if tc.since.IsZero() {
+				// A zero watermark must be omitted, not serialized as year 1:
+				// the first sighting asks for the whole history.
+				if q.Has("since") {
+					t.Errorf("since = %q on a first sighting, want it omitted", q.Get("since"))
+				}
+				return
+			}
+			got, err := time.Parse(time.RFC3339, q.Get("since"))
+			if err != nil {
+				t.Fatalf("since = %q, unparseable: %v", q.Get("since"), err)
+			}
+			if !got.Equal(tc.since) {
+				t.Errorf("since = %v, want %v", got, tc.since)
 			}
 		})
 	}
@@ -454,6 +540,12 @@ func TestPRReviewCommentsSincePaginates(t *testing.T) {
 			t.Errorf("page %q dropped the since filter", page)
 		} else if ts, err := time.Parse(time.RFC3339, got); err != nil || !ts.Equal(since) {
 			t.Errorf("page %q since = %q, want %v", page, got, since)
+		}
+		// See TestPRReviewsSincePaginates: a loop that re-requests page 1 must
+		// fail the test, not hang it.
+		if len(pages) > 2 {
+			http.Error(w, `{"message":"pagination did not advance"}`, http.StatusInternalServerError)
+			return
 		}
 		switch page {
 		case "", "1":
