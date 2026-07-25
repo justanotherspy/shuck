@@ -424,15 +424,20 @@ func TestEmitJSON(t *testing.T) {
 		}
 	})
 
-	// A --json consumer parses stdout: half a document it could mistake for a
-	// whole one is worse than none, so an encode failure has to land on stderr
-	// and the exit code with nothing written.
+	// An encode failure has to reach the exit code and stderr carrying the
+	// encoder's own reason: "shuck: could not encode" leaves nobody able to
+	// tell an unmarshalable type from a NaN, which are different bugs in
+	// different places. (Stdout staying empty is encoding/json's own
+	// marshal-then-write guarantee, not shuck's — what is shuck's is not
+	// echoing the diagnostic there, where a consumer's parser would meet it
+	// where a document should be.)
 	unencodable := []struct {
-		name string
-		v    any
+		name    string
+		v       any
+		wantErr string
 	}{
-		{"a channel it cannot marshal", map[string]any{"watches": 1, "notify": make(chan int)}},
-		{"a NaN with no JSON spelling", map[string]any{"rate_remaining": math.NaN()}},
+		{"a channel it cannot marshal", map[string]any{"watches": 1, "notify": make(chan int)}, "unsupported type: chan int"},
+		{"a NaN with no JSON spelling", map[string]any{"rate_remaining": math.NaN()}, "unsupported value: NaN"},
 	}
 	for _, tt := range unencodable {
 		t.Run(tt.name, func(t *testing.T) {
@@ -441,10 +446,10 @@ func TestEmitJSON(t *testing.T) {
 				t.Errorf("exit = %d, want 2 — an unencodable value is an operational error", code)
 			}
 			if out.Len() != 0 {
-				t.Errorf("stdout = %q, want nothing rather than a partial document", out.String())
+				t.Errorf("stdout = %q, want the failure reported on stderr alone", out.String())
 			}
-			if !strings.Contains(errBuf.String(), "shuck:") {
-				t.Errorf("stderr = %q, want the encode failure reported", errBuf.String())
+			if !strings.Contains(errBuf.String(), "shuck: ") || !strings.Contains(errBuf.String(), tt.wantErr) {
+				t.Errorf("stderr = %q, want it to name the encode failure (%q)", errBuf.String(), tt.wantErr)
 			}
 		})
 	}
@@ -488,7 +493,7 @@ func TestMonitorStatusJSON(t *testing.T) {
 }
 
 func TestMonitorEventsJSON(t *testing.T) {
-	startFakeDaemon(t, func(monitor.Request) monitor.Response {
+	d := startFakeDaemon(t, func(monitor.Request) monitor.Response {
 		return monitor.Response{OK: true, Cursor: 1, Events: []monitor.Event{
 			{ID: 1, Kind: monitor.KindCIFailed, Target: "o/r#7", Title: "build failed", Body: "boom"},
 		}}
@@ -511,6 +516,108 @@ func TestMonitorEventsJSON(t *testing.T) {
 	if got.ID != 1 || got.Kind != monitor.KindCIFailed || got.Body != "boom" {
 		t.Errorf("event = %+v, want the daemon's failure with its body intact", got)
 	}
+
+	// A bare read is one non-blocking, uncapped drain of what is pending for
+	// the "cli" consumer. None of that is visible in the output above, so the
+	// request the daemon was handed is the only place it can be checked.
+	reqs := d.seen()
+	if len(reqs) != 1 {
+		t.Fatalf("made %d calls, want exactly 1", len(reqs))
+	}
+	want := monitor.Request{Op: monitor.OpEvents, Auth: fakeDaemonToken, Consumer: "cli"}
+	if reqs[0] != want {
+		t.Errorf("request  = %+v\nwant       %+v", reqs[0], want)
+	}
+}
+
+// TestMonitorEventsFlagsReachTheDaemon pins the whole flag → Request plumbing.
+// --all, --limit, --wait and --consumer leave no trace in what the CLI prints:
+// the daemon decides what to hand back, so dropping any one of them from the
+// Request silently changes which events a caller gets, and only the request log
+// can tell. --consumer in particular decides *whose* cursor advances, so
+// hardcoding it would quietly hand one session's failures to another.
+func TestMonitorEventsFlagsReachTheDaemon(t *testing.T) {
+	d := startFakeDaemon(t, func(monitor.Request) monitor.Response {
+		return monitor.Response{OK: true, Cursor: 9}
+	})
+
+	code, stdout, stderr := runCLI("monitor", "events", "--all", "--limit", "3", "--wait", "2s", "--consumer", "session-7")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "nothing new") {
+		t.Errorf("stdout = %q, want a one-shot read to say the feed was empty", stdout)
+	}
+
+	reqs := d.seen()
+	if len(reqs) != 1 {
+		t.Fatalf("made %d calls, want exactly 1", len(reqs))
+	}
+	want := monitor.Request{
+		Op:       monitor.OpEvents,
+		Auth:     fakeDaemonToken,
+		Consumer: "session-7",
+		Limit:    3,
+		Wait:     2 * time.Second,
+		All:      true,
+	}
+	if reqs[0] != want {
+		t.Errorf("request  = %+v\nwant       %+v", reqs[0], want)
+	}
+}
+
+// TestMonitorEventsFollowThroughTheCLI drives --follow the way a person does.
+// TestMonitorFollow below calls monitorFollow directly, which leaves the flag
+// itself unpinned: with the dispatch gone, `--follow` degrades to a single
+// one-shot read that prints the first batch and exits 0, and every assertion
+// about the loop still passes because the loop is being called by hand. The
+// second read is what proves the CLI entered it.
+func TestMonitorEventsFollowThroughTheCLI(t *testing.T) {
+	round := 0
+	d := startFakeDaemon(t, func(monitor.Request) monitor.Response {
+		round++
+		if round == 1 {
+			return monitor.Response{OK: true, Cursor: 1, Events: []monitor.Event{
+				{ID: 1, Kind: monitor.KindCIFailed, Target: "o/r#7", Title: "build failed", Body: "boom"},
+			}}
+		}
+		// A daemon that cannot answer is how this follow ends: the test has no
+		// safe way to deliver the Ctrl-C the loop otherwise waits for.
+		return monitor.Response{Error: "journal is unreadable"}
+	})
+
+	code, stdout, stderr := runCLI("monitor", "events", "--follow", "--all", "--wait", "1ms", "--limit", "5", "--consumer", "session-9")
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 — the follow ended on a daemon error; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "build failed") {
+		t.Errorf("stdout = %q, want the first batch printed before the error", stdout)
+	}
+	if !strings.Contains(stderr, "journal is unreadable") {
+		t.Errorf("stderr = %q, want the daemon's reason", stderr)
+	}
+
+	reqs := d.seen()
+	if len(reqs) != 2 {
+		t.Fatalf("made %d reads, want 2 — one read means --follow never reached monitorFollow", len(reqs))
+	}
+	for i, r := range reqs {
+		if r.Op != monitor.OpEvents {
+			t.Errorf("read %d asked for %q, want %q", i+1, r.Op, monitor.OpEvents)
+		}
+		// Following overrides the one-shot flags: --all would re-deliver the
+		// whole journal on every pass, and the caller's 1ms would turn a quiet
+		// feed into a hot loop of dials.
+		if r.All {
+			t.Errorf("read %d asked for the whole journal", i+1)
+		}
+		if r.Wait < 5*time.Second {
+			t.Errorf("read %d waited %s; a follow has to block for a meaningful stretch", i+1, r.Wait)
+		}
+		if r.Consumer != "session-9" || r.Limit != 5 {
+			t.Errorf("read %d = consumer %q limit %d, want the caller's own", i+1, r.Consumer, r.Limit)
+		}
+	}
 }
 
 // followDaemon scripts a feed: each batch in turn answers one events call, and
@@ -528,6 +635,16 @@ func followDaemon(t *testing.T, cancel context.CancelFunc, batches ...[]monitor.
 		return monitor.Response{OK: true, Cursor: uint64(round)}
 	})
 }
+
+// interruptedCtx reports that it is finished while never closing Done. A real
+// cancelled context proves nothing about the loop's own exit check: net.Dialer
+// refuses to dial one, so a follow that ignored the context entirely would
+// still stop — on the resulting dial error rather than on the interruption.
+// Holding Done open leaves the daemon reachable and answering, so the loop ends
+// only if it consults the context after delivering a batch.
+type interruptedCtx struct{ context.Context }
+
+func (interruptedCtx) Err() error { return context.Canceled }
 
 // runFollow drives monitorFollow with a deadline, so a follow that never gives
 // up fails the test instead of hanging the package.
@@ -677,6 +794,39 @@ func TestMonitorFollow(t *testing.T) {
 		}
 		if stdout != "" {
 			t.Errorf("stdout = %q", stdout)
+		}
+	})
+
+	t.Run("an interruption ends the loop, not the next failed read", func(t *testing.T) {
+		reads := 0
+		d := startFakeDaemon(t, func(monitor.Request) monitor.Response {
+			reads++
+			if reads == 1 {
+				return monitor.Response{OK: true, Cursor: 1, Events: []monitor.Event{
+					{ID: 1, Kind: monitor.KindCIPassed, Target: "o/r#7", Title: "checks are green"},
+				}}
+			}
+			// Nothing should ask a second time. Answering with an error rather
+			// than another batch bounds a loop that does, instead of letting it
+			// spin against a healthy daemon until the test timeout.
+			return monitor.Response{Error: "the follow should already have stopped"}
+		})
+
+		// The daemon here stays up and willing, so only the loop's own check on
+		// the context can end this — which is the point: termination is the
+		// follow's decision, not a side effect of a dial that happens to fail.
+		code, stdout, stderr := runFollow(t, interruptedCtx{context.Background()}, monitor.Request{Consumer: "cli"}, false)
+		if code != 0 {
+			t.Fatalf("exit = %d, want 0 (stderr %q)", code, stderr)
+		}
+		if !strings.Contains(stdout, "checks are green") {
+			t.Errorf("stdout = %q, want the batch already in hand delivered before stopping", stdout)
+		}
+		if stderr != "" {
+			t.Errorf("stderr = %q, want an interrupted follow to say nothing", stderr)
+		}
+		if n := len(d.seen()); n != 1 {
+			t.Errorf("made %d reads, want 1 — an interrupted follow must stop after the batch it delivered", n)
 		}
 	})
 }
