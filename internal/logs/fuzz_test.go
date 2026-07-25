@@ -3,6 +3,7 @@ package logs
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -84,10 +85,8 @@ func FuzzStripTimestamps(f *testing.F) {
 		// GitHub log reaches in one pass. Stacked timestamps are the deliberate
 		// exception: the second one is the tool's own output, not GitHub's, so a
 		// re-run would strip content and is not asserted to be a no-op.
-		for _, l := range out {
-			if tsPrefix.MatchString(l) {
-				return
-			}
+		if slices.ContainsFunc(out, tsPrefix.MatchString) {
+			return
 		}
 		if again := StripTimestamps(got); again != got {
 			t.Fatalf("not a fixpoint: %q -> %q", got, again)
