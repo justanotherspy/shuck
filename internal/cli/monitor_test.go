@@ -1,8 +1,16 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
+	"context"
+	"encoding/json"
+	"math"
+	"net"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,6 +39,101 @@ func noDaemonClient(t *testing.T) {
 		return c, nil
 	}
 	t.Cleanup(func() { newMonitorClient = original })
+}
+
+// fakeDaemon stands in for the monitor daemon. A client dials whatever
+// endpoint.json names and speaks one JSON line each way, so a listener plus
+// that file is a real daemon as far as the CLI is concerned — which is the only
+// way to assert what these commands actually put on the wire.
+type fakeDaemon struct {
+	mu       sync.Mutex
+	requests []monitor.Request
+	handle   func(monitor.Request) monitor.Response
+}
+
+// fakeDaemonToken guards the loopback endpoint. The real protocol requires a
+// bearer token on TCP, so the fake rejects a client that omits it rather than
+// letting one pass here and fail against the daemon it ships with.
+const fakeDaemonToken = "monitor-test-token"
+
+// startFakeDaemon points shuck's state at a temp directory, serves handle
+// there, and makes sure nothing in the test can spawn a real daemon.
+func startFakeDaemon(t *testing.T, handle func(monitor.Request) monitor.Response) *fakeDaemon {
+	t.Helper()
+	monitorHome(t)
+	noDaemonClient(t)
+
+	dir, err := monitor.Dir()
+	if err != nil {
+		t.Fatalf("monitor.Dir: %v", err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	raw, err := json.Marshal(map[string]any{
+		"network": "tcp",
+		"address": ln.Addr().String(),
+		"token":   fakeDaemonToken,
+		"pid":     os.Getpid(),
+	})
+	if err != nil {
+		t.Fatalf("encode endpoint: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "endpoint.json"), append(raw, '\n'), 0o600); err != nil {
+		t.Fatalf("write endpoint: %v", err)
+	}
+
+	d := &fakeDaemon{handle: handle}
+	go d.serve(ln)
+	return d
+}
+
+func (d *fakeDaemon) serve(ln net.Listener) {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go d.answer(conn)
+	}
+}
+
+func (d *fakeDaemon) answer(conn net.Conn) {
+	defer conn.Close()
+	line, err := bufio.NewReaderSize(conn, 64<<10).ReadBytes('\n')
+	if err != nil {
+		return
+	}
+	var req monitor.Request
+	if err := json.Unmarshal(line, &req); err != nil {
+		return
+	}
+
+	// Recording and answering under the lock keeps a scripted handler's own
+	// state race-free without every test having to guard it.
+	d.mu.Lock()
+	d.requests = append(d.requests, req)
+	resp := monitor.Response{OK: false, Error: "monitor token mismatch"}
+	if req.Auth == fakeDaemonToken {
+		resp = d.handle(req)
+	}
+	d.mu.Unlock()
+
+	out, err := json.Marshal(resp)
+	if err != nil {
+		return
+	}
+	_, _ = conn.Write(append(out, '\n'))
+}
+
+// seen returns the requests the daemon has been sent so far.
+func (d *fakeDaemon) seen() []monitor.Request {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]monitor.Request(nil), d.requests...)
 }
 
 func runCLI(args ...string) (code int, stdoutText, stderrText string) {
@@ -280,6 +383,294 @@ func TestEmitEvents(t *testing.T) {
 		emitEvents(&out, &errBuf, nil, false, false)
 		if out.String() != "" {
 			t.Errorf("while following, an empty batch should print nothing, got %q", out.String())
+		}
+	})
+}
+
+func TestEmitJSON(t *testing.T) {
+	t.Run("a value survives the round trip", func(t *testing.T) {
+		st := &monitor.Status{
+			PID: 42, Version: "v1.2.3", Uptime: 90 * time.Second, Events: 12,
+			Watches: []monitor.Watch{{ID: "tree:/w", Kind: monitor.WatchTree, Path: "/w", Owner: "o", Repo: "r", Number: 7}},
+		}
+
+		var out, errBuf bytes.Buffer
+		if code := emitJSON(&out, &errBuf, st); code != 0 {
+			t.Fatalf("exit = %d, want 0", code)
+		}
+		if errBuf.Len() != 0 {
+			t.Errorf("stderr = %q, want silence on success", errBuf.String())
+		}
+
+		var got monitor.Status
+		if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+			t.Fatalf("stdout is not a JSON document: %v\n%s", err, out.String())
+		}
+		if got.PID != st.PID || got.Version != st.Version || got.Events != st.Events {
+			t.Errorf("round trip lost the scalars: %+v", got)
+		}
+		if len(got.Watches) != 1 || got.Watches[0].ID != "tree:/w" || got.Watches[0].Number != 7 {
+			t.Errorf("round trip lost the watches: %+v", got.Watches)
+		}
+
+		// --json output is read by people about as often as by programs, so the
+		// indent is part of the contract; the trailing newline is what makes a
+		// sequence of documents line-delimited for whatever consumes it.
+		if !strings.Contains(out.String(), "\n  \"pid\": 42") {
+			t.Errorf("stdout is not indented:\n%s", out.String())
+		}
+		if !strings.HasSuffix(out.String(), "}\n") {
+			t.Errorf("stdout should end in a newline: %q", out.String())
+		}
+	})
+
+	// A --json consumer parses stdout: half a document it could mistake for a
+	// whole one is worse than none, so an encode failure has to land on stderr
+	// and the exit code with nothing written.
+	unencodable := []struct {
+		name string
+		v    any
+	}{
+		{"a channel it cannot marshal", map[string]any{"watches": 1, "notify": make(chan int)}},
+		{"a NaN with no JSON spelling", map[string]any{"rate_remaining": math.NaN()}},
+	}
+	for _, tt := range unencodable {
+		t.Run(tt.name, func(t *testing.T) {
+			var out, errBuf bytes.Buffer
+			if code := emitJSON(&out, &errBuf, tt.v); code != 2 {
+				t.Errorf("exit = %d, want 2 — an unencodable value is an operational error", code)
+			}
+			if out.Len() != 0 {
+				t.Errorf("stdout = %q, want nothing rather than a partial document", out.String())
+			}
+			if !strings.Contains(errBuf.String(), "shuck:") {
+				t.Errorf("stderr = %q, want the encode failure reported", errBuf.String())
+			}
+		})
+	}
+}
+
+func TestMonitorStatusJSON(t *testing.T) {
+	d := startFakeDaemon(t, func(req monitor.Request) monitor.Response {
+		if req.Op != monitor.OpStatus {
+			return monitor.Response{Error: "unexpected op " + string(req.Op)}
+		}
+		return monitor.Response{OK: true, Status: &monitor.Status{
+			PID: 4242, Version: "v9.9.9", Uptime: time.Minute,
+			Watches: []monitor.Watch{{ID: "tree:/w", Kind: monitor.WatchTree, Path: "/w", Owner: "o", Repo: "r", Number: 7, Branch: "feature"}},
+			Targets: []monitor.TargetStatus{{Target: "o/r#7", Verdict: "failed"}},
+			Events:  12, Pending: 3,
+		}}
+	})
+
+	code, stdout, stderr := runCLI("monitor", "status", "--json")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+
+	var got monitor.Status
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("--json did not emit a JSON document: %v\n%s", err, stdout)
+	}
+	if got.PID != 4242 || got.Version != "v9.9.9" || got.Pending != 3 {
+		t.Errorf("the daemon's status did not reach the consumer: %+v", got)
+	}
+	if len(got.Targets) != 1 || got.Targets[0].Target != "o/r#7" || got.Targets[0].Verdict != "failed" {
+		t.Errorf("targets = %+v, want the daemon's one failing target", got.Targets)
+	}
+	// --json replaces the text view rather than joining it.
+	if strings.Contains(stdout, "CI FAILING") || strings.Contains(stdout, "Watching (") {
+		t.Errorf("--json emitted the text rendering too:\n%s", stdout)
+	}
+	if reqs := d.seen(); len(reqs) != 1 || reqs[0].Op != monitor.OpStatus {
+		t.Errorf("requests = %+v, want exactly one status call", reqs)
+	}
+}
+
+func TestMonitorEventsJSON(t *testing.T) {
+	startFakeDaemon(t, func(monitor.Request) monitor.Response {
+		return monitor.Response{OK: true, Cursor: 1, Events: []monitor.Event{
+			{ID: 1, Kind: monitor.KindCIFailed, Target: "o/r#7", Title: "build failed", Body: "boom"},
+		}}
+	})
+
+	code, stdout, stderr := runCLI("monitor", "events", "--json")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+	// The event feed is line-delimited JSON, not the indented document
+	// `status --json` emits: consumers read it an event at a time.
+	line := strings.TrimSpace(stdout)
+	if strings.Contains(line, "\n") {
+		t.Errorf("one event should be one line:\n%s", stdout)
+	}
+	var got monitor.Event
+	if err := json.Unmarshal([]byte(line), &got); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout)
+	}
+	if got.ID != 1 || got.Kind != monitor.KindCIFailed || got.Body != "boom" {
+		t.Errorf("event = %+v, want the daemon's failure with its body intact", got)
+	}
+}
+
+// followDaemon scripts a feed: each batch in turn answers one events call, and
+// the call after the last one cancels the context — which is how these tests
+// spell "the operator hit Ctrl-C".
+func followDaemon(t *testing.T, cancel context.CancelFunc, batches ...[]monitor.Event) *fakeDaemon {
+	t.Helper()
+	round := 0
+	return startFakeDaemon(t, func(monitor.Request) monitor.Response {
+		if round < len(batches) {
+			round++
+			return monitor.Response{OK: true, Events: batches[round-1], Cursor: uint64(round)}
+		}
+		cancel()
+		return monitor.Response{OK: true, Cursor: uint64(round)}
+	})
+}
+
+// runFollow drives monitorFollow with a deadline, so a follow that never gives
+// up fails the test instead of hanging the package.
+func runFollow(t *testing.T, ctx context.Context, req monitor.Request, jsonOut bool) (code int, stdoutText, stderrText string) {
+	t.Helper()
+	client, err := newMonitorClient()
+	if err != nil {
+		t.Fatalf("newMonitorClient: %v", err)
+	}
+
+	var out, errBuf bytes.Buffer
+	done := make(chan int, 1)
+	go func() { done <- monitorFollow(ctx, client, req, jsonOut, &out, &errBuf) }()
+	select {
+	case code := <-done:
+		return code, out.String(), errBuf.String()
+	case <-time.After(30 * time.Second):
+		t.Fatal("monitorFollow never returned")
+		return 0, "", ""
+	}
+}
+
+func TestMonitorFollow(t *testing.T) {
+	t.Run("streams batch after batch until interrupted", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		d := followDaemon(t, cancel,
+			[]monitor.Event{{ID: 1, Kind: monitor.KindCIFailed, Target: "o/r#7", Title: "build failed", Body: "boom"}},
+			[]monitor.Event{{ID: 2, Kind: monitor.KindCIPassed, Target: "o/r#7", Title: "checks are green"}},
+		)
+
+		// --all and a short --wait are what the caller's flags may have set;
+		// following overrides both, and the request log is where that shows.
+		req := monitor.Request{Consumer: "session-1", Limit: 5, All: true, Wait: time.Millisecond}
+		code, stdout, stderr := runFollow(t, ctx, req, false)
+		if code != 0 {
+			t.Fatalf("exit = %d, want 0 (stderr %q)", code, stderr)
+		}
+		if stderr != "" {
+			t.Errorf("stderr = %q, want silence", stderr)
+		}
+
+		first, second := strings.Index(stdout, "build failed"), strings.Index(stdout, "checks are green")
+		if first < 0 || second < 0 {
+			t.Fatalf("both batches should have been printed:\n%s", stdout)
+		}
+		if first > second {
+			t.Errorf("events printed out of order:\n%s", stdout)
+		}
+
+		reqs := d.seen()
+		if len(reqs) != 3 {
+			t.Fatalf("made %d reads, want 3 (two batches then the interrupted one)", len(reqs))
+		}
+		for i, r := range reqs {
+			if r.Op != monitor.OpEvents {
+				t.Errorf("read %d asked for %q, want %q", i+1, r.Op, monitor.OpEvents)
+			}
+			if r.All {
+				t.Errorf("read %d asked for the whole journal; a follow may only ever ask for what is new", i+1)
+			}
+			if r.Wait != followInterval {
+				t.Errorf("read %d waited %s, want %s — a follow that does not block is a spin loop", i+1, r.Wait, followInterval)
+			}
+			if r.Consumer != "session-1" || r.Limit != 5 {
+				t.Errorf("read %d = consumer %q limit %d, want the caller's own", i+1, r.Consumer, r.Limit)
+			}
+		}
+	})
+
+	t.Run("a quiet feed prints nothing", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		followDaemon(t, cancel, nil)
+
+		// Every 30 seconds a blocking read comes back empty. Saying "nothing
+		// new" each time would bury the events the follow exists to show.
+		code, stdout, stderr := runFollow(t, ctx, monitor.Request{Consumer: "cli"}, false)
+		if code != 0 {
+			t.Fatalf("exit = %d, want 0 (stderr %q)", code, stderr)
+		}
+		if stdout != "" {
+			t.Errorf("stdout = %q, want nothing for an empty batch", stdout)
+		}
+	})
+
+	t.Run("--json follows through to the stream", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		followDaemon(t, cancel, []monitor.Event{{ID: 7, Kind: monitor.KindReviewComment, Target: "o/r#7", Title: "please rename this"}})
+
+		code, stdout, stderr := runFollow(t, ctx, monitor.Request{Consumer: "cli"}, true)
+		if code != 0 {
+			t.Fatalf("exit = %d, want 0 (stderr %q)", code, stderr)
+		}
+		var got monitor.Event
+		if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &got); err != nil {
+			t.Fatalf("--follow --json is not JSON: %v\n%s", err, stdout)
+		}
+		if got.ID != 7 || got.Kind != monitor.KindReviewComment {
+			t.Errorf("event = %+v, want the daemon's review comment", got)
+		}
+	})
+
+	t.Run("a daemon error stops the follow", func(t *testing.T) {
+		d := startFakeDaemon(t, func(monitor.Request) monitor.Response {
+			return monitor.Response{Error: "journal is unreadable"}
+		})
+
+		// The context is alive, so this is a real fault: report it and stop
+		// rather than hammering a daemon that cannot answer.
+		code, stdout, stderr := runFollow(t, context.Background(), monitor.Request{Consumer: "cli"}, false)
+		if code != 2 {
+			t.Fatalf("exit = %d, want 2", code)
+		}
+		if !strings.Contains(stderr, "journal is unreadable") {
+			t.Errorf("stderr = %q, want the daemon's reason", stderr)
+		}
+		if stdout != "" {
+			t.Errorf("stdout = %q, want nothing", stdout)
+		}
+		if n := len(d.seen()); n != 1 {
+			t.Errorf("made %d reads, want 1 — a failing daemon must not be retried in a loop", n)
+		}
+	})
+
+	t.Run("an interruption is not a failure", func(t *testing.T) {
+		monitorHome(t)
+		noDaemonClient(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		// Ctrl-C during a blocking read surfaces as a connection error. It is
+		// how a follow ends, so it must not be reported as one.
+		code, stdout, stderr := runFollow(t, ctx, monitor.Request{Consumer: "cli"}, false)
+		if code != 0 {
+			t.Errorf("exit = %d, want 0", code)
+		}
+		if stderr != "" {
+			t.Errorf("stderr = %q, want an interrupted follow to say nothing", stderr)
+		}
+		if stdout != "" {
+			t.Errorf("stdout = %q", stdout)
 		}
 	})
 }
