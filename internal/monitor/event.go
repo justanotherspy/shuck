@@ -56,16 +56,23 @@ const (
 	SeverityInfo Severity = "info"
 )
 
-// Severity reports how much the event demands of its reader.
+// Severity reports how much an event of this kind demands of its reader, before
+// the event's own detail is consulted. Event.Severity is what a consumer should
+// ask; this is the default it starts from.
 func (k Kind) Severity() Severity {
 	switch k {
-	case KindCIFailed, KindReviewComment, KindReviewSubmitted, KindPinsStale:
+	case KindCIFailed, KindReviewComment, KindReviewSubmitted:
 		return SeverityAction
 	default:
-		// KindError is deliberately informational. A failed poll is worth
-		// knowing about, but it is the monitor's problem, not the agent's:
-		// making it actionable would let a network blip hold a finished turn
-		// open and tell the agent to go fix something it did not break.
+		// KindError and KindPinsStale are deliberately informational, for the
+		// same reason: neither is work the agent was asked to do. A failed poll
+		// is the monitor's own problem, and a stale action pin is repo hygiene
+		// in a checkout nobody mentioned. Either one held actionable lets a
+		// network blip or a superseded actions/checkout keep a finished turn
+		// open and tell the agent to go fix something it did not break. Nothing
+		// is lost by demoting them: hookUserPrompt delivers every event
+		// whatever its severity, so both still reach the session — they just
+		// cannot block a finish.
 		return SeverityInfo
 	}
 }
@@ -98,8 +105,32 @@ type Event struct {
 	URL string `json:"url,omitempty"`
 }
 
-// Severity reports the event's severity, derived from its kind.
-func (e Event) Severity() Severity { return e.Kind.Severity() }
+// Severity reports the event's severity. It is the kind's severity in every
+// case but one: a submitted review is actionable only when the reviewer asked
+// for something. An approval is news. Blocking a finish on one makes the Stop
+// hook hand back "address this as part of the current task" over a reviewer
+// saying the work is done — the one intervention guaranteed to be wrong.
+func (e Event) Severity() Severity {
+	if e.Kind == KindReviewSubmitted && approvedHeadline(e.Title) {
+		return SeverityInfo
+	}
+	return e.Kind.Severity()
+}
+
+// approvedHeadline reports whether a submitted-review headline reads as an
+// approval.
+//
+// The verdict is not a field on Event on purpose: Event is the durable journal
+// record and the IPC payload, so its shape is not widened for one consumer's
+// convenience. The headline is where the verdict survives — the poller writes
+// "<login> <verdict phrase> on <target>", and a GitHub login cannot contain a
+// space, so the phrase always begins at the second word. TestApprovedHeadline
+// builds that headline through the poller's own verdictPhrase, so a change to
+// the wording fails there rather than quietly making approvals block again.
+func approvedHeadline(title string) bool {
+	_, rest, ok := strings.Cut(title, " ")
+	return ok && strings.HasPrefix(rest, "approved on ")
+}
 
 // Text renders one event the way a terminal reader wants it: a header line
 // carrying the time, kind, and target, then the indented body.

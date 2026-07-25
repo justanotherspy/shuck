@@ -57,20 +57,45 @@ var errAlreadyServing = errors.New("socket is already served")
 // listenUnix binds path, clearing a socket file left behind by a daemon that
 // died. "Left behind" is established by dialing: a socket that answers belongs
 // to a live daemon and must not be touched.
+//
+// Every exit from the recovery path re-dials before reporting failure. Another
+// daemon can win this race at either step — it can bind (and so make the remove
+// or the second bind fail) between our dial and our attempt — and a plain
+// failure here sends listen() on to the loopback fallback, which would leave
+// two daemons polling and appending to one journal. Declining to start is the
+// only safe answer once anything is answering on the socket.
 func listenUnix(path string) (net.Listener, error) {
 	ln, err := net.Listen("unix", path)
 	if err == nil {
 		return ln, nil
 	}
-	conn, derr := net.DialTimeout("unix", path, time.Second)
-	if derr == nil {
-		_ = conn.Close()
+	if socketServed(path) {
 		return nil, errAlreadyServing
 	}
 	if rerr := os.Remove(path); rerr != nil {
+		if socketServed(path) {
+			return nil, errAlreadyServing
+		}
 		return nil, err
 	}
-	return net.Listen("unix", path)
+	ln, err = net.Listen("unix", path)
+	if err != nil && socketServed(path) {
+		return nil, errAlreadyServing
+	}
+	return ln, err
+}
+
+// socketServed reports whether something answers on the unix socket at path.
+// Dialing is the only test that tells a live daemon apart from the socket file
+// a killed one left behind. It is a package var because the races listenUnix
+// recovers from cannot otherwise be staged in a test.
+var socketServed = func(path string) bool {
+	conn, err := net.DialTimeout("unix", path, time.Second)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 // newToken mints the bearer token that guards a loopback endpoint.

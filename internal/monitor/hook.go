@@ -93,10 +93,13 @@ var hookEventNames = map[HookEvent]string{
 // code.
 //
 // It is written to be impossible to blame. Every failure path — no daemon, no
-// token, a malformed payload, an unknown event — writes nothing and exits 0,
-// because a background convenience must never be the reason a session stalls
-// or a prompt is rejected. The only thing a broken monitor should cost you is
-// the monitoring.
+// token, an unusable cache directory, a malformed payload, an unknown event —
+// exits 0 and writes nothing that changes what the session does, because a
+// background convenience must never be the reason a session stalls or a prompt
+// is rejected. The single exception is deliberate and is not a decision:
+// SessionStart says once, as plain context, that the monitor could not be
+// started, so nobody sits waiting for a feed that is never coming. The only
+// thing a broken monitor should cost you is the monitoring.
 func RunHook(ctx context.Context, event HookEvent, stdin io.Reader, stdout io.Writer) int {
 	if os.Getenv("SHUCK_MONITOR_DISABLE") != "" {
 		return 0

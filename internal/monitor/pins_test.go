@@ -70,8 +70,8 @@ func TestScanPinsReportsUnpinnedActions(t *testing.T) {
 	if !strings.Contains(e.Body, "3d3c42e5aac5ba805825da76410c181273ba90b1") || !strings.Contains(e.Body, "v4.2.2") {
 		t.Errorf("body should carry the line to paste:\n%s", e.Body)
 	}
-	if st.Digest == "" || st.LastAudit.IsZero() {
-		t.Errorf("state = %+v, want the fingerprint and audit time recorded", st)
+	if !st.NextScan.After(now) {
+		t.Errorf("state = %+v, want the next scan paced past %v", st, now)
 	}
 }
 
@@ -112,6 +112,32 @@ func TestScanPinsSkipsUnchangedFiles(t *testing.T) {
 	}
 }
 
+// TestScanPinsPacesItsFilesystemWork is the other half of that budget, and the
+// half a content fingerprint cannot cover: telling changed files from unchanged
+// ones means reading and hashing all of them first. The daemon ticks once a
+// second, so a scan inside the interval must not touch the tree at all — which
+// is observable as an edit staying invisible until the interval is up.
+func TestScanPinsPacesItsFilesystemWork(t *testing.T) {
+	d, _ := newTestDaemon(t, newFakeClient())
+	d.opts.PinResolver = &stubResolver{tag: "v5.0.0", sha: "def"}
+
+	dir := workflowTree(t, unpinnedWorkflow)
+	st, _ := d.scanPins(context.Background(), pinState{Path: dir}, now)
+	if !st.NextScan.After(now) {
+		t.Fatalf("NextScan = %v, want the tree paced past %v", st.NextScan, now)
+	}
+
+	write(t, filepath.Join(dir, ".github", "workflows", "ci.yml"),
+		unpinnedWorkflow+"      - uses: actions/setup-go@v5\n")
+	for i := range 10 {
+		var events []Event
+		st, events = d.scanPins(context.Background(), st, now.Add(time.Duration(i+1)*time.Second))
+		if len(events) != 0 {
+			t.Fatalf("tick %d re-read the tree and reported %v", i+1, kinds(events))
+		}
+	}
+}
+
 func TestScanPinsRunsWhenAFileChanges(t *testing.T) {
 	d, _ := newTestDaemon(t, newFakeClient())
 	d.opts.PinResolver = &stubResolver{tag: "v5.0.0", sha: "def"}
@@ -119,11 +145,12 @@ func TestScanPinsRunsWhenAFileChanges(t *testing.T) {
 	dir := workflowTree(t, unpinnedWorkflow)
 	st, _ := d.scanPins(context.Background(), pinState{Path: dir}, now)
 
-	// Editing the workflow — the exact moment a pin audit is worth running.
+	// Editing the workflow — the exact moment a pin audit is worth running,
+	// and it runs on the next scan rather than on the keystroke.
 	write(t, filepath.Join(dir, ".github", "workflows", "ci.yml"),
 		unpinnedWorkflow+"      - uses: actions/setup-go@v5\n")
 
-	_, events := d.scanPins(context.Background(), st, now.Add(time.Second))
+	_, events := d.scanPins(context.Background(), st, now.Add(pinScanInterval+time.Second))
 	if len(events) != 1 {
 		t.Fatalf("%d events after an edit, want 1 for the newly added reference", len(events))
 	}
@@ -176,8 +203,10 @@ func TestScanPinsWithNoWorkflows(t *testing.T) {
 	if len(events) != 0 {
 		t.Errorf("a repository with no workflows produced %v", kinds(events))
 	}
-	if st.Digest != "" {
-		t.Error("nothing to audit should leave the state untouched")
+	// Nothing to audit is exactly the tree that must not be walked every tick
+	// for the rest of the session, so it is paced like any other.
+	if !st.NextScan.After(now) {
+		t.Errorf("NextScan = %v, want a tree with no workflows paced too", st.NextScan)
 	}
 }
 
@@ -239,21 +268,5 @@ func TestDaemonAuditPinsRespectsNoPins(t *testing.T) {
 
 	if len(d.journal.Since(0, 0)) != 0 {
 		t.Error("--no-pins should keep the monitor out of the .github directory entirely")
-	}
-}
-
-func TestDigestFiles(t *testing.T) {
-	a := map[string][]byte{"ci.yml": []byte("x"), "release.yml": []byte("y")}
-	b := map[string][]byte{"release.yml": []byte("y"), "ci.yml": []byte("x")}
-	if digestFiles(a) != digestFiles(b) {
-		t.Error("the digest must not depend on map iteration order")
-	}
-	if digestFiles(a) == digestFiles(map[string][]byte{"ci.yml": []byte("x2"), "release.yml": []byte("y")}) {
-		t.Error("an edit must change the digest")
-	}
-	// A rename with identical contents is a change too — the file's path is
-	// part of what the audit reports.
-	if digestFiles(a) == digestFiles(map[string][]byte{"ci.yaml": []byte("x"), "release.yml": []byte("y")}) {
-		t.Error("a rename must change the digest")
 	}
 }

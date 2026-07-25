@@ -271,21 +271,3 @@ func TestReadCheckoutErrors(t *testing.T) {
 		})
 	}
 }
-
-func TestCheckoutSameAndString(t *testing.T) {
-	a := Checkout{Owner: "o", Repo: "r", Branch: "main", Head: "aaa"}
-	b := Checkout{Owner: "o", Repo: "r", Branch: "main", Head: "bbb"}
-	if !a.Same(b) {
-		t.Error("checkouts differing only in Head should compare equal: an unpushed commit does not retarget a watch")
-	}
-	if a.Same(Checkout{Owner: "o", Repo: "r", Branch: "other"}) {
-		t.Error("a different branch is a different checkout")
-	}
-	if got := a.String(); got != "o/r@main" {
-		t.Errorf("String() = %q, want o/r@main", got)
-	}
-	detached := Checkout{Owner: "o", Repo: "r"}
-	if got := detached.String(); got != "o/r (detached)" {
-		t.Errorf("String() = %q, want o/r (detached)", got)
-	}
-}

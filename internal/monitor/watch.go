@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -49,9 +50,11 @@ type Watch struct {
 	// every tick — that would be a request a second for a question whose
 	// answer changes at human speed.
 	Resolved time.Time `json:"resolved,omitzero"`
-	// LastSeen is refreshed whenever a client asks about this watch. A watch
-	// nobody has asked about for DefaultWatchTTL is dropped, which is how the
-	// monitor stops working on a laptop whose sessions have all ended.
+	// LastSeen is refreshed whenever a client talks to the daemon at all —
+	// every call marks every watch, since a session asking anything is evidence
+	// somebody is still there. A watch nobody has asked about for
+	// DefaultWatchTTL is dropped, which is how the monitor stops working on a
+	// laptop whose sessions have all ended.
 	LastSeen time.Time `json:"last_seen"`
 }
 
@@ -108,6 +111,12 @@ func (w Watch) Describe() string {
 // "owner/repo 42" pair, "owner/repo#42" — plus a directory, which becomes a
 // tree watch. With no argument at all the caller's working directory is the
 // tree, which is the case the whole design is built around.
+//
+// The PR spellings are tried first and a directory is only the fallback. The
+// other order would let a directory that happens to be named "42" shadow PR
+// #42 — a watch pointed somewhere other than where the person said, with
+// nothing in the output to give it away. Nothing is lost by the ordering: no
+// path is a spelling parsePRSpec accepts, so it fails on one cleanly.
 func ParseWatchSpec(args []string, cwd string) (Watch, error) {
 	now := time.Now()
 	if len(args) == 0 {
@@ -115,11 +124,16 @@ func ParseWatchSpec(args []string, cwd string) (Watch, error) {
 		if err != nil {
 			return Watch{}, fmt.Errorf("resolve working directory: %w", err)
 		}
-		return Watch{ID: TreeWatchID(abs), Kind: WatchTree, Path: abs, Added: now, LastSeen: now}, nil
+		return treeWatch(abs, now), nil
 	}
 
 	owner, repo, number, err := parsePRSpec(args)
 	if err != nil {
+		if w, ok := treeWatchArg(args, now); ok {
+			return w, nil
+		}
+		// The PR failure is the one worth reporting: it already names every
+		// spelling that would have worked, the directory included.
 		return Watch{}, err
 	}
 	return Watch{
@@ -131,6 +145,32 @@ func ParseWatchSpec(args []string, cwd string) (Watch, error) {
 		Added:    now,
 		LastSeen: now,
 	}, nil
+}
+
+// treeWatchArg reads a single argument as a working tree to follow, reporting
+// whether it is one. Only a directory that exists qualifies: a typo'd PR
+// spelling must come back as the parse error the person can act on, not as a
+// watch on a path that is not there.
+func treeWatchArg(args []string, now time.Time) (Watch, bool) {
+	if len(args) != 1 {
+		return Watch{}, false
+	}
+	info, err := os.Stat(args[0])
+	if err != nil || !info.IsDir() {
+		return Watch{}, false
+	}
+	// Absolute, because the watch outlives the shell that named it: the daemon
+	// re-reads this path on every tick, from its own working directory.
+	abs, err := filepath.Abs(args[0])
+	if err != nil {
+		return Watch{}, false
+	}
+	return treeWatch(abs, now), true
+}
+
+// treeWatch builds a watch on the working tree at an absolute path.
+func treeWatch(path string, now time.Time) Watch {
+	return Watch{ID: TreeWatchID(path), Kind: WatchTree, Path: path, Added: now, LastSeen: now}
 }
 
 // parsePRSpec pulls owner, repo, and PR number out of the accepted spellings.
@@ -240,24 +280,8 @@ func (r *registry) Get(id string) (*Watch, bool) {
 	return w, ok
 }
 
-// Touch marks watches as seen. Clients call it for the watches they ask about,
-// which is what keeps a watch alive while a session is using it.
-func (r *registry) Touch(ids ...string) {
-	now := time.Now()
-	changed := false
-	for _, id := range ids {
-		if w, ok := r.watches[id]; ok {
-			w.LastSeen = now
-			changed = true
-		}
-	}
-	if changed {
-		r.save()
-	}
-}
-
-// TouchAll marks every watch as seen, for the client calls that are about the
-// monitor as a whole rather than one watch.
+// TouchAll marks every watch as seen. Any client call counts: a session asking
+// the monitor anything is what keeps its watches alive.
 func (r *registry) TouchAll() {
 	now := time.Now()
 	for _, w := range r.watches {

@@ -75,13 +75,12 @@ type Response struct {
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
 
-	Version string   `json:"version,omitempty"`
-	Status  *Status  `json:"status,omitempty"`
-	Watch   *Watch   `json:"watch,omitempty"`
-	Events  []Event  `json:"events,omitempty"`
-	Cursor  uint64   `json:"cursor,omitempty"`
-	Message string   `json:"message,omitempty"`
-	Dropped []string `json:"dropped,omitempty"`
+	Version string  `json:"version,omitempty"`
+	Status  *Status `json:"status,omitempty"`
+	Watch   *Watch  `json:"watch,omitempty"`
+	Events  []Event `json:"events,omitempty"`
+	Cursor  uint64  `json:"cursor,omitempty"`
+	Message string  `json:"message,omitempty"`
 }
 
 // Status is the daemon's whole state, as `shuck monitor status` reports it.

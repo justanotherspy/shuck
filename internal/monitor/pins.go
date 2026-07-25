@@ -2,37 +2,37 @@ package monitor
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/justanotherspy/shuck/internal/pins"
 )
 
-// pinScanInterval is the floor between two pin audits of the same working
-// tree. The scan itself is local and instant, but resolving an action's latest
-// release is a network call, so a tree whose workflows are being edited
-// repeatedly is re-audited at a human pace rather than a keystroke one.
+// pinScanInterval paces the pin audit of one working tree — both the reading of
+// its workflow files and the release lookups that follow.
+//
+// Both halves need pacing, and the reading needs it most. The daemon wakes
+// every second, and every watched tree would otherwise be walked and read on
+// every one of those ticks, for as long as a session lasts, to learn something
+// that only changes when a human edits a file. Resolving an action's latest
+// release is a network call on top of that.
+//
+// Ten minutes is that human pace. An edit lands on the next scan rather than on
+// the next keystroke, and a tree nobody has touched is still re-audited: an
+// action can cut a release without anyone editing this repo, and a pin goes
+// stale exactly then.
 const pinScanInterval = 10 * time.Minute
 
-// pinState is what the monitor remembers about one working tree's workflow
-// files: a fingerprint of their contents and when they were last audited.
-//
-// The fingerprint is what makes this cheap. Reading a handful of small YAML
-// files every tick costs nothing; asking GitHub about every action they
-// reference does not. So the files are hashed on each tick and the audit only
-// runs when the hash moves — which is to say, exactly when you have just
-// written or edited a workflow.
+// pinState is what the monitor remembers about one working tree's pin audit:
+// when the tree is next due a look, and what has already been said about it.
 type pinState struct {
 	// Path is the working tree the state belongs to.
 	Path string `json:"path"`
-	// Digest fingerprints the workflow files as of the last audit.
-	Digest string `json:"digest,omitempty"`
-	// LastAudit is when the audit last ran.
-	LastAudit time.Time `json:"last_audit,omitzero"`
+	// NextScan is the earliest the tree may be read again. It gates the
+	// filesystem work itself, not just the audit that follows, because the
+	// daemon calls scanPins for every watched tree on every tick.
+	NextScan time.Time `json:"next_scan,omitzero"`
 	// Reported holds the findings already reported, keyed by file, line, and
 	// reference, so an unpinned action you have chosen not to fix is mentioned
 	// once rather than every time you touch the file.
@@ -41,22 +41,21 @@ type pinState struct {
 
 // scanPins audits a working tree's workflow files and returns the events for
 // findings not already reported. It returns the updated state whether or not it
-// audited, so the caller can store the new fingerprint.
+// audited, so the caller can store the new deadline.
 func (d *Daemon) scanPins(ctx context.Context, st pinState, now time.Time) (pinState, []Event) {
+	if now.Before(st.NextScan) {
+		return st, nil
+	}
+	// The deadline moves before anything else can go wrong. A tree with no
+	// workflows at all, or one whose .github cannot be read, has to stop
+	// costing a directory walk a second just as an audited one does — and those
+	// are the trees most likely to be watched for hours.
+	st.NextScan = now.Add(pinScanInterval)
+
 	files, err := pins.WorkflowFiles(st.Path)
 	if err != nil || len(files) == 0 {
 		return st, nil
 	}
-
-	digest := digestFiles(files)
-	if digest == st.Digest && now.Sub(st.LastAudit) < pinScanInterval {
-		return st, nil
-	}
-	// A tree whose workflows have not changed is still re-audited once an
-	// interval: an action can cut a release without anyone touching this repo,
-	// and a pin goes stale exactly then.
-	st.Digest = digest
-	st.LastAudit = now
 
 	report := pins.Audit(ctx, pins.Scan(files), d.opts.PinResolver)
 	if !report.HasIssues() {
@@ -107,21 +106,4 @@ func pinEvent(path string, f pins.Finding, now time.Time) Event {
 		Title:  title,
 		Body:   strings.TrimRight(b.String(), "\n"),
 	}
-}
-
-// digestFiles fingerprints a set of workflow files, contents and names both, so
-// a rename registers as a change just as an edit does.
-func digestFiles(files map[string][]byte) string {
-	names := make([]string, 0, len(files))
-	for name := range files {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	h := sha256.New()
-	for _, name := range names {
-		fmt.Fprintf(h, "%s\x00%d\x00", name, len(files[name]))
-		h.Write(files[name])
-	}
-	return hex.EncodeToString(h.Sum(nil))
 }

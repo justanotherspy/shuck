@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -354,6 +355,72 @@ func TestListenClearsAStaleSocket(t *testing.T) {
 		t.Fatalf("a stale socket blocked a new daemon: %v", err)
 	}
 	again.Close()
+}
+
+// TestListenUnixLosesTheRace covers the two ways another daemon can beat this
+// one to the socket after the stale-socket check said nobody was there. Both
+// have to come back as errAlreadyServing: any other error sends listen() on to
+// the loopback fallback, and two daemons polling GitHub and appending to one
+// journal is far worse than one that declines to start.
+//
+// The races cannot be staged for real — the winner has to appear between our
+// own two syscalls — so the dial is stubbed to fail once (nothing there yet)
+// and answer afterwards (somebody bound it), while the filesystem makes the
+// step in between fail for real.
+func TestListenUnixLosesTheRace(t *testing.T) {
+	tests := []struct {
+		name string
+		// path returns a socket path rigged so the step under test fails.
+		path func(t *testing.T) string
+	}{
+		{
+			// A path whose parent is gone: the bind fails and so does the
+			// remove, which is the "somebody else already cleaned up and took
+			// it" shape.
+			name: "the remove fails",
+			path: func(t *testing.T) string {
+				return filepath.Join(t.TempDir(), "gone", "daemon.sock")
+			},
+		},
+		{
+			// A path too long for sun_path: the file is removable, so recovery
+			// gets as far as the second bind, and that is what fails.
+			name: "the second bind fails",
+			path: func(t *testing.T) string {
+				p := filepath.Join(t.TempDir(), strings.Repeat("n", 120)+".sock")
+				if err := os.WriteFile(p, []byte("stale"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return p
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := tt.path(t)
+			if ln, err := net.Listen("unix", path); err == nil {
+				ln.Close()
+				t.Skip("this platform binds the rigged path; the race cannot be staged here")
+			}
+
+			original := socketServed
+			calls := 0
+			socketServed = func(string) bool {
+				calls++
+				return calls > 1 // nobody is there, then somebody is
+			}
+			t.Cleanup(func() { socketServed = original })
+
+			ln, err := listenUnix(path)
+			if ln != nil {
+				ln.Close()
+			}
+			if !errors.Is(err, errAlreadyServing) {
+				t.Errorf("listenUnix = %v, want errAlreadyServing so listen() reports ErrAlreadyRunning instead of starting a second daemon on TCP", err)
+			}
+		})
+	}
 }
 
 func TestClientReportsNoDaemon(t *testing.T) {

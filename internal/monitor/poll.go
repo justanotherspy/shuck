@@ -90,7 +90,10 @@ type prState struct {
 	// unchanged the review half costs exactly one small query per poll.
 	ReviewFingerprint string `json:"review_fingerprint,omitempty"`
 	// ReviewsSince and CommentsSince are the high-water marks for the two
-	// review feeds.
+	// review feeds. Both hold timestamps GitHub stamped, never this machine's
+	// clock: they are compared server-side against GitHub's clock, so a local
+	// clock that runs fast would mark reviews as already-seen before they were
+	// even submitted. See seedReviewWatermarks.
 	ReviewsSince  time.Time `json:"reviews_since"`
 	CommentsSince time.Time `json:"comments_since"`
 	// ReportedComments holds recently reported comment IDs. GitHub's `since`
@@ -367,7 +370,11 @@ func (p *poller) failureBody(ctx context.Context, st *prState, job model.JobResu
 	}
 	logPath := p.cacheLog(st, job, raw)
 
-	body := strings.TrimRight(logs.StripTimestamps(raw), "\n")
+	// Only one of these two ever pays for itself, so only one of them runs.
+	// Stripping timestamps rewrites the whole log — and a real CI log is
+	// megabytes and always over the limit, so doing it unconditionally spent
+	// that on a string the distilled branch immediately discarded.
+	var body string
 	if len(raw) > wholeLogLimit {
 		res, derr := distil.CIFailure(distil.Input{
 			JobName:       job.Name,
@@ -383,6 +390,8 @@ func (p *poller) failureBody(ctx context.Context, st *prState, job model.JobResu
 		var b strings.Builder
 		render.Job(&b, job)
 		body = strings.TrimSpace(b.String())
+	} else {
+		body = strings.TrimRight(logs.StripTimestamps(raw), "\n")
 	}
 
 	body, _ = distil.CapSummary(body, summaryLimit, "… trimmed.")
@@ -477,10 +486,9 @@ func (p *poller) reviewEvents(ctx context.Context, st *prState, pr model.PR, now
 
 	if st.ReviewFingerprint == "" {
 		// The first sighting of a PR is not a hundred new comments; it is the
-		// state of the world. Record the high-water marks and report from here.
-		st.ReviewFingerprint = fingerprint
-		st.ReviewsSince = now
-		st.CommentsSince = now
+		// state of the world. Record where that state stands and report from
+		// there.
+		p.seedReviewWatermarks(ctx, st, fingerprint)
 		return nil
 	}
 
@@ -495,6 +503,61 @@ func (p *poller) reviewEvents(ctx context.Context, st *prState, pr model.PR, now
 		st.ReviewFingerprint = fingerprint
 	}
 	return append(reviews, comments...)
+}
+
+// seedReviewWatermarks records where a PR's review history already stands, so
+// the first sighting of it reports nothing and the round after it reports only
+// what is genuinely new.
+//
+// Every mark it sets is a timestamp GitHub itself stamped, never the daemon's
+// clock. Both feeds are filtered against GitHub's clock, so a local clock even a
+// second fast writes a watermark in GitHub's future and silently swallows every
+// review submitted inside the skew — a reviewer asks for changes and nobody is
+// ever told, which is the one failure this monitor exists to not have. The
+// newest timestamp in the data cannot be wrong that way: it is the same clock
+// the filter uses.
+//
+// The IDs are remembered alongside the marks because queryFrom widens the next
+// query by a second. Without them the newest existing review would come back on
+// the very next poll and be delivered as news.
+//
+// A listing that fails leaves the fingerprint empty so the next poll seeds
+// again. Saying nothing until then is the safe direction — the alternative is
+// guessing a mark, and a guess that lands too late is a review nobody hears
+// about.
+func (p *poller) seedReviewWatermarks(ctx context.Context, st *prState, fingerprint string) {
+	reviews, err := p.client.PRReviewsSince(ctx, st.Owner, st.Repo, st.Number, time.Time{})
+	if err != nil {
+		p.logf("seed reviews for %s: %v", st.Target, err)
+		return
+	}
+	comments, err := p.client.PRReviewCommentsSince(ctx, st.Owner, st.Repo, st.Number, time.Time{})
+	if err != nil {
+		p.logf("seed review comments for %s: %v", st.Target, err)
+		return
+	}
+
+	seenReviews := newInt64Set(st.ReportedReviews)
+	for _, rv := range reviews {
+		seenReviews.add(rv.ID)
+		if rv.SubmittedAt.After(st.ReviewsSince) {
+			st.ReviewsSince = rv.SubmittedAt
+		}
+	}
+	st.ReportedReviews = seenReviews.slice()
+
+	seenComments := newInt64Set(st.ReportedComments)
+	for _, rc := range comments {
+		seenComments.add(rc.ID)
+		if rc.CreatedAt.After(st.CommentsSince) {
+			st.CommentsSince = rc.CreatedAt
+		}
+	}
+	st.ReportedComments = seenComments.slice()
+
+	// Last, so that a PR whose listings failed is seeded from scratch next
+	// time rather than resuming from half a history.
+	st.ReviewFingerprint = fingerprint
 }
 
 // watermarkSlack is how far back a review/comment watermark reaches when it is
@@ -654,6 +717,13 @@ func (p *poller) thread(ctx context.Context, st *prState, rc gh.PRReviewComment)
 // fileAtHead fetches the commented file at the commit the comment is anchored
 // to, for the surrounding-lines window. It degrades to "" — the summary then
 // shows the diff hunk alone, which is still useful.
+//
+// Only a 404 degrades quietly: a comment on a file a later commit deleted or
+// renamed is ordinary, and there is nothing to say about it. A 403, a 500, or a
+// transport failure is a broken fetch, and treating that as "no such file"
+// would make a token that has lost its scopes look like a repository full of
+// missing files — permanently, and with nothing in the log to suggest
+// otherwise.
 func (p *poller) fileAtHead(ctx context.Context, st *prState, pr model.PR, rc gh.PRReviewComment) string {
 	if rc.Path == "" || rc.Line <= 0 || strings.EqualFold(rc.Side, "LEFT") {
 		return ""
@@ -664,6 +734,9 @@ func (p *poller) fileAtHead(ctx context.Context, st *prState, pr model.PR, rc gh
 	}
 	content, err := p.client.FileContent(ctx, st.Owner, st.Repo, rc.Path, ref)
 	if err != nil {
+		if !gh.FileNotFound(err) {
+			p.logf("file %s at %s for comment %d: %v", rc.Path, shortSHA(ref), rc.ID, err)
+		}
 		return ""
 	}
 	return string(content)

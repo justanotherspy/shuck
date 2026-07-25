@@ -30,22 +30,6 @@ type Checkout struct {
 	Head string
 }
 
-// Same reports whether two checkouts point at the same repository and branch.
-// Head deliberately does not participate: a local commit that has not been
-// pushed does not retarget a watch, it just means the next poll may still see
-// the previous head SHA on GitHub.
-func (c Checkout) Same(o Checkout) bool {
-	return c.Owner == o.Owner && c.Repo == o.Repo && c.Branch == o.Branch
-}
-
-// String renders a checkout the way the monitor reports it.
-func (c Checkout) String() string {
-	if c.Branch == "" {
-		return fmt.Sprintf("%s/%s (detached)", c.Owner, c.Repo)
-	}
-	return fmt.Sprintf("%s/%s@%s", c.Owner, c.Repo, c.Branch)
-}
-
 // ReadCheckout inspects the working tree at dir and reports the repository and
 // branch it is on.
 //

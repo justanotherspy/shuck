@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -32,8 +33,12 @@ func TestParseWatchSpec(t *testing.T) {
 	})
 
 	tests := []struct {
-		name     string
-		args     []string
+		name string
+		args []string
+		// setup supplies the arguments (and the ID they should produce) for the
+		// cases that need something on disk: a directory is only a watch target
+		// when it exists, so those cases cannot be written as literals.
+		setup    func(t *testing.T) (args []string, wantID string)
 		resolve  func([]string) (target.Target, error)
 		wantID   string
 		wantKind WatchKind
@@ -84,6 +89,80 @@ func TestParseWatchSpec(t *testing.T) {
 			resolve: func([]string) (target.Target, error) { return target.Target{}, errors.New("invalid PR number") },
 			wantErr: "invalid PR number",
 		},
+		{
+			// The documented directory target: `shuck monitor watch ~/src/repo`
+			// follows that tree, exactly as the no-argument form follows this one.
+			name: "a directory becomes a tree watch",
+			setup: func(t *testing.T) ([]string, string) {
+				dir := t.TempDir()
+				return []string{dir}, TreeWatchID(dir)
+			},
+			resolve:  func([]string) (target.Target, error) { return target.Target{}, errors.New("invalid PR number") },
+			wantKind: WatchTree,
+		},
+		{
+			// The watch outlives the shell that named it, so a relative path
+			// must be stored absolute — the daemon has its own working
+			// directory and would otherwise read the wrong tree, or none.
+			name: "a relative directory is stored absolute",
+			setup: func(t *testing.T) ([]string, string) {
+				root := t.TempDir()
+				if err := os.Mkdir(filepath.Join(root, "tree"), 0o750); err != nil {
+					t.Fatal(err)
+				}
+				t.Chdir(root)
+				cwd, err := os.Getwd()
+				if err != nil {
+					t.Fatal(err)
+				}
+				return []string{"tree"}, TreeWatchID(filepath.Join(cwd, "tree"))
+			},
+			resolve:  func([]string) (target.Target, error) { return target.Target{}, errors.New("invalid PR number") },
+			wantKind: WatchTree,
+		},
+		{
+			// The ordering guard: PR spellings are tried first, so a directory
+			// that happens to be named "42" cannot quietly shadow PR #42.
+			name: "a directory named like a PR number is still the PR",
+			setup: func(t *testing.T) ([]string, string) {
+				root := t.TempDir()
+				if err := os.Mkdir(filepath.Join(root, "42"), 0o750); err != nil {
+					t.Fatal(err)
+				}
+				t.Chdir(root)
+				return []string{"42"}, "pr:o/r#42"
+			},
+			resolve:  func([]string) (target.Target, error) { return target.Target{Owner: "o", Repo: "r", Number: 42}, nil },
+			wantKind: WatchPR,
+		},
+		{
+			// The fallback must not swallow the parse error: a path with a typo
+			// in it names nothing, and saying so is the only useful answer.
+			name:    "a path that is not there stays a PR-spec error",
+			args:    []string{"./no-such-tree"},
+			resolve: func([]string) (target.Target, error) { return target.Target{}, errors.New("invalid PR number") },
+			wantErr: "invalid PR number",
+		},
+		{
+			name: "a file is not a working tree",
+			setup: func(t *testing.T) ([]string, string) {
+				f := filepath.Join(t.TempDir(), "notatree")
+				if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return []string{f}, ""
+			},
+			resolve: func([]string) (target.Target, error) { return target.Target{}, errors.New("invalid PR number") },
+			wantErr: "invalid PR number",
+		},
+		{
+			// Two arguments are the "owner/repo 42" pair; neither half is a
+			// directory, so a bad number there is a plain error.
+			name:    "a two-argument spec never falls back to a directory",
+			args:    []string{"o/r", "notanumber"},
+			resolve: func([]string) (target.Target, error) { return target.Target{}, errors.New("invalid PR number") },
+			wantErr: "invalid PR number",
+		},
 	}
 
 	for _, tt := range tests {
@@ -93,8 +172,12 @@ func TestParseWatchSpec(t *testing.T) {
 				resolveTarget = tt.resolve
 				t.Cleanup(func() { resolveTarget = original })
 			}
+			args, wantID := tt.args, tt.wantID
+			if tt.setup != nil {
+				args, wantID = tt.setup(t)
+			}
 
-			got, err := ParseWatchSpec(tt.args, "")
+			got, err := ParseWatchSpec(args, "")
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("error = %v, want it to contain %q", err, tt.wantErr)
@@ -104,11 +187,14 @@ func TestParseWatchSpec(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseWatchSpec: %v", err)
 			}
-			if got.ID != tt.wantID {
-				t.Errorf("ID = %q, want %q", got.ID, tt.wantID)
+			if got.ID != wantID {
+				t.Errorf("ID = %q, want %q", got.ID, wantID)
 			}
 			if got.Kind != tt.wantKind {
 				t.Errorf("Kind = %q, want %q", got.Kind, tt.wantKind)
+			}
+			if tt.wantKind == WatchTree && got.Path == "" {
+				t.Error("a tree watch must carry the path it follows")
 			}
 		})
 	}
@@ -238,14 +324,12 @@ func TestRegistryTouchAndExpire(t *testing.T) {
 	r.Add(Watch{ID: "a", Kind: WatchTree, Path: "/a"})
 	r.Add(Watch{ID: "b", Kind: WatchTree, Path: "/b"})
 
-	// Age both watches past the TTL, then keep one alive by asking about it —
-	// which is exactly what a live session does.
+	// Age one watch past the TTL and leave the other as a live session would:
+	// every client call runs TouchAll, so a watch is only stale when nobody has
+	// talked to the monitor since.
 	stale := time.Now().Add(-2 * time.Hour)
-	for _, id := range []string{"a", "b"} {
-		w, _ := r.Get(id)
-		w.LastSeen = stale
-	}
-	r.Touch("a")
+	b, _ := r.Get("b")
+	b.LastSeen = stale
 
 	dropped := r.Expire(time.Hour, time.Now())
 	if len(dropped) != 1 || dropped[0].ID != "b" {
@@ -266,8 +350,6 @@ func TestRegistryTouchAndExpire(t *testing.T) {
 	if w, _ := r.Get("a"); time.Since(w.LastSeen) > time.Minute {
 		t.Error("TouchAll should refresh every watch")
 	}
-	// Touching an unknown ID is a no-op, not a panic.
-	r.Touch("nope")
 }
 
 func TestRegistryIgnoresUnreadableState(t *testing.T) {

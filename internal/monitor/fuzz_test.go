@@ -206,9 +206,5 @@ func FuzzReadCheckoutGitFiles(f *testing.F) {
 		if strings.ContainsAny(got.Owner+got.Repo, "/\x00") {
 			t.Errorf("owner/repo must not carry separators: %+v", got)
 		}
-		// Same() and String() are called on every tick's result; neither may
-		// panic on a strange one.
-		_ = got.Same(got)
-		_ = got.String()
 	})
 }

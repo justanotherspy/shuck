@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -437,14 +438,17 @@ func TestPollLifecycleChange(t *testing.T) {
 // TestPollFirstSightingIsNotNews covers the rule that keeps a session from
 // being handed a PR's whole history the moment it starts watching.
 func TestPollFirstSightingIsNotNews(t *testing.T) {
+	yesterday := now.Add(-24 * time.Hour)
+
 	c := newFakeClient()
 	c.pr = openPR("abc1234def")
 	c.fingerprint = "fp-1"
-	c.reviews = []gh.PRReview{{ID: 1, State: "CHANGES_REQUESTED", UserLogin: "alice", SubmittedAt: now.Add(-24 * time.Hour)}}
-	c.comments = []gh.PRReviewComment{{ID: 5, Path: "a.go", Line: 3, Body: "old", CreatedAt: now.Add(-24 * time.Hour)}}
+	c.reviews = []gh.PRReview{{ID: 1, State: "CHANGES_REQUESTED", UserLogin: "alice", SubmittedAt: yesterday}}
+	c.comments = []gh.PRReviewComment{{ID: 5, Path: "a.go", Line: 3, Side: "RIGHT", Body: "old", CreatedAt: yesterday}}
+	p := testPoller(c)
 
 	fresh := prState{Target: "o/r#7", Owner: "o", Repo: "r", Number: 7}
-	st, events := testPoller(c).Poll(context.Background(), fresh, now)
+	st, events := p.Poll(context.Background(), fresh, now)
 
 	if hasKind(events, KindReviewSubmitted) != nil || hasKind(events, KindReviewComment) != nil {
 		t.Fatalf("the first sighting replayed history: %v", kinds(events))
@@ -452,8 +456,90 @@ func TestPollFirstSightingIsNotNews(t *testing.T) {
 	if st.ReviewFingerprint != "fp-1" {
 		t.Errorf("fingerprint = %q, want it recorded", st.ReviewFingerprint)
 	}
-	if !st.CommentsSince.Equal(now) {
-		t.Errorf("CommentsSince = %v, want the high-water mark set to now", st.CommentsSince)
+	// The marks are read off the data, so they are GitHub's timestamps rather
+	// than this machine's idea of the time.
+	if !st.CommentsSince.Equal(yesterday) || !st.ReviewsSince.Equal(yesterday) {
+		t.Errorf("watermarks = %v / %v, want the newest timestamps GitHub stamped (%v)",
+			st.ReviewsSince, st.CommentsSince, yesterday)
+	}
+
+	// And the round after says nothing about them either: queryFrom re-asks
+	// from a second before the mark, and the remembered ids are what stop that
+	// history arriving as news.
+	c.fingerprint = "fp-2"
+	if _, events = p.Poll(context.Background(), st, now.Add(time.Minute)); len(events) != 0 {
+		t.Errorf("the poll after the first sighting replayed history: %v", kinds(events))
+	}
+}
+
+// TestPollFirstSightingIgnoresTheLocalClock is the regression test for a silent
+// review loss with no symptom at all.
+//
+// The watermarks are compared against timestamps GitHub stamped, so anchoring
+// them to the daemon's clock anchors them to the wrong clock. A laptop whose
+// clock is a minute fast would write a mark a minute into GitHub's future, and
+// every review and comment landing in that window would be filtered out as
+// already-seen — forever, and silently.
+func TestPollFirstSightingIgnoresTheLocalClock(t *testing.T) {
+	c := newFakeClient()
+	c.pr = openPR("abc1234def")
+	c.fingerprint = "fp-1"
+	c.reviews = []gh.PRReview{{ID: 1, State: "APPROVED", UserLogin: "alice", SubmittedAt: now.Add(-24 * time.Hour)}}
+	c.comments = []gh.PRReviewComment{{ID: 5, Path: "a.go", Line: 3, Side: "RIGHT", Body: "old", CreatedAt: now.Add(-24 * time.Hour)}}
+	p := testPoller(c)
+
+	// This machine's clock runs a minute fast; GitHub's is `now`.
+	skewed := now.Add(time.Minute)
+	fresh := prState{Target: "o/r#7", Owner: "o", Repo: "r", Number: 7}
+	st, _ := p.Poll(context.Background(), fresh, skewed)
+
+	// A reviewer lands inside the skew window, a second after the watch began.
+	c.fingerprint = "fp-2"
+	c.reviews = append(c.reviews, gh.PRReview{
+		ID: 2, State: "CHANGES_REQUESTED", Body: "one blocker", UserLogin: "bob", SubmittedAt: now.Add(time.Second),
+	})
+	c.comments = append(c.comments, gh.PRReviewComment{
+		ID: 6, Path: "b.go", Line: 9, Side: "RIGHT", Body: "this leaks", UserLogin: "bob", CreatedAt: now.Add(time.Second),
+	})
+	_, events := p.Poll(context.Background(), st, skewed.Add(time.Second))
+
+	if hasKind(events, KindReviewSubmitted) == nil {
+		t.Errorf("bob's review landed inside the clock skew and was dropped: %v", kinds(events))
+	}
+	if hasKind(events, KindReviewComment) == nil {
+		t.Errorf("bob's comment landed inside the clock skew and was dropped: %v", kinds(events))
+	}
+}
+
+// TestPollFirstSightingRetriesAFailedSeed guards the other end of that trade:
+// the marks may only be recorded from data that actually arrived. A seed that
+// half-failed and closed the gate anyway would suppress reviews it never read.
+func TestPollFirstSightingRetriesAFailedSeed(t *testing.T) {
+	c := newFakeClient()
+	c.pr = openPR("abc1234def")
+	c.fingerprint = "fp-1"
+	c.commentsErr = errors.New("500 internal server error")
+	c.reviews = []gh.PRReview{{ID: 1, State: "APPROVED", UserLogin: "alice", SubmittedAt: now.Add(-24 * time.Hour)}}
+	p := testPoller(c)
+
+	fresh := prState{Target: "o/r#7", Owner: "o", Repo: "r", Number: 7}
+	st, events := p.Poll(context.Background(), fresh, now)
+	if len(events) != 0 {
+		t.Fatalf("a failed seed must stay quiet, got %v", kinds(events))
+	}
+	if st.ReviewFingerprint != "" {
+		t.Fatal("a failed seed must not record the fingerprint: the next poll would then treat unread history as already handled")
+	}
+
+	// The feed comes back, and the seed completes — still silently.
+	c.commentsErr = nil
+	c.comments = []gh.PRReviewComment{{ID: 5, Path: "a.go", Line: 3, Side: "RIGHT", Body: "old", CreatedAt: now.Add(-time.Hour)}}
+	st, events = p.Poll(context.Background(), st, now.Add(time.Minute))
+	if len(events) != 0 {
+		t.Fatalf("the retried seed replayed history: %v", kinds(events))
+	}
+	if st.ReviewFingerprint != "fp-1" || !st.CommentsSince.Equal(now.Add(-time.Hour)) {
+		t.Errorf("state = %q / %v, want the seed recorded on the retry", st.ReviewFingerprint, st.CommentsSince)
 	}
 }
 
@@ -491,6 +577,60 @@ func TestPollNewReviewComment(t *testing.T) {
 	if !strings.Contains(e.URL, "#discussion_r5") {
 		t.Errorf("URL = %q, want a link to the comment", e.URL)
 	}
+}
+
+// TestPollCommentFileFetchTellsTheTwoFailuresApart covers the difference
+// between a file that is not there and a fetch that did not work. Both cost the
+// event its code context, but only one of them is normal, and rendering a 403
+// or a 500 as "no such file" would hide a token that has lost its scopes behind
+// events that merely look a little thin.
+func TestPollCommentFileFetchTellsTheTwoFailuresApart(t *testing.T) {
+	comment := gh.PRReviewComment{
+		ID: 5, Path: "main.go", Line: 3, Side: "RIGHT", Body: "fix this",
+		UserLogin: "alice", CommitID: "abc1234def", CreatedAt: now.Add(-time.Minute),
+	}
+
+	t.Run("broken fetch is logged", func(t *testing.T) {
+		c := newFakeClient()
+		c.pr = openPR("abc1234def")
+		c.fingerprint = "fp-2"
+		c.comments = []gh.PRReviewComment{comment}
+		c.fileErr = errors.New("500 internal server error")
+
+		var log bytes.Buffer
+		p := testPoller(c)
+		p.log = &log
+
+		_, events := p.Poll(context.Background(), baseState(), now)
+		if hasKind(events, KindReviewComment) == nil {
+			t.Fatalf("the comment must still be reported without its file context: %v", kinds(events))
+		}
+		if !strings.Contains(log.String(), "500") || !strings.Contains(log.String(), "main.go") {
+			t.Errorf("a broken file fetch went unrecorded; log = %q", log.String())
+		}
+	})
+
+	t.Run("missing file is quiet", func(t *testing.T) {
+		c := newFakeClient()
+		c.pr = openPR("abc1234def")
+		c.fingerprint = "fp-2"
+		c.comments = []gh.PRReviewComment{comment}
+		// A comment on a file a later commit deleted: ordinary, and there is
+		// nothing to say about it.
+		c.fileErr = errors.New("get contents main.go from o/r: GET https://api.github.com/...: 404 Not Found []")
+
+		var log bytes.Buffer
+		p := testPoller(c)
+		p.log = &log
+
+		_, events := p.Poll(context.Background(), baseState(), now)
+		if hasKind(events, KindReviewComment) == nil {
+			t.Fatalf("the comment must still be reported: %v", kinds(events))
+		}
+		if log.Len() != 0 {
+			t.Errorf("a file that is simply gone is not a diagnostic; log = %q", log.String())
+		}
+	})
 }
 
 func TestPollReplyCarriesItsThread(t *testing.T) {
