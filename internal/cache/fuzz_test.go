@@ -9,12 +9,13 @@ import (
 )
 
 // unsafeCacheSegment is an independent restatement of what an owner/repo
-// segment may not be before it is joined into a cache path: empty, a
-// relative-path spelling, a value smuggling a separator past filepath.Join, or
-// a NUL that truncates the name at the syscall boundary. It is deliberately a
-// second copy of the rule rather than a call into safeSegment — an oracle that
-// asks the code under test what it considers safe agrees with it no matter how
-// far the guard is weakened.
+// segment may not be before it is joined into a cache path: empty, the "."
+// spelling, ".." anywhere in it (not just as the whole segment), a separator
+// that would smuggle extra levels past filepath.Join, or a NUL that truncates
+// the name at the syscall boundary. It is deliberately a second copy of the
+// rule rather than a call into safeSegment — an oracle that asks the code
+// under test what it considers safe agrees with it no matter how far the guard
+// is weakened.
 func unsafeCacheSegment(s string) bool {
 	return s == "" ||
 		s == "." || s == ".." || strings.Contains(s, "..") ||

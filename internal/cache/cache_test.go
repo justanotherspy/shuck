@@ -253,11 +253,14 @@ func TestJobLogPathStaysUnderCacheBase(t *testing.T) {
 		{"o\x00", "r"},
 		{"o", "r\x00/../.."},
 		// Embedded "..": no separator, no NUL, and not the bare "." / ".."
-		// spellings, so the dedicated `strings.Contains(s, "..")` guard is the
-		// only thing rejecting these. Without such cases that clause can be
-		// deleted outright with the suite still green, and a segment like
-		// "a..b" then reaches filepath.Join, where a later Clean of the joined
-		// path (or a caller that re-splits it) can walk back out of the base.
+		// spellings, so safeSegment's `strings.Contains(s, "..")` clause is the
+		// only thing rejecting these. Its rule is deliberately broader than
+		// "is this segment literally ..": no accepted segment may carry ".."
+		// anywhere, because a real owner/repo never does and the value is
+		// re-joined, printed, and re-parsed downstream. Without cases only that
+		// clause catches, it can be deleted outright with the suite still
+		// green, leaving traversal defense resting on filepath.Join's cleaning
+		// rather than on rejecting the input.
 		{"a..b", "r"},
 		{"o", "a..b"},
 		{"..evil", "r"},
