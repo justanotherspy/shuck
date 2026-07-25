@@ -11,8 +11,7 @@ is in `internal/`; where it describes a number, the number is a named constant.
 
 shuck answers one question well — *why is this pull request red?* — and a
 handful of adjacent ones: what did reviewers ask for, what security alerts are
-open, what did reviewers ask for, what security alerts are outstanding, are
-the workflow actions SHA-pinned.
+open, are the workflow actions SHA-pinned.
 
 The constraint that shapes everything: **shuck is one portable binary you drop
 on a laptop.** A CLI and a local background monitor in the same executable,
@@ -163,8 +162,12 @@ business, not the caller's: `shuck monitor events --wait 30m` re-asks until the
 half hour it was given has actually elapsed, because an early "nothing new" is
 indistinguishable — same text, same exit code — from a genuinely quiet wait.
 
-Every op that touches a watch refreshes its last-seen time. A client asking
-about a watch is exactly the evidence that somebody still cares about it.
+A `status`, `events`, or `poke` call refreshes the last-seen time of *every*
+watch (`registry.TouchAll`), not just the one it named; registering a watch
+refreshes that one. Beyond registration there is no per-watch refresh path, and
+that is the intent: a client asking the monitor anything at all is the evidence
+that somebody is still there, and which watch the question happened to be about
+says nothing about whether the others still matter.
 
 ### Watches and targets are different things
 
@@ -193,9 +196,10 @@ polled **once** between them and produce one event each time. Poll state for a
 target no watch points at any more is pruned, so moving through ten branches
 does not leave ten pollers behind.
 
-Watches expire after `DefaultWatchTTL` (12 hours) with nobody asking about
-them. A laptop closed overnight should not still be polling GitHub in the
-morning.
+Watches expire after `DefaultWatchTTL` (12 hours) with no client asking the
+monitor anything — not 12 hours of that particular watch going unmentioned,
+since any call keeps every watch alive. A laptop closed overnight should not
+still be polling GitHub in the morning.
 
 ### One poll round, in order, with what it costs
 
@@ -228,9 +232,19 @@ verdict, and the reported-job set, because every conclusion held was about a
 commit that is no longer current.
 
 First sightings are deliberately silent. The first time a PR is seen its
-lifecycle is recorded without an event, and the review high-water marks are set
-to *now* — arriving at a PR with forty comments is the state of the world, not
-forty things that just happened.
+lifecycle is recorded without an event, and one listing of each review feed
+seeds the high-water marks and reports nothing — arriving at a PR with forty
+comments is the state of the world, not forty things that just happened.
+
+Every mark is a timestamp GitHub itself stamped on that data, never the daemon's
+clock. The two clocks can disagree and the filtering happens on GitHub's, so a
+mark taken from the local one is silently wrong: a second fast and it lands in
+GitHub's future, swallowing every review submitted inside the skew — a reviewer
+asks for changes and nobody is ever told. The newest timestamp in the data
+cannot fail that way, because it came from the clock the filter uses. The ids
+seen are remembered alongside the marks, because the next query deliberately
+reaches back a second (`watermarkSlack`, covering GitHub's whole-second stamps)
+and the newest existing review would otherwise arrive as news.
 
 ### The event model
 
@@ -274,12 +288,26 @@ one-line `Title`, an optional `Body`, and a URL. `Title` is enough to decide
 whether to care; `Body` is enough to act without a follow-up call. That split is
 what lets a consumer show a digest and expand on demand.
 
-Each kind maps to a severity: `ci.failed`, `review.comment`, `review.submitted`
-and `pins.stale` are **action**, everything else — including `monitor.error` —
-is **info**. Only the Stop hook currently reads it, and it is the difference
-between "your build is red" holding a turn open and "your build is green" not.
-`monitor.error` is deliberately on the quiet side of that line: a failed poll is
-the monitor's problem, and a network blip must not hold a finished turn open.
+Severity is not quite a function of the kind. `Kind.Severity` starts from it —
+`ci.failed`, `review.comment` and `review.submitted` are **action**, everything
+else is **info** — and `Event.Severity`, which is what a consumer should ask,
+demotes one case on the event's own detail: a submitted review whose headline
+reads as an approval. (The verdict is not a field on `Event`; the journal record
+and IPC payload are not widened for one consumer, so `approvedHeadline` reads it
+back out of the headline the poller wrote.) Only the Stop hook currently reads
+any of this, and it is the difference between "your build is red" holding a turn
+open and "your build is green" not.
+
+Three things sit on the quiet side of that line deliberately. An **approval** is
+news, not a request: blocking a finish on one has the Stop hook hand back
+"address this as part of the current task" over a reviewer saying the work is
+done, which is the one intervention guaranteed to be wrong. `monitor.error` is
+the monitor's own problem, and a network blip must not hold a finished turn
+open. `pins.stale` is repo hygiene in a checkout nobody mentioned — telling an
+agent mid-task to go fix something it did not break is not what it was asked to
+do. Nothing is lost by any of the three: the `UserPromptSubmit` hook delivers
+every event whatever its severity, so all of them still reach the session. They
+just cannot block a finish.
 
 Repeat suppression lives in the per-target state: reported job keys, reported
 review and comment ids (bounded at 200 each — they exist to suppress duplicates
@@ -336,8 +364,8 @@ the next poll.
 | `ResolveInterval` | 1m | a tree watch that has not found a PR |
 | `MaxBackoff` | 15m | ceiling on the ×3 error backoff |
 | `LowRateThreshold` | 500 | remaining REST quota below which every interval doubles |
-| `DefaultWatchTTL` | 12h | a watch nobody has asked about |
-| `pinScanInterval` | 10m | floor between two pin audits of one tree |
+| `DefaultWatchTTL` | 12h | every watch, once no client has asked the monitor anything for that long |
+| `pinScanInterval` | 10m | floor between two pin scans of one tree, the file walk included |
 
 A target claims its next slot *before* the poll runs, so a slow round does not
 queue up behind itself on the next tick. `poke` (what the `PostToolUse` hook
@@ -352,16 +380,26 @@ running must never be the reason a `git push` cannot be checked.
 ### The pin audit
 
 The monitor also watches the tree itself. After the PR polls — expensive work
-first, cheap work second — each tree watch's workflow files are collected
-(`.github/workflows/*.y{a,}ml`, the root `action.y{a,}ml`, and
-`.github/actions/*/action.y{a,}ml`) and hashed, contents and names both.
+first, cheap work second — each tree watch is offered to the pin audit, which
+reads the tree's workflow files (`.github/workflows/*.y{a,}ml`, the root
+`action.y{a,}ml`, and `.github/actions/*/action.y{a,}ml`) and classifies every
+`uses:` reference in them.
 
-The hash is what makes this affordable. Reading a handful of small YAML files
-every second costs nothing; asking GitHub about every action they reference does
-not. So the audit runs when the hash moves — which is to say, exactly when you
-have just written or edited a workflow — or once every `pinScanInterval`
-otherwise, because an action can cut a release without anyone touching this
-repo, and a pin goes stale exactly then.
+A deadline is all the pacing there is. `scanPins` reads a tree at most once
+every `pinScanInterval` (10 minutes) and hands its state back untouched
+otherwise, and that deadline gates the filesystem walk itself rather than only
+the release lookups behind it — a content hash can tell two versions of a tree
+apart only *after* reading every file, which is exactly the cost worth avoiding
+when a round happens once a second and workflow files change at human speed. The
+deadline also moves before the audit runs, so a tree with no workflows at all,
+or one whose `.github` cannot be read, stops costing a walk a second just as an
+audited one does.
+
+Two consequences are worth stating plainly. An edit to a workflow file surfaces
+on the next scan rather than on the keystroke — nothing here watches the
+filesystem. And a tree nobody has touched is still re-audited every ten minutes,
+because an action can cut a release without anyone editing this repo, and a pin
+goes stale exactly then.
 
 `internal/pins` splits in two so both halves stay testable offline. `Scan` is
 pure text work: a schema-free `yaml.Node` walk that matches any mapping key
@@ -374,7 +412,10 @@ The monitor is handed the same cache-backed resolver `shuck action` and
 
 Findings already reported for a tree are remembered by file, line, and
 reference, so an unpinned action you have decided not to fix is mentioned once
-rather than every time you touch the file.
+rather than every time you touch the file. That state is written back only when
+it actually changed — the moved deadline counts as a change — because the
+alternative is rewriting `pins.json` once a second per watched tree to record
+what it recorded a second ago.
 
 ## The Claude Code integration
 
@@ -387,10 +428,10 @@ instead of a hook error on every prompt.
 
 | Hook | Reads from the payload | What it does | Writes |
 | --- | --- | --- | --- |
-| `SessionStart` | `cwd` (or `CLAUDE_PROJECT_DIR`, or the process cwd), `session_id` | Registers the tree as a watch — starting the daemon if this is the first session — then seeks the session's cursor to the present. | `hookSpecificOutput.additionalContext`: what the monitor is watching and what will arrive unasked. |
+| `SessionStart` | `cwd` (or `CLAUDE_PROJECT_DIR`, or the process cwd), `session_id`, `source` | Registers the tree as a watch — starting the daemon if this is the first session — then seeks the session's cursor to the present, but only when `source` says the session is genuinely new: a resume or a compaction fires `SessionStart` too, and seeking there would discard events the conversation has not been shown. | `hookSpecificOutput.additionalContext`: what the monitor is watching and what will arrive unasked. |
 | `UserPromptSubmit` | `session_id` | Drains that session's pending events. Never starts a daemon — a prompt is not the moment. | `additionalContext`: a `<shuck-monitor>` block, or nothing at all when the batch is empty. |
 | `PostToolUse` | `tool_name`, `tool_input.command` | On a Bash call matching `git push`, `gh pr create`, `gh pr ready`, `gh workflow run`, or `gh run rerun`, pokes the monitor. | nothing |
-| `Stop` | `session_id`, `stop_hook_active` | Peeks at pending events; if any are actionable, seeks past them and blocks. | `{"decision":"block","reason":…}` at the top level **and** inside `hookSpecificOutput` — both shapes have been current, and unknown fields are ignored by the reader. |
+| `Stop` | `session_id`, `stop_hook_active` | Peeks at pending events; if any are actionable, seeks past them and blocks. | `{"decision":"block","reason":…}`, top level only — never also in `hookSpecificOutput`, because a response carrying the reason in both shapes risks the same CI failure being injected into the session twice. |
 | `SessionEnd` | `session_id` | Retires the session's cursor. | nothing |
 
 Three properties make the Stop hook safe rather than a trap. It stands down the
@@ -427,7 +468,7 @@ variable.
     ├── endpoint.json              how to dial: network, address, token, pid
     ├── watches.json               the registered watch set
     ├── targets.json               per-PR poll state (head SHA, verdict, marks)
-    ├── pins.json                  per-tree workflow digest + reported findings
+    ├── pins.json                  per-tree next-scan deadline + reported findings
     ├── events.jsonl               the event journal
     ├── cursors.json               per-consumer delivery cursors
     └── daemon.log                 the daemon's own diagnostics
@@ -441,8 +482,22 @@ rotated journal) is written through a temp file and renamed, so a reader sees
 either the previous contents or the new ones, never half of each — the daemon
 rewrites on a tick while clients read at will.
 
-The inspection caches are TTL'd and swept on every run (`cache.Purge`). An
-action or security entry ages by its one record file; a PR entry ages by the
+The inspection caches are TTL'd and swept from both ends (`cache.Purge`). A
+report command purges on every run, at an hour, exempting the entry the run in
+front of you is writing. The daemon sweeps at the end of a round, no more often
+than `cachePurgeInterval` (1 hour — a purge walks the whole cache tree while the
+daemon wakes every second) and at a `cachePurgeTTL` of 24 hours, with no
+exemption: it polls many targets rather than writing one entry, and nothing it
+wrote this round is within a day of being a candidate anyway. The daemon has to
+be one of the sweepers, because it is the only part of shuck that writes to that
+cache without ever running a report command — for someone whose whole use of
+shuck is `shuck monitor`, no other sweep runs and the job logs accumulate for
+the life of the machine. The longer TTL is what makes the event body's promise
+good: a day outlives `DefaultWatchTTL`, so a cached log survives for as long as
+the watch that produced it possibly can. Purging stays advisory, so a failure is
+logged and the round carries on.
+
+An action or security entry ages by its one record file; a PR entry ages by the
 newest of its record *and* its cached job logs, because the monitor writes logs
 there and never writes a report — aging by the record alone would leave a PR
 only the monitor ever touched growing logs that nothing reclaims. The

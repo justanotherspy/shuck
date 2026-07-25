@@ -119,7 +119,7 @@ what changed as events.
 | `internal/setup` | `shuck setup`: install the embedded skill to `~/.claude/skills/shuck` and add a managed CLAUDE.md note. |
 | `internal/target` | Resolve owner/repo/PR from args or the local repo (go-git). |
 | `internal/gh` | go-github (v89) wrappers: PR head (`GetPR`), open-PR lookup by branch (`FindOpenPR`), Actions runs/jobs/logs, checks, the free `RateRemaining` quota probe, security alerts, and `content.go`'s `FileContent`/`FileNotFound` (the file at a PR head, for review-comment context). Plus one hand-rolled client: GraphQL for reviews (`reviews.go`). `reviewcomments.go` is the REST review feed the monitor polls (`PRReviewsSince`, `PRReviewCommentsSince`, `PRCommentThread`). |
-| `internal/cache` | On-disk cache under `~/.cache/shuck/…`: per-PR reports + whole raw job logs, action tag lists, security reports. `Purge(ttl, keep)` sweeps stale entries on every run. |
+| `internal/cache` | On-disk cache under `~/.cache/shuck/…`: per-PR reports + whole raw job logs, action tag lists, security reports. `Purge(ttl, keep)` sweeps stale entries. An action/security entry ages by its one record file; a PR entry ages by the *newest* mtime across `cache.json` **and** its cached job logs, because the monitor writes logs there and never writes a report. Sweeping is a side effect of the paths that own a cache — `prReport` before it fetches a PR, `resolveAction` and `Security` before their TTL'd entries — plus the daemon (`monitor.Daemon.sweepCache`, hourly, 24h TTL), without which a machine whose only use of shuck is `shuck monitor` would never reclaim a byte. |
 | `internal/logs` | Parse a job log into `##[group]`-delimited sections; extract the high-signal error excerpt. |
 | `internal/distil` | The shared distillation core (`CIFailure`): raw job log + Actions-API step metadata → per-step failure detail (`FailedSteps`) + an agent-ready `Summary`. `CapSummary` byte-budgets a summary for delivery (UTF-8-safe line-prefix cut + caller's truncation note) — used for event bodies and for the text a hook injects. `ReviewComment` / `Review` format a review event for the monitor (goldens under `testdata/review/`); the CLI's reviews view is a separate GraphQL path. Pure — layers on `logs` / `classify` / `model`; backs `cli` and `monitor`. |
 | `internal/render` | Format a `model.Report` to text. |
@@ -179,11 +179,14 @@ what changed as events.
   a session that already acted on it is worse than missing the tail of a batch
   nobody read. `Peek` (the Stop hook) reads without advancing.
 - **Hooks may never cost a session anything**: every path in `monitor.RunHook`
-  writes nothing and exits 0 — no daemon, no token, a malformed payload, an
-  unknown event. The Stop hook stands down the instant `stop_hook_active` is
-  set (that is what keeps it from looping), blocks only on `SeverityAction`
-  events, and seeks past what it hands over. `SHUCK_MONITOR_DISABLE` /
-  `SHUCK_MONITOR_NO_STOP` opt out.
+  exits 0 and writes nothing that changes what the session does — no daemon, no
+  token, an unusable cache directory (`NewClient` → `monitor.Dir`), a malformed
+  payload, an unknown event. The one exception is deliberate and is context
+  rather than a decision: when no daemon can be started, `hookSessionStart` says
+  so once as plain prose, so nobody waits for a feed that is never coming. The
+  Stop hook stands down the instant `stop_hook_active` is set (that is what
+  keeps it from looping), blocks only on `SeverityAction` events, and seeks past
+  what it hands over. `SHUCK_MONITOR_DISABLE` / `SHUCK_MONITOR_NO_STOP` opt out.
 - **Pin audit is repo-driven and ref-driven**: the checkout's own files are the
   source of truth (`.github/workflows/*.y{a,}ml`, the root `action.y{a,}ml`,
   `.github/actions/*/action.y{a,}ml`), walked as `yaml.Node` so line numbers and

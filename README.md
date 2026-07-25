@@ -159,10 +159,11 @@ that resolve to the same pull request are polled once between them. A branch
 with no open PR is not polled at all — the monitor just re-asks once a minute
 whether one has appeared.
 
-Watches expire after 12 hours nobody has asked about them, and a daemon that
-was started on demand exits once its last watch goes — so nothing keeps polling
-GitHub after your sessions end. One you start yourself (`shuck monitor run`)
-stays up regardless.
+Watches expire after 12 hours with no client asking the monitor anything — any
+call refreshes every watch, so one live session keeps them all alive — and a
+daemon that was started on demand exits once its last watch goes, so nothing
+keeps polling GitHub after your sessions end. One you start yourself
+(`shuck monitor run`) stays up regardless.
 
 Clients are short-lived: one JSON line over a unix socket in a `0700`
 directory (loopback plus a random token where a unix socket is not available),
@@ -199,7 +200,9 @@ produced (even if it shows failures), `2` means an operational error. Pass
 belongs to the command that owns it. On the default/`all` path (and on `logs`)
 that verdict is the CI one alone: security findings never flip the exit code
 there. Gate on those with `shuck security --exit-code`, and on action pins with
-`shuck pins --exit-code`.
+`shuck pins --exit-code`. `shuck reviews` has no verdict of its own — reviews
+are not pass/fail, and it fetches no CI half for a gate to read — so
+`--exit-code` is accepted there for parity but can never reach `1`.
 
 ### Flags
 
@@ -219,7 +222,7 @@ there. Gate on those with `shuck security --exit-code`, and on action pins with
 | `--no-cache` | false | Do not read or write the cache. |
 | `--offline` | false | Render only from cache, without network access. |
 | `--json` | false | Emit machine-readable JSON (stable schema) instead of text. |
-| `--exit-code` | false | Exit `1` on the command's own verdict (CI gating): failing checks here; open alerts on `security`, unpinned/stale refs on `pins`. |
+| `--exit-code` | false | Exit `1` on the command's own verdict (CI gating): failing checks here; open alerts on `security`, unpinned/stale refs on `pins`; nothing on `reviews`, which has no verdict. |
 | `--watch` | false | Poll until every check reaches a terminal state, then report. |
 | `--interval D` | 15s | Poll interval for `--watch`. |
 | `--watch-timeout D` | 0 | Give up watching after this long (`0` = no limit). |
@@ -307,8 +310,9 @@ can consume results deterministically:
 
 `schema_version` is bumped only on breaking changes; lists are always present
 (`[]`, never `null`). The monitor's `--json` is a different, narrower shape —
-one status document, or one object per event, line-delimited — and does not
-follow the report schema.
+one status or watch document, or one object per event, line-delimited — and does
+not follow the report schema, though each of those carries a `schema_version` of
+its own.
 
 ## Action pin audit
 
@@ -347,8 +351,10 @@ shuck pins --exit-code          # exit 1 on an unpinned or stale reference (CI g
 
 Auth is optional for public actions; a token only lifts the unauthenticated rate
 limit. Tag lists are cached for an hour (`--refresh` re-fetches). The background
-monitor runs the same audit against watched trees, re-auditing when the workflow
-files change.
+monitor runs the same audit against watched trees on a 10-minute cadence — it
+does not watch for edits, so a change to a workflow surfaces at the next scan,
+and a pin that goes stale because the action cut a release surfaces without
+anyone touching the repo at all.
 
 ## Pinning actions
 
@@ -405,7 +411,7 @@ The hooks are the whole integration — no polling, no tool call:
 | `SessionStart` | Checks the binary and token, registers the session's working tree, and fast-forwards the session's cursor so it hears what happens next, not the last hour of history. |
 | `UserPromptSubmit` | Delivers what is new as a `<shuck-monitor>` block. |
 | `PostToolUse` (Bash) | After a `git push` (or `gh pr create` / `gh run rerun` / …) asks the monitor to re-check now instead of at the next interval. |
-| `Stop` | Hands over anything actionable and asks for one more turn rather than finishing on a red build. |
+| `Stop` | Hands the batch over and asks for one more turn when something in it is actionable: red CI, or a reviewer's comment or change request. An approval, a stale pin, and a failed poll are informational — they still reach the session, but never hold a turn open. |
 | `SessionEnd` | Retires the session's cursor. |
 
 All the logic lives in the binary (`shuck monitor hook <event>`); the shell shim

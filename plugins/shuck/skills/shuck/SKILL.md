@@ -64,7 +64,7 @@ on their own. **There is nothing to poll for.**
 | `SessionStart` | registers this session's working tree (starting the daemon if none is running) and fast-forwards the session's cursor, so you hear about what happens *next*, not the last hour of history |
 | `UserPromptSubmit` | delivers new events into the conversation as a `<shuck-monitor>` block |
 | `PostToolUse` (Bash) | after a `git push` / `gh pr create` / `gh pr ready` / `gh workflow run` / `gh run rerun`, pokes the monitor to re-check immediately instead of waiting out the interval |
-| `Stop` | if the monitor is holding something actionable (red CI, a review comment) when you try to finish, it hands it over and asks for one more turn. It stands down the moment `stop_hook_active` is set, so it can never loop |
+| `Stop` | if the monitor is holding something actionable when you try to finish — red CI, or a reviewer's comment or change request — it hands the whole batch over and asks for one more turn. An approval, a stale pin, and a failed poll are informational: they still reach you, but never hold a turn open. It stands down the moment `stop_hook_active` is set, so it can never loop |
 | `SessionEnd` | retires the session's cursor |
 
 A delivered batch looks like this. Recognise the wrapper: it is monitor output,
@@ -222,14 +222,24 @@ shuck --watch [flags] [target]  # poll until every check finishes, then report
   defaults to `cli`; each Claude Code session uses its own session ID.
 - `--wait DUR` blocks until an event lands (or the wait elapses) instead of
   returning "nothing new" — wait for a verdict this way rather than sleeping
-  and re-checking.
+  and re-checking. It **cannot be combined with `--follow`** (that pair exits
+  `2`): a follow already blocks until you interrupt it, so there is nothing a
+  wait could bound.
+- Every monitor `--json` view carries a `schema_version`, but the shapes differ:
+  `shuck monitor` (status) and `shuck monitor watch` each emit **one** indented
+  document whose first field is `schema_version`, with the status's or the
+  watch's own fields alongside it rather than nested under a key;
+  `shuck monitor events --json` is **line-delimited** — one object per event,
+  each line carrying its own `schema_version`, so a consumer tailing the feed
+  sees the version on whatever line it starts reading at.
 - `shuck monitor` (status) **auto-starts** the daemon; the other read commands do
   not, so they never report a false all-clear from a monitor that has seen
   nothing. `--no-start` suppresses the auto-start.
-- Watches expire after 12h with nobody asking about them, and a daemon that was
-  started on demand exits once its last watch is gone — so it never keeps
-  polling GitHub after your sessions end. `shuck monitor run --stay` keeps a
-  hand-started one alive with nothing to watch.
+- Watches expire after 12h with no client asking the monitor anything — any call
+  refreshes every watch, so one live session keeps them all alive — and a daemon
+  that was started on demand exits once its last watch is gone, so it never
+  keeps polling GitHub after your sessions end. `shuck monitor run --stay` keeps
+  a hand-started one alive with nothing to watch.
 
 ### Flags
 
@@ -255,7 +265,9 @@ Output, cache, auth (default path and the focus subcommands):
 
 - `--json` — emit the stable JSON document instead of text.
 - `--exit-code` — exit `1` when failing checks are found (for CI gating; the
-  default is exit `0` whenever the report is produced).
+  default is exit `0` whenever the report is produced). `shuck reviews` accepts
+  it for parity but never fires it: reviews carry no verdict, and that command
+  fetches no CI half for the gate to read.
 - `--refresh` — ignore and rebuild the cache (use when a job was re-run).
 - `--no-cache` — do not read or write the cache.
 - `--offline` — render only from cache, no network (requires an explicit PR;
@@ -326,8 +338,10 @@ results programmatically.**
   (`{schema_version, action, owner, repo, tag, sha, ref, pin}`);
   `shuck pins --json` returns the **pin document** (see "Keeping workflow
   actions pinned").
-- `shuck monitor --json` returns the monitor's status, and
-  `shuck monitor events --json` emits one JSON event per line.
+- The monitor's `--json` is a narrower shape of its own, not the inspection
+  document: `shuck monitor` (status) and `shuck monitor watch` each return one
+  document carrying `schema_version` beside the embedded status or watch fields,
+  and `shuck monitor events --json` emits one such object per event, per line.
 
 If `summary.running > 0` the snapshot is **incomplete** — some checks are still
 running. To wait for the final verdict, let the monitor tell you
@@ -508,8 +522,11 @@ only once they all finish green.
 The plugin's prereq hook stays quiet when both are satisfied. It warns (without
 blocking) if `shuck` is not on PATH, is too old to run the background monitor
 (`shuck upgrade` fixes that), or a token is missing. Every monitor hook exits
-quietly when anything is wrong — a background convenience is never the reason a
-session stalls.
+`0` whatever goes wrong — no daemon, no token, a malformed payload — and writes
+nothing that changes what you do; a background convenience is never the reason a
+session stalls. The one exception is context, not a decision: `SessionStart`
+says once that the monitor could not be started, so you are not left waiting on
+a feed that will never arrive.
 
 ## Notes
 
