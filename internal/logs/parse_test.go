@@ -74,6 +74,58 @@ func TestParseLeadingSection(t *testing.T) {
 	}
 }
 
+// githubStampLen reports how many bytes of the "<ISO-8601>Z " prefix GitHub
+// puts at the head of a log line, or 0 when the line does not open with one.
+//
+// It is spelled out by hand — digit by digit, separator by separator — for one
+// reason: it must not be the production regexp. An oracle that asked tsPrefix
+// what a timestamp is would agree with StripTimestamps under any redefinition
+// of tsPrefix, so widening the shape to "\d+-\d+-\d+…", loosening the separator
+// to "Z\s", or letting the match float past leading indentation would all read
+// as correct. This is the shape GitHub actually emits, written down once:
+// 4-2-2 date, "T", 2:2:2 time, optional "." plus at least one fraction digit,
+// "Z", one space — ASCII digits only, flush against the start of the line.
+func githubStampLen(line string) int {
+	rest := line
+	digits := func(n int) bool {
+		if len(rest) < n {
+			return false
+		}
+		for i := range n {
+			if rest[i] < '0' || rest[i] > '9' {
+				return false
+			}
+		}
+		rest = rest[n:]
+		return true
+	}
+	lit := func(c byte) bool {
+		if rest == "" || rest[0] != c {
+			return false
+		}
+		rest = rest[1:]
+		return true
+	}
+	shaped := digits(4) && lit('-') && digits(2) && lit('-') && digits(2) && lit('T') &&
+		digits(2) && lit(':') && digits(2) && lit(':') && digits(2)
+	if !shaped {
+		return 0
+	}
+	if lit('.') { // the fraction is optional, but "." alone is not a timestamp
+		n := 0
+		for rest != "" && rest[0] >= '0' && rest[0] <= '9' {
+			rest, n = rest[1:], n+1
+		}
+		if n == 0 {
+			return 0
+		}
+	}
+	if !lit('Z') || !lit(' ') {
+		return 0
+	}
+	return len(line) - len(rest)
+}
+
 // TestStripTimestamps pins the prefix contract line by line. The monitor puts a
 // short raw log straight into a CI-failure event, so whatever this returns is
 // what an agent reads: a chewed-up tail or a lost line is a wrong answer, not a
@@ -93,6 +145,29 @@ func TestStripTimestamps(t *testing.T) {
 		{"only the separator space goes, indentation stays", "2024-05-01T10:00:03.6000000Z     thing_test.go:42: expected 1 got 2", "    thing_test.go:42: expected 1 got 2"},
 		{"a timestamp mid-line is content, not a prefix", "deploy started at 2024-05-01T10:00:03.5000000Z and failed", "deploy started at 2024-05-01T10:00:03.5000000Z and failed"},
 		{"no separator space is not a prefix", "2024-05-01T10:00:03.5000000Zboom", "2024-05-01T10:00:03.5000000Zboom"},
+		// GitHub separates the stamp from the payload with exactly one space. A
+		// looser separator (`Z\s`) would swallow a tab that belongs to the
+		// payload — and indented, tab-aligned output is how test failures read.
+		{"a tab is payload, not the separator", "2024-05-01T10:00:03.5000000Z\tgo test output", "2024-05-01T10:00:03.5000000Z\tgo test output"},
+		// Indentation is load-bearing (see the stack-trace case above), so a
+		// stamp must sit flush at column 0 to be GitHub's. Anything indented is
+		// a tool's own stamped output, and eating the indentation with it would
+		// reflow somebody's log.
+		{"an indented timestamp is not GitHub's", "  2024-05-01T10:00:03.5000000Z indented", "  2024-05-01T10:00:03.5000000Z indented"},
+		{"a tab-indented timestamp is not GitHub's", "\t2024-05-01T10:00:03.5000000Z indented", "\t2024-05-01T10:00:03.5000000Z indented"},
+		// The field widths are fixed. Without them a bare "1-2-3T4:5:6Z " —
+		// which no ISO-8601 emitter produces but plenty of prose does — would be
+		// cut off the front of a line.
+		{"loose field widths are not a timestamp", "1-2-3T4:5:6Z boom", "1-2-3T4:5:6Z boom"},
+		{"a five-digit year is not a timestamp", "20245-05-01T10:00:03Z boom", "20245-05-01T10:00:03Z boom"},
+		{"a lone fraction point is not a timestamp", "2024-05-01T10:00:03.Z boom", "2024-05-01T10:00:03.Z boom"},
+		// Digits means ASCII digits: a payload that opens with non-ASCII
+		// lookalikes is content.
+		{"non-ASCII digits are not a timestamp", "٢٠٢٤-٠٥-٠١T١٠:٠٠:٠٣Z boom", "٢٠٢٤-٠٥-٠١T١٠:٠٠:٠٣Z boom"},
+		// The result feeds distil.CapSummary, whose cut is UTF-8-safe only if
+		// what it is handed is still valid UTF-8: stripping must count bytes off
+		// the front, never runes off a multibyte payload.
+		{"multibyte payload survives byte for byte", "2024-05-01T10:00:03.5000000Z ✗ échec — 你好 🙂", "✗ échec — 你好 🙂"},
 		{"bare timestamp with nothing after it", "2024-05-01T10:00:03.5000000Z", "2024-05-01T10:00:03.5000000Z"},
 		{"timestamp with an empty payload collapses to a blank line", "2024-05-01T10:00:03.5000000Z ", ""},
 		// A tool that stamps its own lines (docker logs -t, kubectl
@@ -116,33 +191,49 @@ func TestStripTimestamps(t *testing.T) {
 }
 
 // TestStripTimestampsWholeLog runs the real fixture through the whole-log path
-// the monitor uses: the noise goes, the line grid the reader relies on does not,
-// and the markers Parse and Extract key on survive untouched. A second pass over
-// a GitHub log is a no-op — every prefix is already gone — which is what makes it
-// safe for a caller not to track whether stripping has happened yet.
+// the monitor uses, against the byte-exact log a reader should get back. The
+// expectation is written out rather than derived: asking whether any line "still
+// matches tsPrefix" only ever means "by whatever definition the code currently
+// holds", and a substring check for a marker cannot fail unless the line is
+// deleted outright — an unstripped line contains its marker too. Spelled out,
+// the literal pins the group/error markers Parse and Extract key on, the
+// indentation of the stack line, the embedded tabs, and the trailing newline all
+// at once. A second pass is a no-op — every prefix is already gone — which is
+// what makes it safe for a caller not to track whether stripping has happened.
 func TestStripTimestampsWholeLog(t *testing.T) {
 	raw := readFixture(t, "job_failure.log")
 	got := StripTimestamps(raw)
 
-	rawLines, gotLines := strings.Split(raw, "\n"), strings.Split(got, "\n")
-	if len(rawLines) != len(gotLines) {
-		t.Fatalf("line count changed: %d -> %d", len(rawLines), len(gotLines))
-	}
-	if len(got) >= len(raw) {
-		t.Errorf("a fully timestamped log should shrink: %d -> %d bytes", len(raw), len(got))
-	}
-	for i, line := range gotLines {
-		if tsPrefix.MatchString(line) {
-			t.Errorf("line %d still carries a timestamp: %q", i, line)
-		}
-	}
-	for _, want := range []string{
+	want := strings.Join([]string{
+		"##[group]Run actions/checkout@v4",
+		"with:",
+		"  repository: owner/repo",
+		"##[endgroup]",
+		"Syncing repository",
 		"##[group]Run go test ./...",
+		"go test ./...",
+		"shell: /usr/bin/bash -e {0}",
+		"##[endgroup]",
+		"ok   example/pkg/a  0.012s",
+		"--- FAIL: TestThing (0.00s)",
 		"    thing_test.go:42: expected 1 got 2",
+		"FAIL",
+		"FAIL\texample/pkg/b\t0.020s",
 		"##[error]Process completed with exit code 1.",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("stripped log lost %q:\n%s", want, got)
+		"##[group]Run actions/upload-artifact@v4",
+		"##[endgroup]",
+		"artifact uploaded",
+		"", // the fixture's trailing newline
+	}, "\n")
+	if got != want {
+		gotLines, wantLines := strings.Split(got, "\n"), strings.Split(want, "\n")
+		if len(gotLines) != len(wantLines) {
+			t.Fatalf("line count changed: %d lines in, %d out, want %d", len(strings.Split(raw, "\n")), len(gotLines), len(wantLines))
+		}
+		for i := range wantLines {
+			if gotLines[i] != wantLines[i] {
+				t.Errorf("line %d = %q, want %q", i, gotLines[i], wantLines[i])
+			}
 		}
 	}
 	if again := StripTimestamps(got); again != got {

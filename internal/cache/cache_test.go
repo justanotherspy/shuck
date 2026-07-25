@@ -147,66 +147,82 @@ func TestJobLogPathAgreesWithSaveAndLoad(t *testing.T) {
 	// The layout itself is documented and agent-facing (the event tells a human
 	// or an agent to open this file), so the shape is part of the contract: a
 	// swapped jobID/attempt would still round-trip through Save/Load unnoticed.
-	dir, err := Dir("o", "r", 7)
-	if err != nil {
-		t.Fatalf("Dir: %v", err)
-	}
-	if want := filepath.Join(dir, "logs", "42-3.log"); path != want {
+	// Spelled out literally against the temp SHUCK_HOME rather than derived from
+	// Dir — an oracle built from the production path builder moves with it, so
+	// it would accept any relayout of the cache tree.
+	if want := filepath.Join(home, "cache", "o", "r", "7", "logs", "42-3.log"); path != want {
 		t.Errorf("JobLogPath = %q, want %q", path, want)
 	}
 }
 
-// TestJobLogPathDistinctPerJobAttempt guards the naming: every job/attempt pair
-// gets its own file. The 1/23 vs 12/3 pair is deliberate — it collides the
-// moment the separator is dropped from the name, which no round-trip test would
-// notice because Save and Load would collide identically.
-func TestJobLogPathDistinctPerJobAttempt(t *testing.T) {
-	t.Setenv("SHUCK_HOME", t.TempDir())
+// TestJobLogPathDistinctPerTarget guards the naming: every
+// owner/repo/pr/job/attempt tuple gets its own file. Each case carries the
+// literal path it must produce, relative to the temp SHUCK_HOME — an oracle
+// that shares nothing with the production join, so dropping a component,
+// reordering owner and repo, or renaming a level of the tree all show up here.
+// Several rows exist only to collide under a specific slip: 1/23 vs 12/3 the
+// moment the "-" leaves the file name, a/bc vs ab/c the moment owner and repo
+// stop being separate directories, and x/y vs y/x the moment their order stops
+// mattering. A round-trip test notices none of those, because Save and Load
+// would collide identically.
+func TestJobLogPathDistinctPerTarget(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SHUCK_HOME", home)
 
 	cases := []struct {
-		jobID   int64
-		attempt int
+		owner, repo string
+		pr          int
+		jobID       int64
+		attempt     int
+		want        string // slash-separated, relative to SHUCK_HOME
 	}{
-		{42, 1},
-		{42, 2},
-		{43, 1},
-		{1, 23},
-		{12, 3},
+		{"o", "r", 7, 42, 1, "cache/o/r/7/logs/42-1.log"},
+		{"o", "r", 7, 42, 2, "cache/o/r/7/logs/42-2.log"},
+		{"o", "r", 7, 43, 1, "cache/o/r/7/logs/43-1.log"},
+		{"o", "r", 7, 1, 23, "cache/o/r/7/logs/1-23.log"},
+		{"o", "r", 7, 12, 3, "cache/o/r/7/logs/12-3.log"},
+		{"o", "r", 8, 42, 1, "cache/o/r/8/logs/42-1.log"},
+		{"o", "r2", 7, 42, 1, "cache/o/r2/7/logs/42-1.log"},
+		{"o2", "r", 7, 42, 1, "cache/o2/r/7/logs/42-1.log"},
+		{"a", "bc", 7, 42, 1, "cache/a/bc/7/logs/42-1.log"},
+		{"ab", "c", 7, 42, 1, "cache/ab/c/7/logs/42-1.log"},
+		{"x", "y", 7, 42, 1, "cache/x/y/7/logs/42-1.log"},
+		{"y", "x", 7, 42, 1, "cache/y/x/7/logs/42-1.log"},
+		{"octo-cat", "my.repo_v2", 1, 1, 1, "cache/octo-cat/my.repo_v2/1/logs/1-1.log"},
+		{"OCTO", "github.io", 0, 0, 0, "cache/OCTO/github.io/0/logs/0-0.log"},
 	}
 
 	seen := make(map[string]string, len(cases))
 	for _, c := range cases {
-		path, err := JobLogPath("o", "r", 7, c.jobID, c.attempt)
+		label := fmt.Sprintf("(%s,%s,%d,%d,%d)", c.owner, c.repo, c.pr, c.jobID, c.attempt)
+		path, err := JobLogPath(c.owner, c.repo, c.pr, c.jobID, c.attempt)
 		if err != nil {
-			t.Fatalf("JobLogPath(%d,%d): %v", c.jobID, c.attempt, err)
+			t.Fatalf("JobLogPath%s: %v", label, err)
+		}
+		if want := filepath.Join(home, filepath.FromSlash(c.want)); path != want {
+			t.Errorf("JobLogPath%s = %q, want %q", label, path, want)
 		}
 		if prev, dup := seen[path]; dup {
-			t.Fatalf("JobLogPath(%d,%d) collides with %s at %s", c.jobID, c.attempt, prev, path)
+			t.Fatalf("JobLogPath%s collides with %s at %s", label, prev, path)
 		}
-		seen[path] = fmt.Sprintf("(%d,%d)", c.jobID, c.attempt)
-
-		// Same inputs must keep naming the same file across calls, otherwise a
-		// re-run would re-download instead of hitting the warm cache.
-		again, err := JobLogPath("o", "r", 7, c.jobID, c.attempt)
-		if err != nil || again != path {
-			t.Fatalf("JobLogPath(%d,%d) not deterministic: %q then %q (err=%v)", c.jobID, c.attempt, path, again, err)
-		}
+		seen[path] = label
 	}
 
 	// And the separation is real on disk, not just in the strings.
-	for _, c := range cases {
-		body := fmt.Sprintf("job %d attempt %d", c.jobID, c.attempt)
-		if err := SaveJobLog("o", "r", 7, c.jobID, c.attempt, body); err != nil {
-			t.Fatalf("SaveJobLog(%d,%d): %v", c.jobID, c.attempt, err)
+	body := func(c int) string { return fmt.Sprintf("case %d", c) }
+	for i, c := range cases {
+		if err := SaveJobLog(c.owner, c.repo, c.pr, c.jobID, c.attempt, body(i)); err != nil {
+			t.Fatalf("SaveJobLog(%s,%s,%d,%d,%d): %v", c.owner, c.repo, c.pr, c.jobID, c.attempt, err)
 		}
 	}
-	for _, c := range cases {
-		got, ok, err := LoadJobLog("o", "r", 7, c.jobID, c.attempt)
+	for i, c := range cases {
+		got, ok, err := LoadJobLog(c.owner, c.repo, c.pr, c.jobID, c.attempt)
 		if err != nil || !ok {
-			t.Fatalf("LoadJobLog(%d,%d): ok=%v err=%v", c.jobID, c.attempt, ok, err)
+			t.Fatalf("LoadJobLog(%s,%s,%d,%d,%d): ok=%v err=%v", c.owner, c.repo, c.pr, c.jobID, c.attempt, ok, err)
 		}
-		if want := fmt.Sprintf("job %d attempt %d", c.jobID, c.attempt); got != want {
-			t.Errorf("LoadJobLog(%d,%d) = %q, want %q — logs overwrote each other", c.jobID, c.attempt, got, want)
+		if got != body(i) {
+			t.Errorf("LoadJobLog(%s,%s,%d,%d,%d) = %q, want %q — logs overwrote each other",
+				c.owner, c.repo, c.pr, c.jobID, c.attempt, got, body(i))
 		}
 	}
 }
@@ -236,6 +252,18 @@ func TestJobLogPathStaysUnderCacheBase(t *testing.T) {
 		{"o", ""},
 		{"o\x00", "r"},
 		{"o", "r\x00/../.."},
+		// Embedded "..": no separator, no NUL, and not the bare "." / ".."
+		// spellings, so the dedicated `strings.Contains(s, "..")` guard is the
+		// only thing rejecting these. Without such cases that clause can be
+		// deleted outright with the suite still green, and a segment like
+		// "a..b" then reaches filepath.Join, where a later Clean of the joined
+		// path (or a caller that re-splits it) can walk back out of the base.
+		{"a..b", "r"},
+		{"o", "a..b"},
+		{"..evil", "r"},
+		{"o", "evil.."},
+		{"...", "r"},
+		{"o", "..."},
 	}
 	for _, c := range hostile {
 		path, err := JobLogPath(c.owner, c.repo, 7, 42, 1)
@@ -249,33 +277,63 @@ func TestJobLogPathStaysUnderCacheBase(t *testing.T) {
 	}
 
 	// Legitimate names — including the dots and dashes real repos carry — are
-	// accepted, and land inside the base.
-	legit := []struct{ owner, repo string }{
-		{"o", "r"},
-		{"octo-cat", "my.repo_v2"},
-		{"OCTO", "github.io"},
-		{"-leading-dash", "trailing.dot."},
+	// accepted, and land at exactly this spot inside the base. Asserting the
+	// literal path rather than mere containment matters: once safeSegment has
+	// rejected every separator, "the result is under the base" is true by
+	// construction of filepath.Join and holds however wrong the layout is.
+	legit := []struct{ owner, repo, want string }{
+		{"o", "r", "cache/o/r/7/logs/42-1.log"},
+		{"octo-cat", "my.repo_v2", "cache/octo-cat/my.repo_v2/7/logs/42-1.log"},
+		{"OCTO", "github.io", "cache/OCTO/github.io/7/logs/42-1.log"},
+		{"-leading-dash", "trailing.dot.", "cache/-leading-dash/trailing.dot./7/logs/42-1.log"},
 	}
 	for _, c := range legit {
 		path, err := JobLogPath(c.owner, c.repo, 7, 42, 1)
 		if err != nil {
 			t.Fatalf("JobLogPath(%q,%q) rejected a legitimate name: %v", c.owner, c.repo, err)
 		}
-		if !underBase(t, home, path) {
-			t.Errorf("JobLogPath(%q,%q) = %q escapes the cache base %q", c.owner, c.repo, path, home)
+		if want := filepath.Join(home, filepath.FromSlash(c.want)); path != want {
+			t.Errorf("JobLogPath(%q,%q) = %q, want %q", c.owner, c.repo, path, want)
 		}
 	}
 }
 
-// underBase reports whether path is inside base without touching the
-// filesystem: both are lexical, and JobLogPath deliberately creates nothing.
-func underBase(t *testing.T, base, path string) bool {
-	t.Helper()
-	rel, err := filepath.Rel(base, path)
-	if err != nil {
-		return false
+// TestJobLogPathSurfacesBaseError covers the one failure Base itself can
+// report: with SHUCK_HOME unset and no home directory to fall back on,
+// os.UserCacheDir fails. JobLogPath must pass that up rather than swallow it —
+// a dropped error check would leave base "" and hand back a relative path like
+// "cache/o/r/7/logs/42-1.log", which the monitor would publish as a log
+// location and SaveJobLog would write into the process's working directory.
+func TestJobLogPathSurfacesBaseError(t *testing.T) {
+	t.Setenv("SHUCK_HOME", "")
+	// Every variable os.UserCacheDir consults, across platforms.
+	t.Setenv("XDG_CACHE_HOME", "")
+	t.Setenv("HOME", "")
+	t.Setenv("LocalAppData", "")
+	t.Setenv("home", "") // plan9
+
+	if _, err := Base(); err == nil {
+		t.Fatal("Base() err=nil with SHUCK_HOME and every cache-dir variable cleared; the rest of this test needs a failing Base")
 	}
-	return filepath.IsLocal(rel)
+
+	path, err := JobLogPath("o", "r", 7, 42, 1)
+	if err == nil {
+		t.Errorf("JobLogPath with an unresolvable cache base err=nil, path=%q", path)
+	}
+	if path != "" {
+		t.Errorf("JobLogPath returned path %q alongside err=%v; a target with no base names no file", path, err)
+	}
+	// The same error has to reach the callers that build on it, or Save/Load
+	// would fall back to a relative cache tree instead of failing.
+	if _, err := Dir("o", "r", 7); err == nil {
+		t.Error("Dir with an unresolvable cache base err=nil, want error")
+	}
+	if err := SaveJobLog("o", "r", 7, 42, 1, "log"); err == nil {
+		t.Error("SaveJobLog with an unresolvable cache base err=nil, want error")
+	}
+	if _, _, err := LoadJobLog("o", "r", 7, 42, 1); err == nil {
+		t.Error("LoadJobLog with an unresolvable cache base err=nil, want error")
+	}
 }
 
 func TestPurge(t *testing.T) {
@@ -342,6 +400,12 @@ func TestDirRejectsPathTraversal(t *testing.T) {
 		{"", "r"},
 		{"o", ""},
 		{`o`, `..\..\win`},
+		// Embedded "..", separator-free: only safeSegment's Contains(s, "..")
+		// clause rejects these, so they are what keeps that clause honest.
+		{"a..b", "r"},
+		{"o", "a..b"},
+		{"..evil", "r"},
+		{"o", "..."},
 	}
 	for _, c := range cases {
 		if _, err := Dir(c.owner, c.repo, 1); err == nil {
