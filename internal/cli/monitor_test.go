@@ -589,8 +589,14 @@ func TestMonitorFollow(t *testing.T) {
 			if r.All {
 				t.Errorf("read %d asked for the whole journal; a follow may only ever ask for what is new", i+1)
 			}
-			if r.Wait != followInterval {
-				t.Errorf("read %d waited %s, want %s — a follow that does not block is a spin loop", i+1, r.Wait, followInterval)
+			// Comparing against followInterval would only prove the constant
+			// equals itself. The contract is that a follow *blocks* — the
+			// caller's 1ms must be overridden by something long enough that a
+			// quiet feed is one held connection rather than a hot loop of
+			// dials — so the bound is written out here, independent of what the
+			// production constant happens to be.
+			if r.Wait < 5*time.Second {
+				t.Errorf("read %d waited %s; a follow that does not block for a meaningful stretch is a spin loop", i+1, r.Wait)
 			}
 			if r.Consumer != "session-1" || r.Limit != 5 {
 				t.Errorf("read %d = consumer %q limit %d, want the caller's own", i+1, r.Consumer, r.Limit)

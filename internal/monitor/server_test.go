@@ -460,7 +460,10 @@ func TestDaemonDrainDeliveryPaths(t *testing.T) {
 		{
 			// The cursor follows what was handed over, not the floor that was
 			// asked for: seeking back to Since would hand this consumer the
-			// same events again on its next read.
+			// same events again on its next read. "Handed over" and "the
+			// journal's latest" are one event apart only under a concurrent
+			// append — a capped batch keeps the newest — so nothing here can
+			// tell those two apart, and nothing here should claim to.
 			name:       "since with a limit still advances past what it delivered",
 			req:        Request{Consumer: "sess", Since: 1, Limit: 1},
 			want:       []string{"three"},
