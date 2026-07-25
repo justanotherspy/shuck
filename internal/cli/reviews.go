@@ -18,6 +18,14 @@ Usage:
   shuck reviews <pr>          owner/repo from the local repo
   shuck reviews               the open PR for the current branch
 
+Exit codes:
+  0 a report was produced; 2 an operational error. --exit-code is accepted here
+  (it is one of the shared report flags) but has nothing to gate on: reviews
+  carry no pass/fail verdict, and this command fetches only the review half, so
+  it never reaches 1. To gate on a verdict use "shuck logs --exit-code" or
+  "shuck --exit-code" (failing CI checks), "shuck security --exit-code" (open
+  alerts), or "shuck pins --exit-code" (unpinned or stale actions).
+
 Flags:
 `
 
@@ -28,6 +36,17 @@ func runReviews(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	var o options
 	registerInspectFlags(fs, &o)
+	// --exit-code arrives with the shared report flags and can never fire on
+	// this path: reviews have no pass/fail verdict, and the report this command
+	// builds carries no CI half for exitFor to read. The shared description
+	// promises "exit 1 when failing CI checks are found", which would be a plain
+	// lie in `shuck reviews --help`, so the flag keeps its registration —
+	// dropping it would break the callers already passing it — and loses the
+	// promise. registerInspectFlags builds a fresh flag per FlagSet, so this
+	// rewrites only this command's copy.
+	if f := fs.Lookup("exit-code"); f != nil {
+		f.Usage = "accepted for parity with the other report commands; reviews carry no verdict, so it never changes the exit code"
+	}
 	fs.Usage = func() {
 		fmt.Fprint(stderr, reviewsUsage)
 		fs.PrintDefaults()

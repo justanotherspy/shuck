@@ -44,12 +44,16 @@ func versionString() string {
 	return "dev"
 }
 
-const usage = `shuck — show the exact failing CI step logs, reviews, and security alerts for a PR.
+const usage = `shuck — be told what is wrong with the branch you are on, and show it.
 
-By default (and via "shuck all") shuck reports a PR's failing CI, its reviews,
-and the repo's security alerts together. Use a subcommand to focus on one.
+"shuck monitor" follows this working tree in the background and hands over CI
+failures, review comments, and stale action pins as they happen. The report
+commands answer the same question on demand: by default (and via "shuck all")
+shuck reports a PR's failing CI, its reviews, and the repo's security alerts
+together. Use a subcommand to focus on one.
 
 Usage:
+  shuck monitor               follow this working tree in the background and stream what changes
   shuck [target]              CI + reviews + security for a PR (same as "shuck all")
   shuck <owner>/<repo> <pr>   an explicit PR ("shuck <pr-url>", "shuck <pr>", or "shuck" for the current branch)
   shuck <run-url> | <job-url> a single GitHub Actions run / job (CI only; a run URL may name an /attempts/<n>)
@@ -57,23 +61,24 @@ Usage:
   shuck --watch [target]      poll until every check finishes, then print the report
 
 Subcommands (single-letter shorthands in parentheses):
+  shuck monitor (m) [watch|events|status|…]  the background monitor: CI, reviews, and pin drift as they happen
   shuck logs (l) [target] [--run <id|url>]   failing CI step logs for a PR or a single run
   shuck reviews (r) [target]                 a PR's reviews and review-comment threads
   shuck all [target]                         CI + reviews + security (the default)
-  shuck action (a) <owner>/<action>[@<version>]  resolve an Action to its latest tag + SHA for pinning
-  shuck image (i) [owner | ghcr.io/owner/name[:tag]]  list GHCR images, or resolve one to its latest digest
   shuck security (s) [owner/repo | url]      a repo's security alerts (code scanning, secrets, Dependabot)
-  shuck compliance (c) [owner/repo | url]    check a repo's settings against its .github/compliance.yml
-  shuck compliance discover [owner/repo]     snapshot the live settings into .github/compliance.yml
-  shuck dependabot (d) [owner/repo | url]    audit .github/dependabot.yml against the repo's ecosystems
-  shuck dependabot discover [owner/repo]     scaffold or extend .github/dependabot.yml from detected ecosystems
-  shuck mcp                   run as a local MCP (stdio) server exposing shuck tools
-  shuck setup                 install the shuck skill + CLAUDE.md note for Claude Code (and, optionally, the MCP)
+  shuck pins (p) [dir]                       find workflow actions that are unpinned or whose SHA pin is stale
+  shuck action (a) <owner>/<action>[@<version>]  resolve one Action to its latest tag + SHA for pinning
+  shuck setup                 install the shuck skill + CLAUDE.md note for Claude Code
   shuck version [--check]     print the installed version; --check looks for a newer release
   shuck upgrade               download and install the latest release in place
 
 Auth:
   Set GITHUB_TOKEN (or GH_TOKEN), or pass --token.
+
+Exit codes:
+  0 a report was produced (even one showing failures); 2 an operational error.
+  --exit-code gates on the CI verdict alone: a repo's security alerts are
+  reported but never flip the exit code (use "shuck security --exit-code").
 
 Flags:
 `
@@ -108,18 +113,62 @@ var subcommandAliases = map[string]string{
 	"l": "logs",
 	"r": "reviews",
 	"a": "action",
+	"m": "monitor",
+	"p": "pins",
 	"s": "security",
-	"c": "compliance",
-	"d": "dependabot",
-	"i": "image",
+}
+
+// removedCommands are subcommands shuck used to carry. They stay in the dispatch
+// on purpose: a script, a habit, or a stale MCP registration should get a
+// sentence explaining what happened, not `invalid PR number "compliance"` from
+// the target parser, which explains nothing and reads like a bug.
+//
+// The three audits were dropped because they answered a quarterly question
+// about a repository, while everything shuck keeps answers "what is wrong with
+// the branch I am on right now?" — which is the question the monitor exists to
+// answer without being asked.
+var removedCommands = map[string][]string{
+	"mcp": {
+		"shuck: the MCP server was removed — every tool it exposed is a subcommand now",
+		"  (inspect_logs → `shuck logs`, monitor_events → `shuck monitor events`, check_pins → `shuck pins`, …)",
+		"Run `shuck --help` for the full list, and drop the shuck entry from your MCP config:",
+		"  claude mcp remove --scope user shuck",
+	},
+	"compliance": {
+		"shuck: `shuck compliance` was removed — shuck no longer checks repo settings against a policy file.",
+		"For branch protection and settings drift, use GitHub's own rulesets, or `gh api` in a workflow.",
+	},
+	"dependabot": {
+		"shuck: `shuck dependabot` was removed — shuck no longer audits .github/dependabot.yml coverage.",
+		"Dependabot *alerts* are still reported: `shuck security` covers them alongside code and secret scanning.",
+	},
+	"image": {
+		"shuck: `shuck image` was removed — shuck no longer resolves GHCR image digests.",
+		"For Action pins, `shuck pins` audits a checkout and `shuck action <ref>` resolves one reference.",
+	},
+}
+
+func init() {
+	for alias, cmd := range map[string]string{"c": "compliance", "d": "dependabot", "i": "image"} {
+		removedCommands[alias] = removedCommands[cmd]
+	}
 }
 
 // Run executes shuck and returns the process exit code:
-// 0 = report produced, 2 = operational error. With --exit-code, failing
-// checks exit 1 (for CI gating).
+// 0 = report produced, 2 = operational error. With --exit-code, failing CI
+// checks exit 1 (for CI gating); the security half of the default report is
+// never part of that verdict — see emitAll.
 func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 {
 		cmd := args[0]
+		if note, ok := removedCommands[cmd]; ok {
+			// Checked before alias resolution so a retired shorthand (`shuck c`)
+			// lands here too rather than being parsed as a target.
+			for _, line := range note {
+				fmt.Fprintln(stderr, line)
+			}
+			return 2
+		}
 		if canon, ok := subcommandAliases[cmd]; ok {
 			cmd = canon
 		}
@@ -130,14 +179,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			return runUpgrade(args[1:], stdout, stderr)
 		case "action":
 			return runAction(args[1:], stdout, stderr)
-		case "image", "images":
-			return runImage(args[1:], stdout, stderr)
+		case "monitor":
+			return runMonitor(args[1:], stdout, stderr)
+		case "pins", "pin":
+			return runPins(args[1:], stdout, stderr)
 		case "security":
 			return runSecurity(args[1:], stdout, stderr)
-		case "compliance":
-			return runCompliance(args[1:], stdout, stderr)
-		case "dependabot":
-			return runDependabot(args[1:], stdout, stderr)
 		case "logs":
 			return runLogs(args[1:], stdout, stderr)
 		case "reviews":
@@ -223,7 +270,7 @@ func registerInspectFlags(fs *flag.FlagSet, o *options) {
 	fs.BoolVar(&o.noCache, "no-cache", false, "do not read or write the cache")
 	fs.BoolVar(&o.offline, "offline", false, "render only from cache, without network access")
 	fs.BoolVar(&o.json, "json", false, "emit machine-readable JSON (stable schema) instead of text")
-	fs.BoolVar(&o.exitCode, "exit-code", false, "exit 1 when failing checks are found (for CI gating)")
+	fs.BoolVar(&o.exitCode, "exit-code", false, "exit 1 when failing CI checks are found (for CI gating; security alerts never flip it)")
 }
 
 // registerArtifactFlags registers the artifact-download flag on the paths that
@@ -332,56 +379,6 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 		return true
 	}
 }
-
-// InspectOptions controls a single inspection: the log-extraction tuning that
-// mirrors the CLI flags plus the cache behavior. It is the front-end-agnostic
-// input to [Inspect], used by alternative entry points such as the MCP server.
-type InspectOptions struct {
-	Context            int
-	ShortThreshold     int
-	Tail               int
-	Pattern            string
-	Full               bool
-	MaxCommandLines    int
-	ReviewCommentLimit int
-	CIOnly             bool
-	ReviewsOnly        bool
-	// ArtifactsDir, when non-empty, downloads the inspected run's artifacts
-	// into this directory (run targets only); each artifact's zip archive is
-	// extracted to <dir>/<artifact-name>/.
-	ArtifactsDir string
-	Token        string
-	Refresh      bool
-	NoCache      bool
-	Offline      bool
-}
-
-// Inspect runs shuck's pipeline for an already-resolved target and returns the
-// report without rendering it. It is the reusable core behind the CLI and the
-// MCP server: callers decide how to present the result (text, JSON, or a
-// structured tool response).
-func Inspect(ctx context.Context, tgt target.Target, opts InspectOptions) (*model.Report, error) {
-	return inspectWith(ctx, tgt, options{
-		context:            opts.Context,
-		shortThreshold:     opts.ShortThreshold,
-		tail:               opts.Tail,
-		pattern:            opts.Pattern,
-		full:               opts.Full,
-		maxCommandLines:    opts.MaxCommandLines,
-		reviewCommentLimit: opts.ReviewCommentLimit,
-		ciOnly:             opts.CIOnly,
-		reviewsOnly:        opts.ReviewsOnly,
-		artifactsDir:       opts.ArtifactsDir,
-		token:              opts.Token,
-		refresh:            opts.Refresh,
-		noCache:            opts.NoCache,
-		offline:            opts.Offline,
-	})
-}
-
-// Version reports the shuck version for non-CLI front-ends (e.g. the MCP
-// server advertises it in its server info).
-func Version() string { return versionString() }
 
 // inspectWith builds the report for a resolved target: it validates the
 // extraction options, then dispatches to the offline, run, or PR path.

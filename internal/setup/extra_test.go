@@ -33,7 +33,7 @@ func TestConfigDirHomeFallback(t *testing.T) {
 
 func TestParseHelpReturnsErrHelp(t *testing.T) {
 	var stderr strings.Builder
-	if code := Run([]string{"-h"}, fakeSkill, strings.NewReader(""), &strings.Builder{}, &stderr); code != 0 {
+	if code := Run([]string{"-h"}, fakeSkill, &strings.Builder{}, &stderr); code != 0 {
 		t.Fatalf("exit = %d, want 0 for -h", code)
 	}
 	if !strings.Contains(stderr.String(), "install the shuck skill") {
@@ -43,70 +43,8 @@ func TestParseHelpReturnsErrHelp(t *testing.T) {
 
 func TestParseUnknownFlagExitsTwo(t *testing.T) {
 	var out, errOut strings.Builder
-	if code := Run([]string{"--nope"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 2 {
+	if code := Run([]string{"--nope"}, fakeSkill, &out, &errOut); code != 2 {
 		t.Fatalf("exit = %d, want 2 for unknown flag", code)
-	}
-}
-
-// fakeTTY is an *os.File that reports as a terminal would not — but its Fd is a
-// real pipe, so term.IsTerminal returns false. We use it to exercise the
-// isInteractive type assertion's success branch (an *os.File that is not a TTY).
-func TestIsInteractiveOnNonFile(t *testing.T) {
-	if isInteractive(strings.NewReader("")) {
-		t.Error("a non-*os.File reader must not be interactive")
-	}
-}
-
-func TestIsInteractiveOnPipeFile(t *testing.T) {
-	rp, wp, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = rp.Close(); _ = wp.Close() })
-	// A pipe is an *os.File but not a terminal, so this exercises the assertion
-	// success path returning false.
-	if isInteractive(rp) {
-		t.Error("a pipe *os.File must not be interactive")
-	}
-}
-
-// TestRunInteractiveDeclines drives maybeInstallMCP's interactive branch by
-// passing a terminal-like *os.File whose content is "n": the prompt runs and the
-// user declines, so the MCP step is skipped.
-func TestPromptDeclineSkips(t *testing.T) {
-	// We cannot easily allocate a real PTY here, so exercise promptYesNo and the
-	// surrounding messaging directly via maybeInstallMCP with the noMCP path.
-	var out strings.Builder
-	maybeInstallMCP(options{noMCP: true}, strings.NewReader(""), &out, &strings.Builder{})
-	if !strings.Contains(out.String(), "skipping MCP server registration (--no-mcp)") {
-		t.Errorf("expected --no-mcp skip note, got %q", out.String())
-	}
-}
-
-func TestPromptYesNoVariants(t *testing.T) {
-	cases := []struct {
-		in   string
-		want bool
-	}{
-		{"y\n", true},
-		{"Y\n", true},
-		{"yes\n", true},
-		{"YES\n", true},
-		{"  yes  \n", true},
-		{"n\n", false},
-		{"no\n", false},
-		{"maybe\n", false},
-		{"\n", false},
-		{"", false},
-	}
-	for _, c := range cases {
-		var w strings.Builder
-		if got := promptYesNo(strings.NewReader(c.in), &w, "q? "); got != c.want {
-			t.Errorf("promptYesNo(%q) = %v, want %v", c.in, got, c.want)
-		}
-		if !strings.Contains(w.String(), "q? ") {
-			t.Errorf("prompt not written for input %q", c.in)
-		}
 	}
 }
 
@@ -122,7 +60,7 @@ func TestRunDryRunRefreshSkill(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out, errOut strings.Builder
-	if code := Run([]string{"--refresh-skill", "--dry-run"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 0 {
+	if code := Run([]string{"--refresh-skill", "--dry-run"}, fakeSkill, &out, &errOut); code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr=%q", code, errOut.String())
 	}
 	if !strings.Contains(out.String(), "[dry-run] would refresh installed skill") {
@@ -143,7 +81,7 @@ func TestInstallSkillReadError(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out, errOut strings.Builder
-	if code := Run([]string{"--no-mcp"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 2 {
+	if code := Run(nil, fakeSkill, &out, &errOut); code != 2 {
 		t.Fatalf("exit = %d, want 2 when the skill path is unreadable", code)
 	}
 	if !strings.Contains(errOut.String(), "read existing skill") {
@@ -160,7 +98,7 @@ func TestRefreshSkillReadError(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out, errOut strings.Builder
-	if code := Run([]string{"--refresh-skill"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 2 {
+	if code := Run([]string{"--refresh-skill"}, fakeSkill, &out, &errOut); code != 2 {
 		t.Fatalf("exit = %d, want 2 when the installed skill is unreadable", code)
 	}
 	if !strings.Contains(errOut.String(), "read installed skill") {
@@ -184,7 +122,7 @@ func TestRefreshClaudeMDReadError(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out, errOut strings.Builder
-	if code := Run([]string{"--refresh-skill"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 2 {
+	if code := Run([]string{"--refresh-skill"}, fakeSkill, &out, &errOut); code != 2 {
 		t.Fatalf("exit = %d, want 2 when CLAUDE.md is unreadable", code)
 	}
 	if !strings.Contains(errOut.String(), "read CLAUDE.md") {
@@ -200,7 +138,7 @@ func TestUpdateClaudeMDReadError(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out, errOut strings.Builder
-	if code := Run([]string{"--no-mcp"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 2 {
+	if code := Run(nil, fakeSkill, &out, &errOut); code != 2 {
 		t.Fatalf("exit = %d, want 2 when CLAUDE.md is unreadable", code)
 	}
 	if !strings.Contains(errOut.String(), "read CLAUDE.md") {
@@ -218,7 +156,7 @@ func TestRunConfigDirError(t *testing.T) {
 		t.Skip("os.UserHomeDir still resolves without HOME on this platform")
 	}
 	var out, errOut strings.Builder
-	if code := Run([]string{"--no-mcp"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 2 {
+	if code := Run(nil, fakeSkill, &out, &errOut); code != 2 {
 		t.Fatalf("exit = %d, want 2 when config dir cannot be resolved", code)
 	}
 	if !strings.Contains(errOut.String(), "shuck:") {

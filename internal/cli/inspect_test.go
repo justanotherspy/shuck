@@ -697,24 +697,3 @@ func TestCheckRunTargetError(t *testing.T) {
 		t.Fatal("expected CheckRunTarget error")
 	}
 }
-
-func TestInspectExported(t *testing.T) {
-	s := ciStub()
-	withStubInspect(t, s)
-	tgt := target.Target{Owner: "o", Repo: "r", Number: 42}
-	report, err := Inspect(context.Background(), tgt, InspectOptions{
-		ReviewCommentLimit: 5, CIOnly: true, Context: 10, ShortThreshold: 100, Tail: 100,
-	})
-	if err != nil {
-		t.Fatalf("Inspect: %v", err)
-	}
-	if len(report.FailedJobs) != 1 {
-		t.Errorf("Inspect failed jobs = %d, want 1", len(report.FailedJobs))
-	}
-}
-
-func TestVersionExported(t *testing.T) {
-	if Version() == "" {
-		t.Error("Version() returned empty")
-	}
-}

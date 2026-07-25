@@ -6,16 +6,18 @@
 # prerequisites the plugin needs and reports any that are missing, without
 # blocking the session or touching the network:
 #
-#   1. the `shuck` binary is on PATH (the MCP server and /shuck skill run it);
-#   2. it is new enough to expose the MCP server (the `mcp` subcommand);
+#   1. the `shuck` binary is on PATH (the monitor hooks and the /shuck skill
+#      both run it);
+#   2. it is new enough to have the background monitor (`shuck monitor`);
 #   3. a GitHub token is available (GITHUB_TOKEN or GH_TOKEN).
 #
 # Stays silent when everything is in order.
 set -euo pipefail
 
-# First release whose binary speaks the MCP protocol (`shuck mcp`). Bump this
-# when a future release changes the minimum the plugin relies on.
-MIN_VERSION="0.3.0"
+# First release with the background monitor (`shuck monitor`), which the
+# plugin's hooks drive. Bump this when a future release changes the minimum the
+# plugin relies on.
+MIN_VERSION="0.5.0"
 
 problems=""
 
@@ -29,13 +31,20 @@ else
   # core (dropping any -prerelease/+build suffix, e.g. a -dirty dev build), and
   # trust anything that is not a plain semver. NOTE: the sort uses a real
   # newline ('\n'), unlike the '\\n' used to build the JSON message below.
-  cur="$(shuck version 2>/dev/null | awk 'NR==1{print $2}' | sed 's/^v//')"
+  #
+  # The `|| true` is what keeps this hook from ever blocking a session: under
+  # `set -euo pipefail` a `shuck version` that exits non-zero (a broken
+  # install, an unreadable binary) fails the whole assignment and kills the
+  # script mid-run — non-zero exit, no JSON, no explanation, from a check whose
+  # entire job is to be advisory. Swallowing it leaves `cur` empty, which falls
+  # through the semver test into the intended "trust it" branch.
+  cur="$(shuck version 2>/dev/null | awk 'NR==1{print $2}' | sed 's/^v//')" || true
   core="${cur%%-*}"
   core="${core%%+*}"
   if printf '%s' "$core" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
     lowest="$(printf '%s\n%s\n' "$MIN_VERSION" "$core" | sort -V | head -1)"
     if [ "$lowest" != "$MIN_VERSION" ]; then
-      problems+="\\n  - your shuck (v${cur}) predates the MCP server (needs >= v${MIN_VERSION}); update it with: shuck upgrade"
+      problems+="\\n  - your shuck (v${cur}) predates the background monitor (needs >= v${MIN_VERSION}); update it with: shuck upgrade"
     fi
   fi
 fi

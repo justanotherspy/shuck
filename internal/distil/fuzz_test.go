@@ -53,7 +53,7 @@ func FuzzDistilCIFailure(f *testing.F) {
 		// huge values only slow the fuzzer down without exploring new logic.
 		clamp := func(v, lo, hi int) int { return min(max(v, lo), hi) }
 		nSteps = clamp(nSteps, 0, 64)
-		opts := DefaultOptions()
+		opts := defaultOptions()
 		opts.Extract.ShortThreshold = clamp(shortThreshold, 0, 4096)
 		opts.Extract.Context = clamp(context, 0, 4096)
 		opts.Extract.Tail = clamp(tail, 0, 4096)

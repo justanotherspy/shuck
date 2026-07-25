@@ -5,7 +5,7 @@
 //
 // It is deliberately lenient and dependency-free: non-conforming tags simply
 // fail to parse, and callers decide what to do with them. Both `shuck action`
-// (tags → commit SHA) and `shuck image` (tags → image digest) select over it.
+// (tags → commit SHA) selects over it.
 package semver
 
 import (

@@ -11,8 +11,8 @@ import (
 const SchemaVersion = 1
 
 // Document is the stable, machine-readable shape of a resolved pin. Non-CLI
-// consumers (such as the MCP server) use NewDocument to return this same shape
-// as typed structured output without going through the byte encoder.
+// consumers use NewDocument to return this same shape as typed structured
+// output without going through the byte encoder.
 type Document struct {
 	SchemaVersion int    `json:"schema_version"`
 	Action        string `json:"action"`

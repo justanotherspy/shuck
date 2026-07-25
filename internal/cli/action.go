@@ -106,8 +106,8 @@ type ActionOptions struct {
 }
 
 // Action resolves an action ref to its latest matching tag + commit SHA,
-// sharing the CLI's tag cache and selection. It is exported so the MCP
-// front-end reuses the pipeline. Auth is optional: an empty token falls back to
+// sharing the CLI's tag cache and selection. It is exported so embedders reuse
+// the pipeline. Auth is optional: an empty token falls back to
 // GITHUB_TOKEN/GH_TOKEN, then to unauthenticated access.
 func Action(ctx context.Context, ref action.Ref, opts ActionOptions) (action.Resolved, error) {
 	token := opts.Token

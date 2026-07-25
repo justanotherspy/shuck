@@ -12,48 +12,6 @@ import (
 	"github.com/justanotherspy/shuck/internal/target"
 )
 
-func TestFindPackage(t *testing.T) {
-	pkgs := []model.ImagePackage{
-		{Name: "api", Versions: []model.ImageVersion{{Digest: "sha256:a"}}},
-		{Name: "web", Versions: []model.ImageVersion{{Digest: "sha256:b"}}},
-	}
-	if v, ok := findPackage(pkgs, "web"); !ok || len(v) != 1 || v[0].Digest != "sha256:b" {
-		t.Errorf("findPackage(web) = %v, %v", v, ok)
-	}
-	if _, ok := findPackage(pkgs, "missing"); ok {
-		t.Errorf("findPackage(missing) should report not found")
-	}
-}
-
-func TestResolveOwner(t *testing.T) {
-	if o, err := resolveOwner([]string{"acme"}); err != nil || o != "acme" {
-		t.Errorf("bare owner = %q, %v, want acme", o, err)
-	}
-	if o, err := resolveOwner([]string{"acme/widget"}); err != nil || o != "acme" {
-		t.Errorf("owner/repo = %q, %v, want acme", o, err)
-	}
-	if o, err := resolveOwner([]string{"https://github.com/acme/widget"}); err != nil || o != "acme" {
-		t.Errorf("url = %q, %v, want acme", o, err)
-	}
-}
-
-func TestLooksLikeImageRef(t *testing.T) {
-	cases := map[string]bool{
-		"ghcr.io/acme/api":         true,
-		"ghcr.io/acme/api:v1":      true,
-		"https://ghcr.io/acme/api": true,
-		"acme":                     false,
-		"acme/widget":              false,
-		"https://github.com/acme":  false,
-		"docker.io/acme/api":       false,
-	}
-	for in, want := range cases {
-		if got := looksLikeImageRef(in); got != want {
-			t.Errorf("looksLikeImageRef(%q) = %v, want %v", in, got, want)
-		}
-	}
-}
-
 // stubLatestErr points newReleaseClient at a server that always 500s, so the
 // latest-release lookup fails.
 func stubLatestErr(t *testing.T) {

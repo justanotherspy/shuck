@@ -57,7 +57,7 @@ func TestCIFailureGolden(t *testing.T) {
 				JobConclusion: job.Conclusion,
 				Steps:         job.Steps,
 				RawLog:        string(raw),
-				Options:       DefaultOptions(),
+				Options:       defaultOptions(),
 			})
 			if err != nil {
 				t.Fatalf("CIFailure: %v", err)

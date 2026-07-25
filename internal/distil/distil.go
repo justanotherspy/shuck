@@ -1,14 +1,12 @@
 // Package distil turns a raw GitHub Actions job log plus the job's step
 // metadata into the distilled failure detail shuck reports: which steps
 // failed, what they ran, the high-signal error excerpt, and a heuristic
-// failure class. It is the shared parser core behind the CLI and the MCP
-// server, extracted so future off-agent consumers (shuck v2 workers) can
-// call it too.
+// failure class. It is the shared parser core behind the CLI and the background
+// monitor, which turns the same distillation into the body of an event.
 //
 // The package is pure and deterministic: strings and structs in, structs
 // out — no GitHub calls, no filesystem, no clock. Fetching logs and step
-// metadata stays with the callers. It lives under internal/ for now;
-// promote it when the v2 module layout lands (JUS-84).
+// metadata stays with the callers.
 //
 // The step↔section pairing works from the log itself plus the Actions
 // API's ordered step list — not from workflow YAML: failed (or
@@ -26,8 +24,10 @@ import (
 )
 
 // Options tunes distillation. The zero value means "no excerpt budget"
-// (nearly-empty excerpts) just like a zero logs.Options — use
-// DefaultOptions() for the documented defaults.
+// (nearly-empty excerpts) just like a zero logs.Options; both callers build
+// theirs explicitly — the CLI from its parsed flags, the monitor from the
+// daemon's — so this package deliberately ships no defaults constructor for
+// them to drift from.
 type Options struct {
 	// Extract tunes how much of a failing section's output survives into
 	// the excerpt.
@@ -35,12 +35,6 @@ type Options struct {
 	// MaxCommandLines caps how many lines of a step's recovered command are
 	// kept; longer commands are truncated with a marker. <= 0 means no limit.
 	MaxCommandLines int
-}
-
-// DefaultOptions returns the documented defaults, matching the CLI's flag
-// defaults.
-func DefaultOptions() Options {
-	return Options{Extract: logs.DefaultOptions(), MaxCommandLines: logs.DefaultMaxCommandLines}
 }
 
 // Input is one failed (or cancelled) job's raw material: the plain-text

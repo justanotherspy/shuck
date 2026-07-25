@@ -5,12 +5,6 @@ import (
 	"unicode/utf8"
 )
 
-// DefaultSummaryLimit is the default byte budget for a delivered summary —
-// small enough for a channel notification and far under the gateway's
-// buffer-row ceiling, large enough for the header plus the first failing
-// steps' error headlines.
-const DefaultSummaryLimit = 16 << 10
-
 // CapSummary enforces a byte budget on an agent-ready summary. A summary
 // within limit (or a limit <= 0, meaning unlimited) is returned unchanged
 // with truncated=false. Otherwise the result keeps whole lines from the

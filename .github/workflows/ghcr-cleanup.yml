@@ -2,10 +2,9 @@ name: GHCR Cleanup
 
 # Prune old container images from GHCR. docker.yml pushes a new `sha-<short>`
 # tag (plus its signature/attestation referrers and untagged multi-arch
-# children) on every push to main — for the CLI image and the four backend
-# images (JUS-93) — so each package grows without bound.
+# children) on every push to main, so the package grows without bound.
 #
-# Retention policy (identical for every package):
+# Retention policy:
 #   - `edge`, `latest`, and the semver release tags are never touched
 #     (only `sha-*` tags are deletion candidates).
 #   - The 2 most recent `sha-*` builds are kept for rollback headroom.
@@ -13,9 +12,6 @@ name: GHCR Cleanup
 #     provenance referrers, and orphaned untagged images. The action walks
 #     multi-arch indices and referrers, so deleting an image also deletes
 #     its platform children and attached artifacts.
-#
-# The `charts/shuck` Helm OCI package is deliberately not listed: it only
-# receives semver tags (one per release), which this policy never deletes.
 on:
   schedule:
     - cron: "45 4 * * 1" # weekly, Monday 04:45 UTC
@@ -29,9 +25,9 @@ on:
 permissions:
   contents: read
 
-# The cleanup action is not safe to run concurrently against the same
-# package; the matrix legs each target a distinct package, so they may run
-# in parallel, but two workflow runs must not overlap.
+# The cleanup action is not safe to run concurrently against the same package:
+# two overlapping runs would race on the same version list and delete versions
+# the other has already reaped. Serialize whole runs.
 concurrency:
   group: ghcr-cleanup
   cancel-in-progress: false
@@ -45,10 +41,6 @@ jobs:
       matrix:
         package:
           - shuck
-          - shuck-ingest
-          - shuck-worker
-          - shuck-gateway
-          - shuck-portal
     permissions:
       packages: write # delete GHCR package versions
     steps:

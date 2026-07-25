@@ -158,16 +158,16 @@ func TestParseActionsURL(t *testing.T) {
 		{"42", "", "", 0, 0, 0, false},
 	}
 	for _, c := range cases {
-		ref, ok := parseActionsURL(c.in)
+		ref, ok := ParseActionsURL(c.in)
 		if ok != c.wantOK {
-			t.Errorf("parseActionsURL(%q) ok = %v, want %v", c.in, ok, c.wantOK)
+			t.Errorf("ParseActionsURL(%q) ok = %v, want %v", c.in, ok, c.wantOK)
 			continue
 		}
 		if !ok {
 			continue
 		}
 		if ref.Owner != c.owner || ref.Repo != c.repo || ref.RunID != c.runID || ref.JobID != c.jobID || ref.Attempt != c.attempt {
-			t.Errorf("parseActionsURL(%q) = %q/%q run=%d job=%d attempt=%d, want %q/%q run=%d job=%d attempt=%d",
+			t.Errorf("ParseActionsURL(%q) = %q/%q run=%d job=%d attempt=%d, want %q/%q run=%d job=%d attempt=%d",
 				c.in, ref.Owner, ref.Repo, ref.RunID, ref.JobID, ref.Attempt, c.owner, c.repo, c.runID, c.jobID, c.attempt)
 		}
 	}

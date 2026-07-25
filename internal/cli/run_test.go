@@ -200,33 +200,6 @@ func TestRunLogsSingleRun(t *testing.T) {
 	}
 }
 
-func TestRunImageAnonymousNoTags(t *testing.T) {
-	s := &stubImageLister{} // no tags returned
-	withStubImageLister(t, s)
-
-	var out, errb strings.Builder
-	if code := runImage([]string{"ghcr.io/acme/api"}, &out, &errb); code != 2 {
-		t.Fatalf("exit = %d, want 2; stderr=%q", code, errb.String())
-	}
-	if !strings.Contains(errb.String(), "no tags") {
-		t.Errorf("expected a no-tags error, got %q", errb.String())
-	}
-}
-
-func TestRunImageAuthedNoVersions(t *testing.T) {
-	s := &stubImageLister{versions: map[string][]model.ImageVersion{}}
-	withStubImageLister(t, s)
-	t.Setenv("GITHUB_TOKEN", "x")
-
-	var out, errb strings.Builder
-	if code := runImage([]string{"ghcr.io/acme/api"}, &out, &errb); code != 2 {
-		t.Fatalf("exit = %d, want 2; stderr=%q", code, errb.String())
-	}
-	if !strings.Contains(errb.String(), "no published versions") {
-		t.Errorf("expected a no-versions error, got %q", errb.String())
-	}
-}
-
 func TestRunLogsInspectError(t *testing.T) {
 	s := ciStub()
 	s.prErr = errors.New("boom")

@@ -14,6 +14,19 @@ import (
 // e.g. "2024-01-02T03:04:05.1234567Z ".
 var tsPrefix = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z `)
 
+// StripTimestamps removes GitHub's per-line ISO-8601 prefix from a raw job
+// log. Parse does this for the sections it builds; it is exported for the
+// callers that hand a whole log to a reader instead — roughly thirty bytes a
+// line of pure noise, and a machine timestamp is not what anyone reads a
+// failing log for.
+func StripTimestamps(raw string) string {
+	lines := strings.Split(raw, "\n")
+	for i, line := range lines {
+		lines[i] = tsPrefix.ReplaceAllString(line, "")
+	}
+	return strings.Join(lines, "\n")
+}
+
 // actionRef matches an action reference like "actions/checkout@v4" or
 // "owner/repo/sub@sha", used to classify a step's command.
 var actionRef = regexp.MustCompile(`^[\w.-]+/[\w./-]+@\S+$`)
@@ -68,7 +81,7 @@ func (s Section) FullCommand() string {
 
 // DefaultMaxCommandLines is the default cap on how many lines of a failed step's
 // command shuck shows; longer commands are truncated. Shared by the CLI flag and
-// the MCP server so the two never drift. 0 would mean no limit.
+// the monitor's event bodies so the two never drift. 0 would mean no limit.
 const DefaultMaxCommandLines = 30
 
 // ClampCommand limits cmd to at most maxLines lines. A non-positive maxLines

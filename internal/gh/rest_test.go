@@ -459,13 +459,88 @@ func TestOtherChecksStatusError(t *testing.T) {
 	}
 }
 
+func TestRateRemaining(t *testing.T) {
+	tests := []struct {
+		name          string
+		core          string
+		wantRemaining int
+		wantLimit     int
+	}{
+		{"headroom", `"core":{"limit":5000,"remaining":4321,"used":679,"reset":1777777777},`, 4321, 5000},
+		// An exhausted budget is the exact state this probe exists to detect,
+		// and it is an ordinary answer, not a failure: the monitor reads 0 and
+		// backs off. Turning it into an error would instead put the daemon on
+		// its error backoff with no idea why, and blank the headroom line in
+		// `shuck monitor status`.
+		{"exhausted", `"core":{"limit":5000,"remaining":0,"used":5000,"reset":1777777777},`, 0, 5000},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/rate_limit" {
+					t.Errorf("unexpected path %q", r.URL.Path)
+				}
+				// Search and graphql carry deliberately different numbers: the
+				// monitor paces itself on the core REST budget, and reading the
+				// wrong resource would have it double its intervals against a
+				// quota it never spends.
+				_, _ = w.Write([]byte(`{"resources":{` + tc.core + `
+					"search":{"limit":30,"remaining":2,"used":28,"reset":1777777777},
+					"graphql":{"limit":5000,"remaining":11,"used":4989,"reset":1777777777}
+				}}`))
+			}))
+			defer srv.Close()
+
+			remaining, limit, err := testClient(t, srv).RateRemaining(context.Background())
+			if err != nil {
+				t.Fatalf("RateRemaining: %v", err)
+			}
+			if remaining != tc.wantRemaining || limit != tc.wantLimit {
+				t.Errorf("RateRemaining = %d/%d, want %d/%d", remaining, limit, tc.wantRemaining, tc.wantLimit)
+			}
+		})
+	}
+}
+
+func TestRateRemainingNoCore(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// A response without a core rate is not "zero quota left" — reporting
+		// it as 0 would have the monitor throttle itself on nothing.
+		_, _ = w.Write([]byte(`{"resources":{"search":{"limit":30,"remaining":30}}}`))
+	}))
+	defer srv.Close()
+
+	remaining, limit, err := testClient(t, srv).RateRemaining(context.Background())
+	if err == nil {
+		t.Fatalf("RateRemaining = %d/%d, want an error when core is absent", remaining, limit)
+	}
+	if remaining != 0 || limit != 0 {
+		t.Errorf("RateRemaining = %d/%d alongside an error, want 0/0", remaining, limit)
+	}
+}
+
+func TestRateRemainingError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"message":"bad credentials"}`, http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	_, _, err := testClient(t, srv).RateRemaining(context.Background())
+	if err == nil {
+		t.Fatal("expected error on 401")
+	}
+	if !strings.Contains(err.Error(), "get rate limit") {
+		t.Errorf("error = %v, want it to name the probe", err)
+	}
+}
+
 func TestNew(t *testing.T) {
 	authed := New("tok")
 	if authed.gh == nil || authed.http == nil || authed.token != "tok" {
 		t.Errorf("authed client malformed: %+v", authed)
 	}
-	if authed.graphqlURL != graphQLEndpoint || authed.registryURL != registryHost {
-		t.Errorf("default endpoints not set: %q %q", authed.graphqlURL, authed.registryURL)
+	if authed.graphqlURL != graphQLEndpoint {
+		t.Errorf("default GraphQL endpoint not set: %q", authed.graphqlURL)
 	}
 	anon := New("")
 	if anon.gh == nil || anon.token != "" {

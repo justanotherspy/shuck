@@ -642,3 +642,47 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// TestRemovedSubcommandsExplainThemselves covers the stubs left behind for
+// commands shuck used to have. Without them the target parser answers `shuck
+// compliance` with `invalid PR number "compliance"`, which reads like a bug
+// rather than a removal — and an MCP client with a stale registration spawns
+// `shuck mcp` on every single session start.
+func TestRemovedSubcommandsExplainThemselves(t *testing.T) {
+	tests := []struct {
+		args string
+		want []string
+	}{
+		{"mcp", []string{"MCP server was removed", "shuck monitor events", "claude mcp remove"}},
+		{"compliance", []string{"`shuck compliance` was removed", "rulesets"}},
+		// The replacement matters more than the removal here: Dependabot alerts
+		// did not go anywhere, only the config audit did.
+		{"dependabot", []string{"`shuck dependabot` was removed", "shuck security"}},
+		{"image", []string{"`shuck image` was removed", "shuck pins"}},
+		// The retired shorthands resolve to the same notice, since anyone who
+		// typed them meant the command they aliased.
+		{"c", []string{"`shuck compliance` was removed"}},
+		{"d", []string{"`shuck dependabot` was removed"}},
+		{"i", []string{"`shuck image` was removed"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.args, func(t *testing.T) {
+			code, stdout, stderr := runCLI(tc.args)
+			if code != 2 {
+				t.Errorf("exit = %d, want 2 for a removed subcommand", code)
+			}
+			if stdout != "" {
+				t.Errorf("the notice belongs on stderr, got stdout %q", stdout)
+			}
+			// The target parser's message would mean the dispatch never ran.
+			if strings.Contains(stderr, "invalid PR number") {
+				t.Errorf("%q fell through to the target parser:\n%s", tc.args, stderr)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(stderr, want) {
+					t.Errorf("stderr is missing %q:\n%s", want, stderr)
+				}
+			}
+		})
+	}
+}

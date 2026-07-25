@@ -3,6 +3,7 @@ package logs
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -37,6 +38,54 @@ func FuzzParse(f *testing.F) {
 			if !s.HasError {
 				t.Fatalf("ErrorSections returned a section without HasError: %q", s.Header)
 			}
+		}
+	})
+}
+
+// FuzzStripTimestamps holds StripTimestamps to a line-by-line oracle written
+// independently of the production regexp (githubStampLen): every line must come
+// back as itself minus exactly the GitHub stamp it opens with — no more, and no
+// less. Both halves matter. The monitor hands the result straight to a reader as
+// a whole log, so a byte eaten off the wrong end is an invisible lie about what
+// CI printed; and an oracle that only forbade over-removal would sit green over
+// a strip that had quietly stopped stripping.
+func FuzzStripTimestamps(f *testing.F) {
+	f.Add("")
+	f.Add("plain line with no timestamp\n")
+	f.Add("2024-05-01T10:00:00.0000000Z hello\n2024-05-01T10:00:01Z world\n")
+	f.Add("2024-05-01T10:00:00.0000000Z 2024-05-01T10:00:00.0000000Z stacked\n")
+	f.Add("2024-05-01T10:00:00.0000000Z \n\n2024-05-01T10:00:01Z a\r\n")
+	// Near-misses the seed corpus has to carry, since active fuzzing does not
+	// gate CI: a payload-owned tab where the separator space would be, an
+	// indented stamp, loose field widths, and a multibyte payload.
+	f.Add("2024-05-01T10:00:00.0000000Z\ttab-separated\n  2024-05-01T10:00:01Z indented\n")
+	f.Add("1-2-3T4:5:6Z loose\n2024-05-01T10:00:00.0000000Z ✗ échec — 你好 🙂\n")
+	if data, err := os.ReadFile(filepath.Join("testdata", "job_failure.log")); err == nil {
+		f.Add(string(data))
+	}
+
+	f.Fuzz(func(t *testing.T, raw string) {
+		got := StripTimestamps(raw)
+
+		in, out := strings.Split(raw, "\n"), strings.Split(got, "\n")
+		if len(in) != len(out) {
+			t.Fatalf("line count changed: %d -> %d", len(in), len(out))
+		}
+		for i := range in {
+			want := in[i][githubStampLen(in[i]):]
+			if out[i] != want {
+				t.Fatalf("line %d: %q -> %q, want %q", i, in[i], out[i], want)
+			}
+		}
+		// Idempotent once no line still opens with a timestamp — the state every
+		// GitHub log reaches in one pass. Stacked timestamps are the deliberate
+		// exception: the second one is the tool's own output, not GitHub's, so a
+		// re-run would strip content and is not asserted to be a no-op.
+		if slices.ContainsFunc(out, func(l string) bool { return githubStampLen(l) > 0 }) {
+			return
+		}
+		if again := StripTimestamps(got); again != got {
+			t.Fatalf("not a fixpoint: %q -> %q", got, again)
 		}
 	})
 }

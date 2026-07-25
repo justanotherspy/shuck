@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "shuck": {
-      "command": "shuck",
-      "args": ["mcp"]
-    }
-  }
-}

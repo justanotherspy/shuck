@@ -132,12 +132,12 @@ func runSecurity(args []string, stdout, stderr io.Writer) int {
 }
 
 // Security fetches a repo's security alerts (from the cache when fresh, else
-// GitHub), assembles and sorts them. It is exported so the MCP front-end shares
-// the CLI's pipeline. An error is returned only when every source genuinely
+// GitHub), assembles and sorts them. It is exported so embedders share the
+// CLI's pipeline. An error is returned only when every source genuinely
 // failed; disabled/forbidden sources are reported in the report itself.
 func Security(ctx context.Context, owner, repo string, opts SecurityOptions) (*model.SecurityReport, error) {
-	// Normalize here so every caller (the `all` path, the MCP tool, and the
-	// `security` subcommand) accepts the same case-insensitive values; the
+	// Normalize here so every caller (the `all` path and the `security`
+	// subcommand) accepts the same case-insensitive values; the
 	// subcommand also validates upfront for an early, fatal error.
 	state := strings.ToLower(strings.TrimSpace(opts.State))
 	if state == "" {

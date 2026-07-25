@@ -68,7 +68,7 @@ func okStub() *stubSecurity {
 }
 
 // TestSecurityStateCaseInsensitive proves the shared core normalizes --state so
-// the `all` path and the MCP tool accept the same case-insensitive values the
+// the `all` path and embedders accept the same case-insensitive values the
 // `security` subcommand does (a mixed-case or padded value must not error).
 func TestSecurityStateCaseInsensitive(t *testing.T) {
 	withStubSecurity(t, okStub())
