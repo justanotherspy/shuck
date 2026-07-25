@@ -146,14 +146,22 @@ client                                   daemon
 
 Ops: `ping`, `status`, `watch`, `unwatch`, `events`, `seek`, `poke`, `stop`.
 The protocol is deliberately dull — both ends ship in the same binary and are
-upgraded together, so there is no version negotiation to get wrong. A client
-that meets a daemon it cannot talk to restarts it.
+upgraded together, so there is no version negotiation to get wrong. That
+assumption is what `shuck upgrade` protects: it stops the running daemon after
+replacing the binary, so the next hook starts one from the version now on disk
+rather than leaving yesterday's daemon answering today's clients.
 
 Clients are short-lived by design: a CLI subcommand or a hook.
 Nothing keeps a connection open, so nothing leaks when a hook is killed
 mid-call. The one exception is `events` with `Wait`: the daemon parks the
 request on a broadcast channel that is closed and replaced on every publish, so
 a waiter that arrives between two events still sees the second one.
+
+A single parked read is capped at `monitor.MaxWait` (10 minutes) so no client
+can reserve a goroutine and a connection indefinitely. That cap is the daemon's
+business, not the caller's: `shuck monitor events --wait 30m` re-asks until the
+half hour it was given has actually elapsed, because an early "nothing new" is
+indistinguishable — same text, same exit code — from a genuinely quiet wait.
 
 Every op that touches a watch refreshes its last-seen time. A client asking
 about a watch is exactly the evidence that somebody still cares about it.
@@ -433,7 +441,11 @@ rotated journal) is written through a temp file and renamed, so a reader sees
 either the previous contents or the new ones, never half of each — the daemon
 rewrites on a tick while clients read at will.
 
-The inspection caches are TTL'd and swept on every run (`cache.Purge`). The
+The inspection caches are TTL'd and swept on every run (`cache.Purge`). An
+action or security entry ages by its one record file; a PR entry ages by the
+newest of its record *and* its cached job logs, because the monitor writes logs
+there and never writes a report — aging by the record alone would leave a PR
+only the monitor ever touched growing logs that nothing reclaims. The
 journal is bounded at 2000 events (rotation trims back to 1500, so a
 rewrite happens once every few hundred appends rather than on every one);
 history older than that belongs in the pull
