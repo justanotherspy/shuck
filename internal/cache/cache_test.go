@@ -359,11 +359,10 @@ func TestPurge(t *testing.T) {
 
 	staleDir, _ := Dir("o", "r", 1)
 	keepDir, _ := Dir("o", "r", 2)
-	// Backdate the stale entry's record file beyond the TTL.
+	// Backdate everything the stale entry holds beyond the TTL. The log counts:
+	// an entry is only stale when nothing in it has been touched.
 	old := time.Now().Add(-2 * time.Hour)
-	if err := os.Chtimes(filepath.Join(staleDir, fileName), old, old); err != nil {
-		t.Fatalf("chtimes: %v", err)
-	}
+	backdate(t, staleDir, old)
 
 	if err := Purge(time.Hour, keepDir); err != nil {
 		t.Fatalf("Purge: %v", err)
@@ -383,15 +382,97 @@ func TestPurgeSkipsKeptStaleEntry(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	dir, _ := Dir("o", "r", 1)
-	old := time.Now().Add(-2 * time.Hour)
-	if err := os.Chtimes(filepath.Join(dir, fileName), old, old); err != nil {
-		t.Fatalf("chtimes: %v", err)
-	}
+	backdate(t, dir, time.Now().Add(-2*time.Hour))
 	if err := Purge(time.Hour, dir); err != nil {
 		t.Fatalf("Purge: %v", err)
 	}
 	if _, err := os.Stat(dir); err != nil {
 		t.Errorf("kept entry should survive even when stale, stat err=%v", err)
+	}
+}
+
+// backdate stamps every file in a PR cache entry — the record and each cached
+// raw job log — with mod, so the entry reads as untouched since then.
+func backdate(t *testing.T, entryDir string, mod time.Time) {
+	t.Helper()
+	touched := 0
+	err := filepath.WalkDir(entryDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		touched++
+		return os.Chtimes(path, mod, mod)
+	})
+	if err != nil {
+		t.Fatalf("backdate %s: %v", entryDir, err)
+	}
+	if touched == 0 {
+		t.Fatalf("backdate %s found no files; the entry under test was never written", entryDir)
+	}
+}
+
+// TestPurgeReclaimsLogsOnlyEntry is the resource leak this sweep exists to
+// close. The monitor caches whole raw job logs with SaveJobLog but never writes
+// cache.json — it distills events, it has no model.Report to persist — so a PR
+// only ever seen by the monitor holds logs and no record. Aging an entry by its
+// record file alone leaves those logs on disk forever.
+func TestPurgeReclaimsLogsOnlyEntry(t *testing.T) {
+	t.Setenv("SHUCK_HOME", t.TempDir())
+
+	// Exactly what the monitor leaves behind: logs, no cache.json.
+	if err := SaveJobLog("o", "r", 1, 9, 1, "old failure log"); err != nil {
+		t.Fatalf("SaveJobLog stale: %v", err)
+	}
+	if err := SaveJobLog("o", "r", 2, 9, 1, "recent failure log"); err != nil {
+		t.Fatalf("SaveJobLog fresh: %v", err)
+	}
+	staleDir, _ := Dir("o", "r", 1)
+	freshDir, _ := Dir("o", "r", 2)
+	if _, err := os.Stat(filepath.Join(staleDir, fileName)); !os.IsNotExist(err) {
+		t.Fatalf("SaveJobLog wrote a record file; this test needs a logs-only entry (stat err=%v)", err)
+	}
+	backdate(t, staleDir, time.Now().Add(-2*time.Hour))
+
+	if err := Purge(time.Hour, ""); err != nil {
+		t.Fatalf("Purge: %v", err)
+	}
+	if _, err := os.Stat(staleDir); !os.IsNotExist(err) {
+		t.Errorf("a logs-only entry untouched for 2h survived a 1h purge (stat err=%v); its job logs leak forever", err)
+	}
+	// The other half of the contract: age is read from the logs, so a
+	// monitor-only PR that is still being polled must not be swept out from
+	// under the daemon.
+	if _, err := os.Stat(freshDir); err != nil {
+		t.Errorf("a logs-only entry written just now was purged: stat err=%v", err)
+	}
+}
+
+// TestPurgeKeepsEntryWithFreshLog pins the other direction of the same rule: a
+// PR whose report is old but whose logs the monitor refreshed a moment ago is
+// live. Removing it would delete the log file a just-published CI-failure event
+// tells an agent to open.
+func TestPurgeKeepsEntryWithFreshLog(t *testing.T) {
+	t.Setenv("SHUCK_HOME", t.TempDir())
+
+	if err := Save(&model.Report{PR: model.PR{Owner: "o", Repo: "r", Number: 1, HeadSHA: "old"}}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	dir, _ := Dir("o", "r", 1)
+	backdate(t, dir, time.Now().Add(-2*time.Hour))
+	// Now the monitor drops a fresh log into the stale entry.
+	logPath, err := JobLogPath("o", "r", 1, 9, 1)
+	if err != nil {
+		t.Fatalf("JobLogPath: %v", err)
+	}
+	if err := SaveJobLog("o", "r", 1, 9, 1, "fresh failure log"); err != nil {
+		t.Fatalf("SaveJobLog: %v", err)
+	}
+
+	if err := Purge(time.Hour, ""); err != nil {
+		t.Fatalf("Purge: %v", err)
+	}
+	if _, err := os.Stat(logPath); err != nil {
+		t.Errorf("purge deleted a log written seconds ago because the entry's record was stale: stat err=%v", err)
 	}
 }
 

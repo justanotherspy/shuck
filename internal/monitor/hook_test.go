@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 )
 
@@ -204,6 +208,7 @@ func TestHookPostToolUseIgnoresEverythingElse(t *testing.T) {
 		{"a command that is not a push", map[string]any{"tool_name": "Bash", "tool_input": map[string]string{"command": "go test ./..."}}},
 		{"a command that only mentions pushing", map[string]any{"tool_name": "Bash", "tool_input": map[string]string{"command": "echo pushed"}}},
 		{"unparseable tool input", map[string]any{"tool_name": "Bash", "tool_input": "not an object"}},
+		{"no tool input at all", map[string]any{"tool_name": "Bash"}},
 	}
 	c := newFakeClient()
 	c.pr = openPR("abc")
@@ -348,6 +353,70 @@ func TestHookStopIgnoresInformationalEvents(t *testing.T) {
 	}
 }
 
+// TestHookStopIgnoresAnApprovingReview is the end-to-end half of the verdict
+// rule. Every submitted review carries the same kind, so without the verdict a
+// reviewer saying "LGTM" holds the turn open and the agent is handed an
+// approval under the words "address this as part of the current task".
+func TestHookStopIgnoresAnApprovingReview(t *testing.T) {
+	d, home := hookDaemon(t, newFakeClient())
+	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature"), "source": "startup"}, home)
+
+	d.publish([]Event{reviewEvent("octocat", "approved", "o/r#7")})
+
+	if out := runHook(t, HookStop, map[string]any{"session_id": "sess-1"}, home); out != nil {
+		t.Fatalf("an approval must not delay a finish, got %+v", out)
+	}
+	// And because Stop peeked rather than drained, the good news is still there
+	// for the next prompt — declining to block is not declining to deliver.
+	if out := runHook(t, HookUserPromptSubmit, map[string]any{"session_id": "sess-1"}, home); out == nil {
+		t.Error("the approval should still be delivered on the next prompt")
+	}
+}
+
+// TestHookStopBlocksOnRequestedChanges is the other side of that rule, and the
+// reason it is keyed on the verdict rather than on the kind: a review that asks
+// for something still has to stop the agent walking away from it.
+func TestHookStopBlocksOnRequestedChanges(t *testing.T) {
+	d, home := hookDaemon(t, newFakeClient())
+	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature"), "source": "startup"}, home)
+
+	d.publish([]Event{reviewEvent("octocat", "changes_requested", "o/r#7")})
+
+	out := runHook(t, HookStop, map[string]any{"session_id": "sess-1"}, home)
+	if out == nil || out.Decision != "block" {
+		t.Fatalf("a reviewer asking for changes should hold the turn open, got %+v", out)
+	}
+}
+
+// TestHookStopIgnoresStalePins covers the same unrequested-work rule for pin
+// drift: a superseded action pin is repo hygiene in a checkout the user may
+// never have mentioned, and refusing to let a turn end over one is the monitor
+// hijacking the session for its own errand.
+func TestHookStopIgnoresStalePins(t *testing.T) {
+	d, home := hookDaemon(t, newFakeClient())
+	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature"), "source": "startup"}, home)
+
+	d.publish([]Event{{
+		Kind:   KindPinsStale,
+		Target: "o/r",
+		Title:  "2 workflow action references need attention",
+		Body:   "ci.yml:12  actions/checkout@v4 → pin to a SHA",
+	}})
+
+	if out := runHook(t, HookStop, map[string]any{"session_id": "sess-1"}, home); out != nil {
+		t.Fatalf("stale pins must not delay a finish, got %+v", out)
+	}
+	// Demoting the severity must not silence the finding — the prompt hook
+	// delivers every event whatever its severity.
+	out := runHook(t, HookUserPromptSubmit, map[string]any{"session_id": "sess-1"}, home)
+	if out == nil || out.Specific == nil {
+		t.Fatal("pin drift should still be delivered on the next prompt")
+	}
+	if !strings.Contains(out.Specific.AdditionalContext, "actions/checkout@v4") {
+		t.Errorf("the pin finding lost its detail:\n%s", out.Specific.AdditionalContext)
+	}
+}
+
 func TestHookStopDoesNotRepeatWhatItHandedOver(t *testing.T) {
 	d, home := hookDaemon(t, newFakeClient())
 	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature"), "source": "startup"}, home)
@@ -426,6 +495,67 @@ func TestHookTolerateGarbageInput(t *testing.T) {
 	}
 	if code := RunHook(context.Background(), HookUserPromptSubmit, nil, &out); code != 0 {
 		t.Errorf("exit = %d on no input at all, want 0", code)
+	}
+	// A stdin that errors mid-read is the same story as no stdin: whatever
+	// could not be read simply is not known, and an unidentifiable payload is
+	// one the hook stays out of.
+	if code := RunHook(context.Background(), HookUserPromptSubmit, iotest.ErrReader(errors.New("boom")), &out); code != 0 {
+		t.Errorf("exit = %d on an unreadable stdin, want 0", code)
+	}
+	if out.Len() != 0 {
+		t.Errorf("a payload shuck cannot read produced %q, want silence", out.String())
+	}
+}
+
+// TestHooksSurviveAnUnusableHome covers the failure that lands before a hook
+// has a client at all: a cache directory that cannot be created. Nothing is
+// reachable from there — not even a daemon that is running perfectly well — so
+// every hook has to fall silent, SessionStart included, rather than announce a
+// state it could not check.
+func TestHooksSurviveAnUnusableHome(t *testing.T) {
+	// A regular file where the cache directory belongs: the MkdirAll under it
+	// fails on every platform, and nothing is spawned on the way.
+	blocked := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocked, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SHUCK_HOME", blocked)
+
+	for _, event := range []HookEvent{
+		HookSessionStart, HookUserPromptSubmit, HookPostToolUse, HookStop, HookSessionEnd,
+	} {
+		var out bytes.Buffer
+		code := RunHook(context.Background(), event, strings.NewReader(`{"session_id":"s","cwd":"."}`), &out)
+		if code != 0 {
+			t.Errorf("%s exited %d with an unusable SHUCK_HOME, want 0", event, code)
+		}
+		if out.Len() != 0 {
+			t.Errorf("%s wrote %q with an unusable SHUCK_HOME, want silence", event, out.String())
+		}
+	}
+}
+
+// TestHookUnknownEventIsSilent is the forward-compatibility clause of the same
+// invariant, checked with a daemon actually running and news waiting: Claude
+// Code gaining a hook name shuck has never heard of must produce nothing at
+// all, not an empty decision the harness has to interpret.
+func TestHookUnknownEventIsSilent(t *testing.T) {
+	d, home := hookDaemon(t, newFakeClient())
+	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature"), "source": "startup"}, home)
+	d.publish([]Event{{Kind: KindCIFailed, Title: "test failed"}})
+
+	var out bytes.Buffer
+	code := RunHook(context.Background(), "pre-compact", strings.NewReader(`{"session_id":"sess-1"}`), &out)
+	if code != 0 {
+		t.Errorf("exit = %d for a hook event shuck does not serve, want 0", code)
+	}
+	if out.Len() != 0 {
+		t.Errorf("an unknown hook event wrote %q, want silence", out.String())
+	}
+	// And it consumed nothing on its way out: the failure is still waiting for
+	// the hook that is meant to deliver it.
+	if got := d.journal.Pending("sess-1"); got != 1 {
+		t.Errorf("Pending = %d after an unknown hook event, want the failure untouched", got)
 	}
 }
 

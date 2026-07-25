@@ -74,14 +74,43 @@ func runUpgrade(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "shuck: download failed:", err)
 		return 2
 	}
-	if err := release.ReplaceRunning(exe, bin); err != nil {
+	if err := replaceRunning(exe, bin); err != nil {
 		fmt.Fprintln(stderr, "shuck:", err)
 		return 2
 	}
 	saveVersionCheck(latest)
 	fmt.Fprintf(stdout, "upgraded shuck %s -> %s (%s)\n", cur, latest, exe)
+	stopStaleMonitor(stdout)
 	refreshInstalledSkill(exe, stdout, stderr)
 	return 0
+}
+
+// replaceRunning installs the downloaded binary over the running one. It is
+// indirected so tests can drive the rest of the upgrade without a test binary
+// overwriting itself.
+var replaceRunning = release.ReplaceRunning
+
+// stopStaleMonitor shuts down a monitor daemon left over from the binary that
+// was just replaced. The daemon and its clients speak a protocol whose only
+// compatibility guarantee is that both ends ship in the same binary (see
+// internal/monitor/protocol.go), so an old daemon answering the new binary's
+// clients is exactly the mismatch that guarantee assumes away. Nothing has to
+// restart it: the next hook or client finds no daemon and spawns one from the
+// binary now on disk.
+//
+// Best-effort by construction — "no daemon was running" and "the daemon refused
+// to die" are both answered by saying nothing, because the upgrade's real work
+// is already done and must not be undone by a monitor that would not stop.
+func stopStaleMonitor(stdout io.Writer) {
+	client, err := newMonitorClient()
+	if err != nil {
+		return
+	}
+	client.AutoStart = false
+	if err := client.Stop(context.Background()); err != nil {
+		return
+	}
+	fmt.Fprintln(stdout, "stopped the running monitor; the next session starts one from the new binary")
 }
 
 // refreshInstalledSkill asks the just-upgraded binary to bring the skill and

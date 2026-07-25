@@ -78,14 +78,41 @@ func runMonitor(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-// monitorFlags registers the flags every monitor client shares.
-func monitorFlags(fs *flag.FlagSet, jsonOut *bool, stderr io.Writer) {
+// monitorFlags wires a monitor subcommand's flag set to the shared usage text.
+// It deliberately does not register --json: unwatch, poke and stop have a
+// sentence of output each and no document to emit, and a registered flag that
+// nothing reads is worse than a rejected one — `shuck monitor unwatch --json |
+// jq` would exit 0 having printed prose.
+func monitorFlags(fs *flag.FlagSet, stderr io.Writer) {
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
 		fmt.Fprint(stderr, monitorUsage)
 		fs.PrintDefaults()
 	}
-	fs.BoolVar(jsonOut, "json", false, "emit machine-readable JSON instead of text")
+}
+
+// monitorSchemaVersion is the version of the JSON envelopes the monitor
+// subcommands emit. It versions the CLI's output only: monitor.Status and
+// monitor.Event are the daemon's IPC payload and the journal's durable record,
+// and stamping a schema on those would version the wire format instead — a
+// number the CLI could then never move without breaking a daemon it did not
+// ship with.
+const monitorSchemaVersion = 1
+
+// statusDocument is the `shuck monitor status --json` envelope: the daemon's
+// status with the schema handle every other shuck --json document carries. The
+// status is embedded, so its fields stay where a consumer already reads them.
+type statusDocument struct {
+	SchemaVersion int `json:"schema_version"`
+	monitor.Status
+}
+
+// eventDocument is one line of `shuck monitor events --json`. The feed is
+// line-delimited JSON — one object per event — so the version travels on every
+// line rather than in a header a consumer reading a tail would never see.
+type eventDocument struct {
+	SchemaVersion int `json:"schema_version"`
+	monitor.Event
 }
 
 // newMonitorClient builds the client the monitor subcommands talk through. It
@@ -99,7 +126,8 @@ func monitorStatus(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("shuck monitor status", flag.ContinueOnError)
 	var jsonOut bool
 	var noStart bool
-	monitorFlags(fs, &jsonOut, stderr)
+	monitorFlags(fs, stderr)
+	fs.BoolVar(&jsonOut, "json", false, "emit the status as one JSON document (with schema_version) instead of text")
 	fs.BoolVar(&noStart, "no-start", false, "do not start the monitor if it is not running")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -119,7 +147,7 @@ func monitorStatus(args []string, stdout, stderr io.Writer) int {
 			// asked for JSON has to get JSON for it too, or the one case they
 			// most need to branch on arrives as an unparseable line.
 			if jsonOut {
-				return emitJSON(stdout, stderr, &monitor.Status{Running: false})
+				return emitJSON(stdout, stderr, statusDocument{monitorSchemaVersion, monitor.Status{Running: false}})
 			}
 			fmt.Fprintln(stdout, "shuck monitor: not running")
 			return 0
@@ -128,7 +156,7 @@ func monitorStatus(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if jsonOut {
-		return emitJSON(stdout, stderr, st)
+		return emitJSON(stdout, stderr, statusDocument{monitorSchemaVersion, *st})
 	}
 	renderStatus(stdout, st)
 	return 0
@@ -195,7 +223,8 @@ func targetLine(t monitor.TargetStatus) string {
 func monitorWatch(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("shuck monitor watch", flag.ContinueOnError)
 	var jsonOut bool
-	monitorFlags(fs, &jsonOut, stderr)
+	monitorFlags(fs, stderr)
+	fs.BoolVar(&jsonOut, "json", false, "emit the registered watch as JSON instead of text")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -246,8 +275,7 @@ func monitorWatch(args []string, stdout, stderr io.Writer) int {
 // monitorUnwatch drops a watch.
 func monitorUnwatch(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("shuck monitor unwatch", flag.ContinueOnError)
-	var jsonOut bool
-	monitorFlags(fs, &jsonOut, stderr)
+	monitorFlags(fs, stderr)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -290,13 +318,21 @@ func monitorEvents(args []string, stdout, stderr io.Writer) int {
 		limit    int
 		wait     time.Duration
 	)
-	monitorFlags(fs, &jsonOut, stderr)
+	monitorFlags(fs, stderr)
+	fs.BoolVar(&jsonOut, "json", false, "emit one JSON object per event, line-delimited, each carrying schema_version")
 	fs.BoolVar(&all, "all", false, "show the whole retained journal, not just what is new")
 	fs.BoolVar(&follow, "follow", false, "keep printing events as they arrive, until interrupted")
 	fs.StringVar(&consumer, "consumer", "cli", "the identity whose cursor advances; sessions use their own")
 	fs.IntVar(&limit, "limit", 0, "at most this many events (0 = no limit)")
-	fs.DurationVar(&wait, "wait", 0, "wait up to this long for an event when nothing is pending")
+	fs.DurationVar(&wait, "wait", 0, "block up to this long for an event when nothing is pending")
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if follow && wait > 0 {
+		// A follow blocks until it is interrupted, so it sets its own read
+		// horizon and there is nothing --wait could mean. Accepting it would
+		// let a caller believe `--follow --wait 30m` stops after half an hour.
+		fmt.Fprintln(stderr, "shuck: --wait cannot be combined with --follow: a follow already blocks until you interrupt it")
 		return 2
 	}
 
@@ -315,13 +351,74 @@ func monitorEvents(args []string, stdout, stderr io.Writer) int {
 		return monitorFollow(ctx, client, req, jsonOut, stdout, stderr)
 	}
 
-	events, _, err := client.Events(ctx, req)
+	events, err := eventsWithin(ctx, client, req)
 	if err != nil {
+		if ctx.Err() != nil {
+			// Ctrl-C during a wait is how the call ends, not a fault.
+			return 0
+		}
 		fmt.Fprintln(stderr, "shuck:", err)
 		return 2
 	}
 	return emitEvents(stdout, stderr, events, jsonOut, true)
 }
+
+// eventsWithin performs the one-shot read, re-asking until the caller's own
+// --wait has elapsed.
+//
+// The daemon caps a single blocking read at monitor.MaxWait so no client can
+// reserve a goroutine and a connection indefinitely. That cap is the daemon's
+// to set, but it must not leak into the contract: every doc tells an agent to
+// run `shuck monitor events --wait 30m` and treat it as blocking for the full
+// half hour, and a single call would return "nothing new" at ten minutes —
+// exit 0 either way, so the caller cannot tell a quiet half hour from a daemon
+// that hung up two thirds of the way through and walks off with CI still red.
+// Re-asking makes the documented wait the real one.
+func eventsWithin(ctx context.Context, client *monitor.Client, req monitor.Request) ([]monitor.Event, error) {
+	// --all is answered straight from the journal without ever blocking, and a
+	// caller who did not ask to wait has nothing to wait out.
+	if req.All || req.Wait <= 0 {
+		events, _, err := client.Events(ctx, req)
+		return events, err
+	}
+
+	deadline := time.Now().Add(req.Wait)
+	backoff := eventsRetryFloor
+	for {
+		ask := min(time.Until(deadline), monitor.MaxWait)
+		req.Wait = ask
+		start := time.Now()
+		events, _, err := client.Events(ctx, req)
+		if err != nil || len(events) > 0 {
+			return events, err
+		}
+		// Checked after the read rather than before it: a read that comes back
+		// empty is the only thing that moves the clock, and an interrupt has to
+		// end the wait here rather than on the next round trip.
+		if ctx.Err() != nil || !time.Now().Before(deadline) {
+			return nil, nil
+		}
+		if time.Since(start) >= ask {
+			// The daemon held the read for everything it was handed, so the
+			// next ask is simply the next slice of the caller's wait: one dial
+			// per monitor.MaxWait, nothing to pace.
+			continue
+		}
+		// It answered early instead — which the daemon in this binary never
+		// does, but one left over from an older binary might. Re-asking at once
+		// would turn a 30-minute wait into a 30-minute busy loop, so back off
+		// toward the cap and let the deadline end it.
+		if !sleepCtx(ctx, min(backoff, time.Until(deadline))) {
+			return nil, nil
+		}
+		backoff = min(backoff*2, monitor.MaxWait)
+	}
+}
+
+// eventsRetryFloor is the first pause eventsWithin takes after a read that came
+// back sooner than it was asked to block for. It doubles from there, so a
+// daemon that never blocks costs a handful of dials rather than a spinning core.
+const eventsRetryFloor = 10 * time.Millisecond
 
 // followInterval is how long a --follow read blocks before asking again. The
 // daemon wakes it the moment an event lands, so this is only the ceiling on how
@@ -356,7 +453,7 @@ func emitEvents(stdout, stderr io.Writer, events []monitor.Event, jsonOut, quiet
 	if jsonOut {
 		enc := json.NewEncoder(stdout)
 		for _, e := range events {
-			if err := enc.Encode(e); err != nil {
+			if err := enc.Encode(eventDocument{monitorSchemaVersion, e}); err != nil {
 				fmt.Fprintln(stderr, "shuck:", err)
 				return 2
 			}
@@ -379,8 +476,7 @@ func emitEvents(stdout, stderr io.Writer, events []monitor.Event, jsonOut, quiet
 // monitorPoke brings the next check forward, for the moment right after a push.
 func monitorPoke(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("shuck monitor poke", flag.ContinueOnError)
-	var jsonOut bool
-	monitorFlags(fs, &jsonOut, stderr)
+	monitorFlags(fs, stderr)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -414,8 +510,7 @@ func monitorPoke(args []string, stdout, stderr io.Writer) int {
 // monitorStop shuts the daemon down.
 func monitorStop(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("shuck monitor stop", flag.ContinueOnError)
-	var jsonOut bool
-	monitorFlags(fs, &jsonOut, stderr)
+	monitorFlags(fs, stderr)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -487,12 +582,12 @@ func monitorRun(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	resolved, err := resolveToken(token)
-	if err != nil {
-		fmt.Fprintln(stderr, "shuck:", err)
-		return 2
-	}
-
+	// Open the log before anything that can fail. A detached daemon is spawned
+	// with its stderr discarded, so every word written there is lost — and the
+	// client that spawned it tells the user to read the monitor's log, which
+	// this is the only thing that ever creates. Resolving the token first left
+	// the one failure that stops a monitor before it starts ("no GitHub token
+	// found") in the discarded stream, pointing at a file that did not exist.
 	logTo := stderr
 	if detached {
 		dir, err := monitor.Dir()
@@ -507,6 +602,12 @@ func monitorRun(args []string, stdout, stderr io.Writer) int {
 		}
 		defer f.Close()
 		logTo = f
+	}
+
+	resolved, err := resolveToken(token)
+	if err != nil {
+		fmt.Fprintln(logTo, "shuck:", err)
+		return 2
 	}
 
 	// A daemon started by hand keeps running with nothing to watch, because

@@ -67,7 +67,7 @@ func (k Kind) Severity() Severity {
 		// KindError and KindPinsStale are deliberately informational, for the
 		// same reason: neither is work the agent was asked to do. A failed poll
 		// is the monitor's own problem, and a stale action pin is repo hygiene
-		// in a checkout nobody mentioned. Either one held actionable lets a
+		// in a checkout nobody mentioned. Either one, held actionable, lets a
 		// network blip or a superseded actions/checkout keep a finished turn
 		// open and tell the agent to go fix something it did not break. Nothing
 		// is lost by demoting them: hookUserPrompt delivers every event

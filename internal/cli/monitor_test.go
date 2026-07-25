@@ -586,7 +586,7 @@ func TestMonitorEventsFollowThroughTheCLI(t *testing.T) {
 		return monitor.Response{Error: "journal is unreadable"}
 	})
 
-	code, stdout, stderr := runCLI("monitor", "events", "--follow", "--all", "--wait", "1ms", "--limit", "5", "--consumer", "session-9")
+	code, stdout, stderr := runCLI("monitor", "events", "--follow", "--all", "--limit", "5", "--consumer", "session-9")
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2 — the follow ended on a daemon error; stdout=%q stderr=%q", code, stdout, stderr)
 	}
@@ -605,9 +605,9 @@ func TestMonitorEventsFollowThroughTheCLI(t *testing.T) {
 		if r.Op != monitor.OpEvents {
 			t.Errorf("read %d asked for %q, want %q", i+1, r.Op, monitor.OpEvents)
 		}
-		// Following overrides the one-shot flags: --all would re-deliver the
-		// whole journal on every pass, and the caller's 1ms would turn a quiet
-		// feed into a hot loop of dials.
+		// Following overrides --all, which would otherwise re-deliver the whole
+		// journal on every pass. (--wait is rejected outright rather than
+		// overridden — see TestMonitorEventsFollowRejectsWait.)
 		if r.All {
 			t.Errorf("read %d asked for the whole journal", i+1)
 		}
@@ -874,5 +874,314 @@ func TestMonitorStatusPlainWhenNotRunning(t *testing.T) {
 	}
 	if strings.HasPrefix(strings.TrimSpace(stdout), "{") {
 		t.Errorf("the default view must stay prose, got JSON:\n%s", stdout)
+	}
+}
+
+// TestMonitorEventsWaitOutlivesTheDaemonCap is the whole no-polling story in
+// one test. The daemon caps a single blocking read at monitor.MaxWait, so the
+// `--wait 30m` every doc tells an agent to run used to come back "nothing new"
+// after ten minutes — exit 0, same output as a genuinely quiet half hour, so
+// the caller cannot tell the two apart and walks off with CI still red.
+//
+// The fake daemon here answers the first read empty (standing in for the cap
+// expiring) and the second with the failure that landed in between. One read,
+// or a read asking for more than the daemon will honor, is the bug.
+func TestMonitorEventsWaitOutlivesTheDaemonCap(t *testing.T) {
+	round := 0
+	d := startFakeDaemon(t, func(monitor.Request) monitor.Response {
+		round++
+		if round == 1 {
+			return monitor.Response{OK: true, Cursor: 0}
+		}
+		return monitor.Response{OK: true, Cursor: 1, Events: []monitor.Event{
+			{ID: 1, Kind: monitor.KindCIFailed, Target: "o/r#7", Title: "build failed", Body: "boom"},
+		}}
+	})
+
+	code, stdout, stderr := runCLI("monitor", "events", "--wait", "25m")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "build failed") {
+		t.Errorf("stdout = %q, want the failure that arrived after the daemon's cap expired", stdout)
+	}
+	if strings.Contains(stdout, "nothing new") {
+		t.Errorf("stdout = %q, want the wait to outlive one capped read", stdout)
+	}
+
+	reqs := d.seen()
+	if len(reqs) != 2 {
+		t.Fatalf("made %d reads, want 2 — one read means --wait stops at the daemon's cap, not the caller's deadline", len(reqs))
+	}
+	if reqs[0].Wait > monitor.MaxWait {
+		t.Errorf("first read asked for %s; the daemon silently truncates anything over %s, so asking for more is asking to be lied to",
+			reqs[0].Wait, monitor.MaxWait)
+	}
+	if reqs[0].Wait != monitor.MaxWait {
+		t.Errorf("first read asked for %s, want the daemon's full %s — a shorter one turns a wait into a poll loop",
+			reqs[0].Wait, monitor.MaxWait)
+	}
+}
+
+// TestMonitorEventsWaitStopsAtTheDeadline pins the other half of the loop: a
+// wait that expires with nothing to show has to end, and end quietly. Re-asking
+// is only safe because the caller's own deadline bounds it — without that check
+// the command never returns, which is a far worse failure than the capped read
+// it replaced.
+func TestMonitorEventsWaitStopsAtTheDeadline(t *testing.T) {
+	// The real daemon blocks for the wait it is handed, so a round trip costs
+	// what was asked for. This fake answers instantly, so it paces itself
+	// instead — otherwise the loop's own dial rate, not the deadline, would be
+	// what the test measured.
+	d := startFakeDaemon(t, func(monitor.Request) monitor.Response {
+		time.Sleep(5 * time.Millisecond)
+		return monitor.Response{OK: true, Cursor: 0}
+	})
+
+	done := make(chan int, 1)
+	var stdout string
+	go func() {
+		code, out, _ := runCLI("monitor", "events", "--wait", "80ms")
+		stdout = out
+		done <- code
+	}()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("exit = %d, want 0 — a quiet wait is an answer, not a failure", code)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("`monitor events --wait` never returned; the deadline does not bound the loop")
+	}
+	if !strings.Contains(stdout, "nothing new") {
+		t.Errorf("stdout = %q, want an expired wait to say the feed was empty", stdout)
+	}
+	if n := len(d.seen()); n < 2 {
+		t.Errorf("made %d reads, want more than one — the wait outlasted a single empty read", n)
+	}
+}
+
+// TestMonitorEventsFollowRejectsWait covers the combination that used to be
+// accepted and ignored: monitorFollow overwrites Wait with its own interval, so
+// `--follow --wait 30m` ran forever while reading as if it would stop.
+func TestMonitorEventsFollowRejectsWait(t *testing.T) {
+	// The daemon answers with a fault so that a build which still accepts the
+	// combination ends the follow instead of hanging the test out to its
+	// timeout — the failure should read as "the flags were accepted", not as a
+	// dead package.
+	d := startFakeDaemon(t, func(monitor.Request) monitor.Response {
+		return monitor.Response{Error: "journal is unreadable"}
+	})
+
+	code, stdout, stderr := runCLI("monitor", "events", "--follow", "--wait", "30m")
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2; stdout=%q", code, stdout)
+	}
+	if !strings.Contains(stderr, "--wait") || !strings.Contains(stderr, "--follow") {
+		t.Errorf("stderr = %q, want both flags named so the caller knows which to drop", stderr)
+	}
+	if n := len(d.seen()); n != 0 {
+		t.Errorf("made %d reads, want 0 — a rejected combination must not reach the daemon", n)
+	}
+}
+
+// TestMonitorJSONIsRegisteredOnlyWhereItIsRead is the flag-surface contract.
+// unwatch, poke and stop each print one sentence and have no document to emit,
+// so accepting --json there means `shuck monitor unwatch --json | jq` gets
+// prose and exit 0 — a silent lie that no amount of downstream parsing can
+// detect. Rejecting the flag is the only honest answer.
+func TestMonitorJSONIsRegisteredOnlyWhereItIsRead(t *testing.T) {
+	for _, sub := range []string{"unwatch", "poke", "stop"} {
+		t.Run("rejected on "+sub, func(t *testing.T) {
+			monitorHome(t)
+			noDaemonClient(t)
+
+			code, stdout, stderr := runCLI("monitor", sub, "--json")
+			if code != 2 {
+				t.Fatalf("exit = %d, want 2 — %s has no JSON shape to emit; stdout=%q", code, sub, stdout)
+			}
+			if !strings.Contains(stderr, "not defined: -json") {
+				t.Errorf("stderr = %q, want the flag named as unknown", stderr)
+			}
+			if strings.Contains(stdout, "stopped") || strings.Contains(stdout, "not running") {
+				t.Errorf("stdout = %q, want nothing done for a rejected flag", stdout)
+			}
+		})
+	}
+
+	for _, sub := range []string{"status", "watch", "events"} {
+		t.Run("still offered on "+sub, func(t *testing.T) {
+			monitorHome(t)
+			noDaemonClient(t)
+
+			_, _, stderr := runCLI("monitor", sub, "--json")
+			if strings.Contains(stderr, "not defined: -json") {
+				t.Errorf("%s dropped --json, which it does honor: %q", sub, stderr)
+			}
+		})
+	}
+}
+
+// TestMonitorStatusJSONCarriesSchemaVersion pins the version handle every other
+// shuck --json document has. It lives in the CLI's envelope, not in
+// monitor.Status: that type is the daemon's IPC payload, and versioning it
+// would version the wire format between two ends that ship together.
+func TestMonitorStatusJSONCarriesSchemaVersion(t *testing.T) {
+	startFakeDaemon(t, func(monitor.Request) monitor.Response {
+		return monitor.Response{OK: true, Status: &monitor.Status{Running: true, PID: 4242, Version: "v9.9.9"}}
+	})
+
+	code, stdout, stderr := runCLI("monitor", "status", "--json")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+
+	var got struct {
+		SchemaVersion int    `json:"schema_version"`
+		PID           int    `json:"pid"`
+		Version       string `json:"version"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout)
+	}
+	if got.SchemaVersion != monitorSchemaVersion {
+		t.Errorf("schema_version = %d, want %d", got.SchemaVersion, monitorSchemaVersion)
+	}
+	// The envelope wraps without nesting: a consumer already reading .pid must
+	// keep reading it there.
+	if got.PID != 4242 || got.Version != "v9.9.9" {
+		t.Errorf("the status fields moved: %+v\n%s", got, stdout)
+	}
+}
+
+// TestMonitorStatusJSONNotRunningCarriesSchemaVersion covers the answer a
+// consumer most needs to branch on, which is built by the CLI rather than the
+// daemon and so has its own path to the envelope.
+func TestMonitorStatusJSONNotRunningCarriesSchemaVersion(t *testing.T) {
+	monitorHome(t)
+	noDaemonClient(t)
+
+	code, stdout, _ := runCLI("monitor", "status", "--json", "--no-start")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	var got struct {
+		SchemaVersion int   `json:"schema_version"`
+		Running       *bool `json:"running"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout)
+	}
+	if got.SchemaVersion != monitorSchemaVersion {
+		t.Errorf("schema_version = %d, want %d", got.SchemaVersion, monitorSchemaVersion)
+	}
+	if got.Running == nil || *got.Running {
+		t.Errorf("running = %v, want false:\n%s", got.Running, stdout)
+	}
+}
+
+// TestMonitorEventsJSONCarriesSchemaVersionPerLine pins where the version goes
+// in a line-delimited feed: on every line. A consumer that tails the feed, or
+// reads a single line out of a pipe, never sees a header.
+func TestMonitorEventsJSONCarriesSchemaVersionPerLine(t *testing.T) {
+	startFakeDaemon(t, func(monitor.Request) monitor.Response {
+		return monitor.Response{OK: true, Cursor: 2, Events: []monitor.Event{
+			{ID: 1, Kind: monitor.KindCIFailed, Target: "o/r#7", Title: "build failed", Body: "boom"},
+			{ID: 2, Kind: monitor.KindCIPassed, Target: "o/r#7", Title: "checks are green"},
+		}}
+	})
+
+	code, stdout, stderr := runCLI("monitor", "events", "--json")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("got %d lines, want one per event:\n%s", len(lines), stdout)
+	}
+	for i, line := range lines {
+		var got struct {
+			SchemaVersion int          `json:"schema_version"`
+			ID            uint64       `json:"id"`
+			Kind          monitor.Kind `json:"kind"`
+			Body          string       `json:"body"`
+		}
+		if err := json.Unmarshal([]byte(line), &got); err != nil {
+			t.Fatalf("line %d is not JSON: %v\n%s", i+1, err, line)
+		}
+		if got.SchemaVersion != monitorSchemaVersion {
+			t.Errorf("line %d schema_version = %d, want %d", i+1, got.SchemaVersion, monitorSchemaVersion)
+		}
+		if got.ID != uint64(i+1) {
+			t.Errorf("line %d id = %d, want %d — the envelope must not reorder or nest the events", i+1, got.ID, i+1)
+		}
+	}
+	// The event's own fields stay at the top level, where a consumer reads them.
+	if !strings.Contains(lines[0], `"kind":"ci.failed"`) || !strings.Contains(lines[0], `"body":"boom"`) {
+		t.Errorf("the event fields were nested away:\n%s", lines[0])
+	}
+}
+
+// TestMonitorRunDetachedReportsAMissingTokenToTheLog covers the failure a user
+// actually hits: no token, so `shuck monitor` spawns a daemon that dies. The
+// client points them at the monitor's log, and the daemon used to resolve the
+// token before opening it — so the reason went to a stderr the spawn discarded
+// and the log the message named was never created.
+func TestMonitorRunDetachedReportsAMissingTokenToTheLog(t *testing.T) {
+	monitorHome(t)
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	code, _, _ := runCLI("monitor", "run", "--detached")
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 with no token", code)
+	}
+
+	dir, err := monitor.Dir()
+	if err != nil {
+		t.Fatalf("monitor.Dir: %v", err)
+	}
+	logged, err := os.ReadFile(filepath.Join(dir, "daemon.log"))
+	if err != nil {
+		t.Fatalf("the daemon's log is where a user is sent to read this, and nothing created it: %v", err)
+	}
+	if !strings.Contains(string(logged), "no GitHub token") {
+		t.Errorf("daemon.log = %q, want the reason the monitor would not start", logged)
+	}
+}
+
+// TestEventsWithinStopsOnInterrupt keeps Ctrl-C responsive through the re-ask
+// loop. A `--wait 30m` that ignored the interruption would hold the terminal
+// for up to another ten minutes per round, which is the loop turning a fix into
+// a worse bug than the cap it removed. interruptedCtx leaves the daemon
+// reachable and answering, so only the loop's own check can end this.
+func TestEventsWithinStopsOnInterrupt(t *testing.T) {
+	d := startFakeDaemon(t, func(monitor.Request) monitor.Response {
+		return monitor.Response{OK: true, Cursor: 0}
+	})
+	client, err := newMonitorClient()
+	if err != nil {
+		t.Fatalf("newMonitorClient: %v", err)
+	}
+
+	done := make(chan []monitor.Event, 1)
+	go func() {
+		events, err := eventsWithin(interruptedCtx{context.Background()}, client, monitor.Request{Consumer: "cli", Wait: 30 * time.Minute})
+		if err != nil {
+			t.Errorf("eventsWithin: %v", err)
+		}
+		done <- events
+	}()
+	select {
+	case events := <-done:
+		if len(events) != 0 {
+			t.Errorf("events = %+v, want none — the feed was empty when the wait was interrupted", events)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("eventsWithin ignored the interruption and kept waiting")
+	}
+	if n := len(d.seen()); n != 1 {
+		t.Errorf("made %d reads, want 1 — an interrupted wait must not re-ask", n)
 	}
 }

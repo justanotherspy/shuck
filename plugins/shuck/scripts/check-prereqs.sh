@@ -31,7 +31,14 @@ else
   # core (dropping any -prerelease/+build suffix, e.g. a -dirty dev build), and
   # trust anything that is not a plain semver. NOTE: the sort uses a real
   # newline ('\n'), unlike the '\\n' used to build the JSON message below.
-  cur="$(shuck version 2>/dev/null | awk 'NR==1{print $2}' | sed 's/^v//')"
+  #
+  # The `|| true` is what keeps this hook from ever blocking a session: under
+  # `set -euo pipefail` a `shuck version` that exits non-zero (a broken
+  # install, an unreadable binary) fails the whole assignment and kills the
+  # script mid-run — non-zero exit, no JSON, no explanation, from a check whose
+  # entire job is to be advisory. Swallowing it leaves `cur` empty, which falls
+  # through the semver test into the intended "trust it" branch.
+  cur="$(shuck version 2>/dev/null | awk 'NR==1{print $2}' | sed 's/^v//')" || true
   core="${cur%%-*}"
   core="${core%%+*}"
   if printf '%s' "$core" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
