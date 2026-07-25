@@ -15,9 +15,10 @@
 set -euo pipefail
 
 # First release with the background monitor (`shuck monitor`), which the
-# plugin's hooks drive. Bump this when a future release changes the minimum the
-# plugin relies on.
-MIN_VERSION="0.5.0"
+# plugin's hooks drive. v0.4.3 was the last release before it, so there is no
+# 0.5.x — the monitor and this floor both arrive in 1.0.0. Bump this when a
+# future release changes the minimum the plugin relies on.
+MIN_VERSION="1.0.0"
 
 problems=""
 
