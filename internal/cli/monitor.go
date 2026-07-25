@@ -115,6 +115,17 @@ type eventDocument struct {
 	monitor.Event
 }
 
+// watchDocument is the `shuck monitor watch --json` envelope. Watch was the one
+// monitor document emitted bare, which is worse than either choice on its own:
+// a consumer that branches on schema_version got nothing from it while status
+// and events both carried one. Like those two it embeds rather than nests, so
+// the watch's own fields — `.id` above all, the identity the daemon keys every
+// watch on — stay where a consumer already reads them.
+type watchDocument struct {
+	SchemaVersion int `json:"schema_version"`
+	monitor.Watch
+}
+
 // newMonitorClient builds the client the monitor subcommands talk through. It
 // is a package var so tests can point the CLI at a fake daemon.
 var newMonitorClient = monitor.NewClient
@@ -224,7 +235,7 @@ func monitorWatch(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("shuck monitor watch", flag.ContinueOnError)
 	var jsonOut bool
 	monitorFlags(fs, stderr)
-	fs.BoolVar(&jsonOut, "json", false, "emit the registered watch as JSON instead of text")
+	fs.BoolVar(&jsonOut, "json", false, "emit the registered watch as one JSON document (with schema_version) instead of text")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -261,12 +272,23 @@ func monitorWatch(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "shuck:", err)
 		return 2
 	}
-	if jsonOut {
-		return emitJSON(stdout, stderr, watch)
-	}
 	if watch == nil {
+		// The daemon in this binary always answers a watch with the record it
+		// stored, so a nil one means something else is on the socket — a daemon
+		// from an older build, most likely. The registration itself went
+		// through, which is all the text line ever claimed, so that stays a
+		// success. A --json caller is asking for the record: embedding a zero
+		// Watch would hand back an empty id and a year-1 `added` that read as a
+		// real watch, so it gets the failure instead.
+		if jsonOut {
+			fmt.Fprintln(stderr, "shuck: the monitor registered the watch but returned no record of it")
+			return 2
+		}
 		fmt.Fprintln(stdout, "watching")
 		return 0
+	}
+	if jsonOut {
+		return emitJSON(stdout, stderr, watchDocument{monitorSchemaVersion, *watch})
 	}
 	fmt.Fprintf(stdout, "watching %s\n", watch.Describe())
 	return 0

@@ -1123,6 +1123,89 @@ func TestMonitorEventsJSONCarriesSchemaVersionPerLine(t *testing.T) {
 	}
 }
 
+// TestMonitorWatchJSONCarriesSchemaVersion pins the last monitor document that
+// went out bare. status and events both carry the handle, so a consumer that
+// branches on schema_version used to get nothing from watch alone — the worst
+// of both choices.
+func TestMonitorWatchJSONCarriesSchemaVersion(t *testing.T) {
+	startFakeDaemon(t, func(req monitor.Request) monitor.Response {
+		if req.Op != monitor.OpWatch || req.Watch == nil {
+			return monitor.Response{Error: "unexpected request"}
+		}
+		stored := *req.Watch
+		return monitor.Response{OK: true, Watch: &stored}
+	})
+	t.Setenv("GITHUB_TOKEN", "test-token")
+
+	code, stdout, stderr := runCLI("monitor", "watch", "--json", "o/r#7")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+
+	var got struct {
+		SchemaVersion int               `json:"schema_version"`
+		ID            string            `json:"id"`
+		Kind          monitor.WatchKind `json:"kind"`
+		Number        int               `json:"number"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout)
+	}
+	if got.SchemaVersion != monitorSchemaVersion {
+		t.Errorf("schema_version = %d, want %d", got.SchemaVersion, monitorSchemaVersion)
+	}
+	// The envelope wraps without nesting: `.id` is the identity the daemon keys
+	// the watch on, so it has to stay where a consumer already reads it.
+	if got.ID != monitor.PRWatchID("o", "r", 7) || got.Kind != monitor.WatchPR || got.Number != 7 {
+		t.Errorf("the watch fields moved or changed: %+v\n%s", got, stdout)
+	}
+	// --json replaces the text view rather than joining it.
+	if strings.Contains(stdout, "watching ") {
+		t.Errorf("--json emitted the text line too:\n%s", stdout)
+	}
+}
+
+// TestMonitorWatchWithNoRecordReturned covers a daemon that answers OK without
+// the watch it stored — nothing this binary's daemon does, but an older one on
+// the socket might. The registration went through either way, so the text line
+// still reports success; --json cannot, because the only honest document is one
+// it does not have. Emitting a zero-valued Watch instead would hand a consumer
+// an empty id and a year-1 timestamp that read as a real record.
+func TestMonitorWatchWithNoRecordReturned(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		args     []string
+		wantCode int
+	}{
+		{"text says it is watching", []string{"monitor", "watch", "o/r#7"}, 0},
+		{"json refuses to invent one", []string{"monitor", "watch", "--json", "o/r#7"}, 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			startFakeDaemon(t, func(monitor.Request) monitor.Response {
+				return monitor.Response{OK: true}
+			})
+			t.Setenv("GITHUB_TOKEN", "test-token")
+
+			code, stdout, stderr := runCLI(tt.args...)
+			if code != tt.wantCode {
+				t.Fatalf("exit = %d, want %d; stdout=%q stderr=%q", code, tt.wantCode, stdout, stderr)
+			}
+			if tt.wantCode == 0 {
+				if !strings.Contains(stdout, "watching") {
+					t.Errorf("stdout = %q, want the registration reported", stdout)
+				}
+				return
+			}
+			if stdout != "" {
+				t.Errorf("stdout = %q, want nothing where a document should be", stdout)
+			}
+			if !strings.Contains(stderr, "no record") {
+				t.Errorf("stderr = %q, want the missing record named", stderr)
+			}
+		})
+	}
+}
+
 // TestMonitorRunDetachedReportsAMissingTokenToTheLog covers the failure a user
 // actually hits: no token, so `shuck monitor` spawns a daemon that dies. The
 // client points them at the monitor's log, and the daemon used to resolve the

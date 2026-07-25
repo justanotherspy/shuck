@@ -93,22 +93,29 @@ func TestScanPinsReportsEachFindingOnce(t *testing.T) {
 	}
 }
 
-// TestScanPinsSkipsUnchangedFiles is the budget guard: the daemon calls this
-// every tick, and resolving an action's releases is a network call.
-func TestScanPinsSkipsUnchangedFiles(t *testing.T) {
+// TestScanPinsBudgetsItsNetworkWork is one half of the pin budget: the daemon
+// calls this for every watched tree on every one-second tick, and resolving an
+// action's latest release is an API call. It also pins the contract auditPins
+// leans on to decide whether to persist — a scan that was not due hands back
+// the state it was given, deadline included.
+func TestScanPinsBudgetsItsNetworkWork(t *testing.T) {
 	d, _ := newTestDaemon(t, newFakeClient())
 	resolver := &stubResolver{tag: "v4.2.2", sha: "abc"}
 	d.opts.PinResolver = resolver
 
 	dir := workflowTree(t, unpinnedWorkflow)
-	st, _ := d.scanPins(context.Background(), pinState{Path: dir}, now)
+	first, _ := d.scanPins(context.Background(), pinState{Path: dir}, now)
 	calls := resolver.calls
 
+	st := first
 	for i := range 10 {
-		st, _ = d.scanPins(context.Background(), st, now.Add(time.Duration(i)*time.Second))
+		st, _ = d.scanPins(context.Background(), st, now.Add(time.Duration(i+1)*time.Second))
+		if !st.same(first) {
+			t.Fatalf("tick %d returned %+v, want the state untouched — auditPins persists anything else", i+1, st)
+		}
 	}
 	if resolver.calls != calls {
-		t.Errorf("resolver called %d more times over ten ticks with unchanged files, want 0", resolver.calls-calls)
+		t.Errorf("resolver called %d more times over ten ticks inside the interval, want 0", resolver.calls-calls)
 	}
 }
 
@@ -256,6 +263,45 @@ func TestDaemonAuditPinsAcrossWatchedTrees(t *testing.T) {
 	}
 	if _, ok := restarted.pins[dir]; !ok {
 		t.Error("pin state did not survive the restart")
+	}
+}
+
+// TestDaemonAuditPinsWritesOnlyWhenSomethingChanged guards the disk: auditPins
+// runs on every one-second tick, and savePinsLocked marshals the whole pin map
+// and rewrites pins.json. Doing that for a tick that learned nothing puts a
+// write per watched tree per second behind a session that lasts hours.
+func TestDaemonAuditPinsWritesOnlyWhenSomethingChanged(t *testing.T) {
+	d, _ := newTestDaemon(t, newFakeClient())
+	d.opts.NoPins = false
+	d.opts.PinResolver = &stubResolver{tag: "v4.2.2", sha: "abc"}
+
+	dir := workflowTree(t, unpinnedWorkflow)
+	d.watches.Add(Watch{ID: TreeWatchID(dir), Kind: WatchTree, Path: dir})
+
+	d.auditPins(context.Background(), now)
+	// Removing the file is what makes a later write observable: nothing but
+	// savePinsLocked ever puts it back.
+	if err := os.Remove(d.pinsPath()); err != nil {
+		t.Fatalf("the first audit should have persisted the tree's state: %v", err)
+	}
+
+	for i := range 10 {
+		d.auditPins(context.Background(), now.Add(time.Duration(i+1)*time.Second))
+	}
+	if _, err := os.Stat(d.pinsPath()); !os.IsNotExist(err) {
+		t.Errorf("pins.json was rewritten by ticks with nothing to record (stat err = %v)", err)
+	}
+
+	// The other side of it: a scan that ran and found nothing new still moved
+	// its deadline, and that has to reach disk — otherwise the deadline never
+	// advances and the tree is re-read on every tick from then on.
+	d.auditPins(context.Background(), now.Add(pinScanInterval+time.Minute))
+	var stored []pinState
+	if err := readJSONFile(d.pinsPath(), &stored); err != nil {
+		t.Fatalf("a scan that moved the deadline was not persisted: %v", err)
+	}
+	if len(stored) != 1 || !stored[0].NextScan.After(now.Add(pinScanInterval)) {
+		t.Errorf("persisted %+v, want the advanced scan deadline", stored)
 	}
 }
 

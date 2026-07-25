@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/justanotherspy/shuck/internal/cache"
 	"github.com/justanotherspy/shuck/internal/gh"
 	"github.com/justanotherspy/shuck/internal/logs"
 	"github.com/justanotherspy/shuck/internal/pins"
@@ -22,6 +23,25 @@ import (
 // a few map lookups and a stat of each watched HEAD) and it is what makes a
 // branch switch show up immediately rather than at the next poll.
 const tick = time.Second
+
+// cachePurgeInterval and cachePurgeTTL govern the daemon's sweep of shuck's
+// inspection cache — see Daemon.sweepCache for why the daemon sweeps at all.
+//
+// The interval is long because a sweep walks the whole cache tree while the
+// daemon wakes every second; an extra hour of dead logs on disk is cheaper than
+// a filesystem walk per tick. The TTL is a day rather than the report commands'
+// hour because the monitor puts a cached log's path in the event body and
+// expects it to still be there when someone reads it, and a day outlives
+// DefaultWatchTTL.
+//
+// It is a ceiling, not a guarantee: a report command sweeping the same cache
+// purges at its own, shorter TTL and can reclaim a monitor's log sooner. That is
+// why an event body carries the failing step's text as well as the path — the
+// path is the rest of the log, not the only copy of it.
+const (
+	cachePurgeInterval = time.Hour
+	cachePurgeTTL      = 24 * time.Hour
+)
 
 // Options configures a daemon run.
 type Options struct {
@@ -73,6 +93,11 @@ type Daemon struct {
 
 	journal   *journal
 	startedAt time.Time
+
+	// nextPurge is when the cache sweep is next due. Only round touches it, and
+	// round only ever runs on the run loop's own goroutine, so — unlike the
+	// state above — it needs no lock.
+	nextPurge time.Time
 
 	// stop is closed to bring the run loop down; stopOnce guards it against
 	// a client and a signal racing to shut down.
@@ -211,6 +236,7 @@ func (d *Daemon) round(ctx context.Context, now time.Time) bool {
 		return false
 	}
 	d.auditPins(ctx, now)
+	d.sweepCache(now)
 
 	d.mu.Lock()
 	empty := d.watches.Len() == 0
@@ -539,7 +565,9 @@ func (d *Daemon) targetsPath() string { return filepath.Join(d.paths.dir, "targe
 
 func (d *Daemon) pinsPath() string { return filepath.Join(d.paths.dir, "pins.json") }
 
-// loadPins restores the per-tree workflow-pin fingerprints.
+// loadPins restores what the daemon already knows about each watched tree's
+// pins: when the tree is next due a scan, and which findings it has already
+// reported.
 func (d *Daemon) loadPins() {
 	var stored []pinState
 	if readJSONFile(d.pinsPath(), &stored) != nil {
@@ -555,8 +583,10 @@ func (d *Daemon) loadPins() {
 
 // auditPins re-audits each watched working tree's workflow files, reporting
 // references that are not SHA-pinned or whose pin has fallen behind. It runs
-// after the PR polls so a round's expensive work is done before its cheap
-// work, and it is skipped entirely when the tree's files have not changed.
+// after the PR polls so a round's expensive work is done before its cheap work,
+// and each tree is read at most once every pinScanInterval — scanPins holds
+// that deadline, because a round happens every second and reading a .github
+// directory that often to learn what only a human edit changes is waste.
 func (d *Daemon) auditPins(ctx context.Context, now time.Time) {
 	if d.opts.NoPins {
 		return
@@ -579,11 +609,21 @@ func (d *Daemon) auditPins(ctx context.Context, now time.Time) {
 	d.mu.Unlock()
 
 	for _, path := range trees {
-		updated, events := d.scanPins(ctx, states[path], now)
-		d.mu.Lock()
-		d.pins[path] = &updated
-		d.savePinsLocked()
-		d.mu.Unlock()
+		previous := states[path]
+		updated, events := d.scanPins(ctx, previous, now)
+		// Storing unconditionally would marshal the whole pin map and rewrite
+		// pins.json once a second per watched tree for the whole life of a
+		// session, to record what it recorded a second ago. The overwhelmingly
+		// common outcome is a scan that was not due and so changed nothing —
+		// and "changed" has to include the moved deadline, or a scan that found
+		// nothing new would never persist its own pacing and the tree would be
+		// re-read on every tick after all.
+		if !updated.same(previous) {
+			d.mu.Lock()
+			d.pins[path] = &updated
+			d.savePinsLocked()
+			d.mu.Unlock()
+		}
 		d.publish(events)
 	}
 }
@@ -595,6 +635,32 @@ func (d *Daemon) savePinsLocked() {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	_ = writeJSONFile(d.pinsPath(), out)
+}
+
+// sweepCache reclaims entries of shuck's inspection cache that nothing has
+// touched in cachePurgeTTL.
+//
+// The daemon has to be one of the things that sweeps, because it is the only
+// part of shuck that writes to that cache without ever running a report
+// command: it caches a failing job's whole raw log so the event body can point
+// at it. For someone whose whole use of shuck is `shuck monitor`, no other
+// sweep ever runs, and those logs accumulate for as long as the machine lives.
+//
+// keep is empty, unlike the report commands' call, which exempts the one entry
+// the run in front of you is writing. The daemon has no single such entry — it
+// polls every watched target — and it does not need one: cachePurgeTTL is
+// orders of magnitude longer than a poll, so an entry this daemon is midway
+// through writing is nowhere near old enough to be a candidate.
+//
+// Purging is advisory, so a failure is logged and the round carries on.
+func (d *Daemon) sweepCache(now time.Time) {
+	if now.Before(d.nextPurge) {
+		return
+	}
+	d.nextPurge = now.Add(cachePurgeInterval)
+	if err := cache.Purge(cachePurgeTTL, ""); err != nil {
+		d.logf("cache sweep: %v", err)
+	}
 }
 
 // cleanup removes the files that advertise a running daemon. A client that

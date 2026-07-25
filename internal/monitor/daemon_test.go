@@ -5,11 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/justanotherspy/shuck/internal/cache"
 	"github.com/justanotherspy/shuck/internal/gh"
 	"github.com/justanotherspy/shuck/internal/model"
 )
@@ -440,6 +442,57 @@ func TestDaemonPublishIgnoresEmptyBatches(t *testing.T) {
 	if d.journal.Latest() != 0 {
 		t.Error("an empty batch should not touch the journal")
 	}
+}
+
+// TestDaemonRoundSweepsTheCache is why the daemon purges at all. It writes a
+// failing job's whole raw log into shuck's inspection cache so the event body
+// can point at it, and it never runs a report command — so for someone whose
+// entire use of shuck is `shuck monitor`, nothing else ever reclaims them.
+func TestDaemonRoundSweepsTheCache(t *testing.T) {
+	t.Setenv("SHUCK_HOME", t.TempDir())
+	d, _ := newTestDaemon(t, newFakeClient())
+
+	stale := cachedJobLog(t, 7, time.Now().Add(-cachePurgeTTL-time.Hour))
+	fresh := cachedJobLog(t, 8, time.Now())
+
+	start := time.Now()
+	d.round(context.Background(), start)
+
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("a job log untouched for %v survived the round (stat err = %v)", cachePurgeTTL, err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Errorf("the sweep took a log the monitor had just cached: %v", err)
+	}
+
+	// And it is paced, because a sweep walks the whole cache tree while the
+	// daemon wakes once a second.
+	next := cachedJobLog(t, 9, time.Now().Add(-cachePurgeTTL-time.Hour))
+	d.round(context.Background(), start.Add(time.Minute))
+	if _, err := os.Stat(next); err != nil {
+		t.Errorf("the cache was swept again a minute later: %v", err)
+	}
+	d.round(context.Background(), start.Add(cachePurgeInterval+time.Minute))
+	if _, err := os.Stat(next); !os.IsNotExist(err) {
+		t.Errorf("the sweep never came back round (stat err = %v)", err)
+	}
+}
+
+// cachedJobLog caches a raw job log for PR pr exactly as the monitor does,
+// backdates it to mod, and returns its path.
+func cachedJobLog(t *testing.T, pr int, mod time.Time) string {
+	t.Helper()
+	if err := cache.SaveJobLog("o", "r", pr, 11, 1, "raw log\n"); err != nil {
+		t.Fatal(err)
+	}
+	path, err := cache.JobLogPath("o", "r", pr, 11, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, mod, mod); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestDaemonRoundPollsAndJournals(t *testing.T) {

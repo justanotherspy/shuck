@@ -3,6 +3,7 @@ package monitor
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -37,6 +38,16 @@ type pinState struct {
 	// reference, so an unpinned action you have chosen not to fix is mentioned
 	// once rather than every time you touch the file.
 	Reported []string `json:"reported,omitempty"`
+}
+
+// same reports whether a scan left the state exactly as it found it, so the
+// daemon can skip persisting it. The deadline counts as state: a scan that ran
+// and found nothing new still moved NextScan, and calling that "unchanged"
+// would drop the new deadline on the floor and re-read the tree next tick.
+func (st pinState) same(other pinState) bool {
+	return st.Path == other.Path &&
+		st.NextScan.Equal(other.NextScan) &&
+		slices.Equal(st.Reported, other.Reported)
 }
 
 // scanPins audits a working tree's workflow files and returns the events for
