@@ -13,8 +13,8 @@
 // Everything is local. There is no webhook, no server to deploy, and no
 // credential beyond the GitHub token the CLI already uses. The daemon owns one
 // lock file, one socket, and one append-only journal under ~/.cache/shuck/monitor;
-// short-lived clients (the `shuck monitor` subcommands, the MCP tools, and the
-// Claude Code hooks) connect, ask a question, and exit.
+// short-lived clients (the `shuck monitor` subcommands and the Claude Code
+// hooks) connect, ask a question, and exit.
 //
 // The package is layered so the interesting parts are testable without a
 // network or a running daemon:

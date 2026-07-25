@@ -176,7 +176,7 @@ func hookSessionStart(ctx context.Context, c *Client, in hookInput) *hookOutput 
 		// token. Say so once, quietly, rather than failing the session.
 		return context_(HookSessionStart, fmt.Sprintf(
 			"The shuck background monitor is not running (%v). CI and review feedback will "+
-				"not arrive on its own; use `shuck <pr>` or the shuck MCP tools when you need it.", err))
+				"not arrive on its own; run `shuck <pr>` or `shuck logs <pr>` when you need it.", err))
 	}
 	// Fast-forward only for a session that is genuinely starting. SessionStart
 	// also fires on resume and on compaction, and seeking then would throw
@@ -223,8 +223,8 @@ func sessionStartContext(ctx context.Context, c *Client, w *Watch) string {
 		"\nIt tracks whichever pull request the current branch belongs to and retargets itself " +
 			"when you switch branches or worktrees. New CI failures, review comments, and stale " +
 			"GitHub Action pins will be delivered to you automatically as <shuck-monitor> blocks — " +
-			"you do not need to poll for them. To ask it something directly, use the monitor_status " +
-			"/ monitor_events / monitor_watch MCP tools, or `shuck monitor status`.")
+			"you do not need to poll for them. To ask it something directly, run `shuck monitor status`, " +
+			"or `shuck monitor events --wait 10m` to block until there is something to know.")
 
 	if st, err := c.Status(ctx, ""); err == nil && len(st.Targets) > 1 {
 		fmt.Fprintf(&b, "\nIt is also watching: %s.", otherTargets(st, w))

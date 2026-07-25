@@ -1,22 +1,18 @@
 // Package setup installs shuck's Claude Code integration for users who do not use
 // the plugin marketplace. `shuck setup` writes the shuck skill into the Claude
-// config directory, adds a managed note to the user's CLAUDE.md, and optionally
-// registers the local MCP server at user scope. Re-running refreshes the skill
-// and the note in place when either has drifted from this binary's copies.
+// config directory and adds a managed note to the user's CLAUDE.md. Re-running
+// refreshes the skill and the note in place when either has drifted from this
+// binary's copies.
 package setup
 
 import (
-	"bufio"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-
-	"golang.org/x/term"
 )
 
 // claudeBegin/claudeEnd delimit shuck's managed section in the user's CLAUDE.md
@@ -28,9 +24,10 @@ const (
 
 // claudeNote is the body shuck keeps between the markers in the user's CLAUDE.md.
 // It names the `shuck` skill so the agent reaches for it, and enumerates the
-// scenarios shuck covers so the agent knows when to. shuck is reachable through
-// the skill (which drives the CLI) or the MCP tools, so both are mentioned.
-const claudeNote = "## shuck — GitHub PR & CI triage (skill + CLI + MCP)\n" +
+// scenarios shuck covers so the agent knows when to. It leads with the monitor,
+// because the loop that matters most is the one the agent does not have to
+// remember to start: push, then get told.
+const claudeNote = "## shuck — GitHub PR & CI triage (skill + CLI)\n" +
 	"\n" +
 	"`shuck` shucks the husk and keeps the kernel: it returns the **exact failing\n" +
 	"CI step logs** for a GitHub PR — and covers the rest of PR/repo hygiene —\n" +
@@ -38,71 +35,50 @@ const claudeNote = "## shuck — GitHub PR & CI triage (skill + CLI + MCP)\n" +
 	"**Whenever a GitHub Actions run, a PR, or a repo-hygiene question is in play,\n" +
 	"reach for the `shuck` skill first.**\n" +
 	"\n" +
-	"Invoke the **`shuck` skill** for the full playbook. It drives shuck either way —\n" +
-	"the `shuck` CLI (Bash; add `--json` for structured output) or the shuck **MCP\n" +
-	"tools** — same engine, same data, so use whichever is wired up. Only the CLI\n" +
-	"can `--watch` CI to completion; the MCP tools are one-shot snapshots.\n" +
+	"Invoke the **`shuck` skill** for the full playbook. It drives the `shuck` CLI\n" +
+	"(Bash; add `--json` to any report for structured output).\n" +
 	"\n" +
 	"Reach for shuck to:\n" +
 	"\n" +
-	"- **Monitor a PR to a verdict.** Every time you open a PR or push new commits,\n" +
-	"  start `shuck --watch --exit-code <pr>` in the background and act on the\n" +
-	"  result — green, or the exact failing-step logs. Close the loop on every push.\n" +
-	"- **Debug why CI is red.** `shuck logs <pr>` / `inspect_logs` returns each\n" +
-	"  failed step's command and error excerpt — for a PR, a single run/job URL, or\n" +
-	"  a specific re-run attempt.\n" +
+	"- **Find out when your PR breaks, without asking.** `shuck monitor watch`\n" +
+	"  registers this working tree with a local background daemon; it follows the\n" +
+	"  branch you are on, finds its open PR, and reports new CI failures, review\n" +
+	"  comments, and stale action pins as they happen. `shuck monitor status`\n" +
+	"  answers \"is it green?\"; `shuck monitor events --wait 10m` blocks until\n" +
+	"  there is something to know, instead of sleeping and re-checking.\n" +
+	"- **Debug why CI is red.** `shuck logs <pr>` returns each failed step's\n" +
+	"  command and error excerpt — for a PR, a single run/job URL, or a specific\n" +
+	"  re-run attempt.\n" +
 	"- **Grab a run's archived artifacts.** `shuck logs --run <id|url>\n" +
-	"  --download-artifacts <dir>` (MCP: `download_artifacts`) lists what a run\n" +
-	"  uploaded and extracts each artifact zip to `<dir>/<name>/`.\n" +
-	"- **See what reviewers asked for.** `shuck reviews <pr>` / `inspect_reviews`.\n" +
-	"- **Triage security alerts.** `shuck security` / `inspect_security` — code\n" +
-	"  scanning, secret scanning, Dependabot.\n" +
-	"- **Check settings against policy.** `shuck compliance` / `check_compliance`\n" +
-	"  vs a committed `.github/compliance.yml`.\n" +
-	"- **Audit Dependabot coverage.** `shuck dependabot` / `audit_dependabot`.\n" +
-	"- **Pin Actions and images.** `shuck action actions/checkout@v4` /\n" +
-	"  `inspect_action` resolves an Action's latest tag + commit SHA; `shuck image`\n" +
-	"  / `inspect_images` resolves a GHCR image's latest digest.\n" +
-	"\n" +
-	"MCP tools: `inspect_logs`, `inspect_reviews`, `inspect_security`,\n" +
-	"`check_compliance`, `audit_dependabot`, `inspect_action`, `inspect_images`.\n" +
+	"  --download-artifacts <dir>` lists what a run uploaded and extracts each\n" +
+	"  artifact zip to `<dir>/<name>/`.\n" +
+	"- **See what reviewers asked for.** `shuck reviews <pr>`.\n" +
+	"- **Triage security alerts.** `shuck security` — code scanning, secret\n" +
+	"  scanning, Dependabot.\n" +
+	"- **Check settings against policy.** `shuck compliance` vs a committed\n" +
+	"  `.github/compliance.yml`.\n" +
+	"- **Audit Dependabot coverage.** `shuck dependabot`.\n" +
+	"- **Pin Actions and images.** `shuck pins` audits a checkout's workflows for\n" +
+	"  unpinned or stale `uses:` references and prints the corrected line;\n" +
+	"  `shuck action actions/checkout@v4` resolves one Action's latest tag +\n" +
+	"  commit SHA, and `shuck image` a GHCR image's latest digest.\n" +
 	"\n" +
 	"Install/keep current with `shuck upgrade`; manage this note and the skill with\n" +
 	"`shuck setup`."
 
-const (
-	mcpName    = "shuck"
-	mcpCommand = "shuck"
-)
-
-// lookPath and runCommand are indirected so tests can stub the claude CLI.
-var (
-	lookPath   = exec.LookPath
-	runCommand = func(name string, args ...string) ([]byte, error) {
-		return exec.Command(name, args...).CombinedOutput()
-	}
-)
-
 type options struct {
-	mcp          bool
-	noMCP        bool
 	dryRun       bool
 	refreshSkill bool
 }
 
-// Run executes `shuck setup`. skill is the embedded SKILL.md content; stdin is
-// used to prompt about the optional MCP step when it is a terminal. It returns a
-// process exit code: 0 on success, 2 on a usage or write error.
-func Run(args []string, skill string, stdin io.Reader, stdout, stderr io.Writer) int {
+// Run executes `shuck setup`. skill is the embedded SKILL.md content. It returns
+// a process exit code: 0 on success, 2 on a usage or write error.
+func Run(args []string, skill string, stdout, stderr io.Writer) int {
 	o, err := parse(args, stderr)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
-		return 2
-	}
-	if o.mcp && o.noMCP {
-		fmt.Fprintln(stderr, "shuck: --mcp and --no-mcp are mutually exclusive")
 		return 2
 	}
 
@@ -115,8 +91,8 @@ func Run(args []string, skill string, stdin io.Reader, stdout, stderr io.Writer)
 	// --refresh-skill is the in-place refresh path `shuck upgrade` invokes on the
 	// freshly-installed binary: bring the *already-installed* skill and managed
 	// CLAUDE.md note up to date with this binary's embedded copies, but create
-	// nothing new and never touch the MCP or prompt. A user who never ran
-	// `shuck setup` has neither artifact, so both steps are quiet no-ops for them.
+	// nothing new. A user who never ran `shuck setup` has neither artifact, so
+	// both steps are quiet no-ops for them.
 	if o.refreshSkill {
 		if err := refreshInstalledSkill(dir, skill, o.dryRun, stdout); err != nil {
 			fmt.Fprintln(stderr, "shuck:", err)
@@ -137,7 +113,6 @@ func Run(args []string, skill string, stdin io.Reader, stdout, stderr io.Writer)
 		fmt.Fprintln(stderr, "shuck:", err)
 		return 2
 	}
-	maybeInstallMCP(o, stdin, stdout, stderr)
 	return 0
 }
 
@@ -145,8 +120,8 @@ func parse(args []string, stderr io.Writer) (options, error) {
 	fs := flag.NewFlagSet("shuck setup", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "shuck setup — install the shuck skill into your Claude config, add a note to your")
-		fmt.Fprintln(stderr, "CLAUDE.md, and optionally register the shuck MCP server at user scope.")
+		fmt.Fprintln(stderr, "shuck setup — install the shuck skill into your Claude config and add a note to")
+		fmt.Fprintln(stderr, "your CLAUDE.md.")
 		fmt.Fprintln(stderr)
 		fmt.Fprintln(stderr, "Writes under $CLAUDE_CONFIG_DIR (default ~/.claude). Re-running is safe: the skill")
 		fmt.Fprintln(stderr, "and the CLAUDE.md block are refreshed in place.")
@@ -154,10 +129,8 @@ func parse(args []string, stderr io.Writer) (options, error) {
 		fs.PrintDefaults()
 	}
 	var o options
-	fs.BoolVar(&o.mcp, "mcp", false, "register the shuck MCP server at user scope without prompting")
-	fs.BoolVar(&o.noMCP, "no-mcp", false, "skip the MCP server step without prompting")
 	fs.BoolVar(&o.dryRun, "dry-run", false, "report what would change without writing anything")
-	fs.BoolVar(&o.refreshSkill, "refresh-skill", false, "refresh the already-installed skill and CLAUDE.md note in place (used by `shuck upgrade`); creates nothing new and skips the MCP step")
+	fs.BoolVar(&o.refreshSkill, "refresh-skill", false, "refresh the already-installed skill and CLAUDE.md note in place (used by `shuck upgrade`); creates nothing new")
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
 	}
@@ -338,89 +311,4 @@ func spliceSection(content, block string) (result, verb string) {
 		return trimmed + "\n\n" + block, "added"
 	}
 	return block, "added"
-}
-
-// maybeInstallMCP decides whether to register the user-scope MCP server (per the
-// flags or an interactive prompt) and acts on it.
-func maybeInstallMCP(o options, stdin io.Reader, stdout, stderr io.Writer) {
-	want := false
-	switch {
-	case o.noMCP:
-		fmt.Fprintln(stdout, "skipping MCP server registration (--no-mcp)")
-	case o.mcp:
-		want = true
-	case isInteractive(stdin):
-		want = promptYesNo(stdin, stdout, "Register the shuck MCP server at user scope? [y/N] ")
-		if !want {
-			fmt.Fprintln(stdout, "skipping MCP server registration")
-		}
-	default:
-		fmt.Fprintln(stdout, "not registering the MCP server (no TTY; re-run with --mcp to install it).")
-		printMCPInstructions(stdout)
-	}
-	if !want {
-		return
-	}
-	if o.dryRun {
-		fmt.Fprintln(stdout, "[dry-run] would register the shuck MCP server at user scope")
-		return
-	}
-	installMCP(stdout, stderr)
-}
-
-// installMCP registers the shuck MCP server at user scope. It prefers the claude
-// CLI (`claude mcp add --scope user shuck -- shuck mcp`); if claude is not on
-// PATH or the command fails, it prints manual instructions. It never fails the
-// overall setup — the skill and CLAUDE.md note are already in place.
-func installMCP(stdout, stderr io.Writer) {
-	claude, err := lookPath("claude")
-	if err != nil {
-		fmt.Fprintln(stdout, "claude CLI not found on PATH; register the MCP server manually:")
-		printMCPInstructions(stdout)
-		return
-	}
-	out, err := runCommand(claude, "mcp", "add", "--scope", "user", mcpName, "--", mcpCommand, "mcp")
-	if err != nil {
-		fmt.Fprintf(stderr, "shuck: `claude mcp add` failed: %v\n", err)
-		if trimmed := strings.TrimRight(string(out), "\n"); trimmed != "" {
-			fmt.Fprintln(stderr, trimmed)
-		}
-		fmt.Fprintln(stdout, "register the MCP server manually:")
-		printMCPInstructions(stdout)
-		return
-	}
-	fmt.Fprintln(stdout, "registered the shuck MCP server at user scope (claude mcp add --scope user)")
-}
-
-func printMCPInstructions(stdout io.Writer) {
-	fmt.Fprintln(stdout, "  claude mcp add --scope user shuck -- shuck mcp")
-	fmt.Fprintln(stdout, `or add this to your MCP config (e.g. the "mcpServers" map in ~/.claude.json):`)
-	fmt.Fprintln(stdout, `  "shuck": { "command": "shuck", "args": ["mcp"] }`)
-}
-
-// isInteractive reports whether r is a real terminal, used to decide whether to
-// prompt about the optional MCP step. A pipe, file, or /dev/null is not a
-// terminal, so non-interactive runs skip the prompt and stay scriptable.
-func isInteractive(r io.Reader) bool {
-	f, ok := r.(*os.File)
-	if !ok {
-		return false
-	}
-	return term.IsTerminal(int(f.Fd()))
-}
-
-// promptYesNo writes prompt to w and reads a line from r, returning true only for
-// an explicit yes (y/yes, case-insensitive). EOF or anything else is a no.
-func promptYesNo(r io.Reader, w io.Writer, prompt string) bool {
-	fmt.Fprint(w, prompt)
-	line, err := bufio.NewReader(r).ReadString('\n')
-	if err != nil && line == "" {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(line)) {
-	case "y", "yes":
-		return true
-	default:
-		return false
-	}
 }

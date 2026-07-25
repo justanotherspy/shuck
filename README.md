@@ -51,9 +51,10 @@ The command set — the monitor above, and everything else one shot, no daemon:
 | `shuck action` | Resolve a GitHub Action to its latest tag + commit SHA for pinning. |
 | `shuck image` | Resolve a GHCR container image to its latest tag + digest for pinning. |
 
-Everything is available three ways: the CLI (with `--json` for stable,
-machine-readable output), a local [MCP server](#mcp-server) (`shuck mcp`), and a
-[Claude Code plugin](#claude-code-plugin).
+It is one binary and one command surface. Add `--json` to any report for stable,
+machine-readable output, and install the
+[Claude Code plugin](#claude-code-plugin) to have the monitor wired into a
+session automatically.
 
 ## Install
 
@@ -188,8 +189,7 @@ shuck compliance discover [owner/repo]          # snapshot live settings into th
 shuck dependabot (d) [owner/repo | url]         # audit .github/dependabot.yml vs the repo's ecosystems
 shuck dependabot discover [owner/repo]          # scaffold/extend .github/dependabot.yml
 shuck dependabot fix [owner/repo]               # fill best-practice gaps in existing entries
-shuck mcp                                       # run as a local MCP (stdio) server
-shuck setup                                     # install the Claude Code skill (+ MCP)
+shuck setup                                     # install the Claude Code skill + CLAUDE.md note
 shuck version [--check] | shuck upgrade         # version / self-update
 ```
 
@@ -477,43 +477,10 @@ shuck dependabot fix             # patch .github/dependabot.yml in place
 shuck dependabot fix --dry-run   # preview without writing
 ```
 
-## MCP server
-
-`shuck mcp` runs a local [Model Context Protocol](https://modelcontextprotocol.io)
-stdio server, so any MCP-aware agent can use shuck as typed tool calls:
-
-| Tool | Purpose |
-| --- | --- |
-| `inspect_logs` | Failing CI step logs for a PR or a single Actions run. |
-| `inspect_reviews` | A PR's reviews and review-comment threads. |
-| `inspect_security` | A repo's security alerts. |
-| `check_compliance` | Check a repo's settings against its `.github/compliance.yml`. |
-| `audit_dependabot` | Audit a repo's `.github/dependabot.yml` against the ecosystems it uses. |
-| `check_pins` | Find workflow actions that are unpinned or whose SHA pin is stale. |
-| `inspect_action` | Resolve an Action to its latest tag + SHA for pinning. |
-| `inspect_images` | List GHCR images, or resolve one to its digest. |
-| `monitor_status` | What the background monitor is watching, and where those PRs stand. |
-| `monitor_events` | Collect what the monitor noticed; `wait_seconds` blocks until something happens. |
-| `monitor_watch` | Follow a working tree (default) or pin one pull request. |
-| `monitor_unwatch` | Stop following something. |
-
-`monitor_events` with `wait_seconds` is how an agent waits for CI without
-polling: watch the tree, push, then block until the monitor has something to
-say.
-
-Each tool returns the rendered text report **and** the matching stable JSON
-document as structured output. Register it with any MCP client, e.g. in
-`.mcp.json` for Claude Code:
-
-```jsonc
-{ "mcpServers": { "shuck": { "command": "shuck", "args": ["mcp"] } } }
-```
-
 ## Claude Code plugin
 
 shuck ships as a [Claude Code](https://claude.com/claude-code) plugin: a
-`/shuck` skill, the MCP server above, and the hooks that wire the background
-monitor into a session. Install the `shuck` binary first (the plugin runs it
+`/shuck` skill and the hooks that wire the background monitor into a session. Install the `shuck` binary first (the plugin runs it
 from your `PATH`), then:
 
 ```
@@ -538,8 +505,7 @@ out with `SHUCK_MONITOR_DISABLE=1`, or just the `Stop` hook with
 `SHUCK_MONITOR_NO_STOP=1`.
 
 Prefer not to use the marketplace? `shuck setup` installs the same skill into
-`~/.claude/skills/shuck`, adds a managed note to your `~/.claude/CLAUDE.md`, and
-optionally registers the MCP server at user scope (`--mcp` / `--no-mcp`).
+`~/.claude/skills/shuck` and adds a managed note to your `~/.claude/CLAUDE.md`.
 Re-running is safe; `--dry-run` previews.
 
 ## Development

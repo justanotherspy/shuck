@@ -166,7 +166,7 @@ func dependabotExit(r *model.DependabotReport, exitCode, strict bool) int {
 
 // Dependabot audits a repository's Dependabot setup: it loads the config (if
 // any), detects the ecosystems the repo uses, and evaluates the two into a
-// report. It is exported so the MCP front-end shares the CLI's pipeline. A
+// report. It is exported so embedders share the CLI's pipeline. A
 // missing config is not fatal — it becomes a finding; an invalid config or an
 // unreadable repository is an error.
 func Dependabot(ctx context.Context, owner, repo string, opts DependabotOptions) (*model.DependabotReport, error) {

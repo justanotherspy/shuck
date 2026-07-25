@@ -176,8 +176,8 @@ func Encode(w io.Writer, r *model.Report) error {
 }
 
 // NewDocument projects an inspection Report onto the stable, versioned JSON
-// view. Non-CLI consumers (such as the MCP server) use it to return the same
-// document shape as --json without going through the byte encoder.
+// view. Non-CLI consumers use it to return the same document shape as --json
+// without going through the byte encoder.
 func NewDocument(r *model.Report) Document {
 	doc := Document{
 		SchemaVersion: SchemaVersion,

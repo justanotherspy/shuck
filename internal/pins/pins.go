@@ -7,8 +7,8 @@
 // Scan is pure text work: it parses workflow YAML into the `uses:` references
 // it declares, with the file and line they live on. Audit classifies those
 // references against the latest release of each action, asking a caller-
-// supplied Resolver for the network part. Nothing here dials out, so the CLI,
-// the MCP server and the file-watching monitor can all drive the same engine.
+// supplied Resolver for the network part. Nothing here dials out, so the CLI
+// and the file-watching monitor can both drive the same engine.
 //
 // Scanning never fails as a whole: a workflow whose YAML does not parse is
 // reported as one skipped finding, so a single broken file cannot hide the

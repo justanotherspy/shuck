@@ -146,7 +146,7 @@ func runCompliance(args []string, stdout, stderr io.Writer) int {
 
 // Compliance loads the repo's intended-settings config, fetches its live
 // settings from GitHub, and evaluates the two into a report. It is exported so
-// the MCP front-end shares the CLI's pipeline. A missing/invalid config or an
+// embedders share the CLI's pipeline. A missing/invalid config or an
 // unreadable repository is a fatal error; an individual setting the token cannot
 // see is reported as a skipped check inside the report.
 func Compliance(ctx context.Context, owner, repo string, opts ComplianceOptions) (*model.ComplianceReport, error) {

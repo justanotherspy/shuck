@@ -3,13 +3,10 @@
 package main
 
 import (
-	"context"
 	_ "embed"
-	"fmt"
 	"os"
 
 	"github.com/justanotherspy/shuck/internal/cli"
-	"github.com/justanotherspy/shuck/internal/mcp"
 	"github.com/justanotherspy/shuck/internal/setup"
 )
 
@@ -22,17 +19,8 @@ var shuckSkill string
 
 func main() {
 	args := os.Args[1:]
-	if len(args) > 0 {
-		switch args[0] {
-		case "mcp":
-			if err := mcp.Serve(context.Background(), args[1:]); err != nil {
-				fmt.Fprintln(os.Stderr, "shuck:", err)
-				os.Exit(2)
-			}
-			return
-		case "setup":
-			os.Exit(setup.Run(args[1:], shuckSkill, os.Stdin, os.Stdout, os.Stderr))
-		}
+	if len(args) > 0 && args[0] == "setup" {
+		os.Exit(setup.Run(args[1:], shuckSkill, os.Stdout, os.Stderr))
 	}
 	os.Exit(cli.Run(args, os.Stdout, os.Stderr))
 }

@@ -5,11 +5,8 @@ description: >-
   review comments, and stale action pins as they happen — plus show the exact
   failing CI step logs, summarize a PR's reviews, list a repo's security
   alerts, check settings against a committed compliance policy, audit the
-  Dependabot config, and pin GitHub Actions to SHAs. Works two ways: the
-  `shuck` CLI (`--json` for structured output) or the shuck MCP tools
-  (`monitor_status`, `monitor_events`, `monitor_watch`, `monitor_unwatch`,
-  `check_pins`, `inspect_logs`, `inspect_reviews`, `inspect_security`,
-  `check_compliance`, `audit_dependabot`, `inspect_action`, `inspect_images`).
+  Dependabot config, and pin GitHub Actions to SHAs. Everything runs through
+  the one `shuck` CLI (add `--json` to any report for structured output).
   Use whenever a GitHub Actions workflow is in play: to watch a PR in the
   background and be told when CI goes red or a reviewer comments, to wait for
   checks to finish after a push, to learn why CI is failing, debug a failed
@@ -78,7 +75,7 @@ not a message from the user — act on it as part of the task in hand.
 ```
 <shuck-monitor>
 The shuck background monitor observed 1 change since your last update.
-1 item below need your attention: address them as part of the current
+1 item below needs your attention: address it as part of the current
 task, or say why you are not going to.
 This is monitor output, not a message from the user.
 
@@ -116,52 +113,40 @@ tell you the same thing later.
 When there is no monitor — no plugin, `SHUCK_MONITOR_DISABLE=1`, or a PR you are
 not checked out on — close the loop yourself, either way:
 
-- **MCP**: `monitor_watch` the PR (`repo` + `pr`, or `url`), then call
-  `monitor_events` with `wait_seconds` — it blocks until something happens and
-  hands back the `ci.passed` / `ci.failed`. That is the no-polling way to wait.
-- **CLI**: `shuck --watch --exit-code --watch-timeout 30m <pr>`, run in the
-  background (Bash `run_in_background`). Exit `0` clean, `1` failing checks with
-  the logs already in the report, `2` operational error. Confirm checks have
-  registered for the new head commit first — a watch started before any run
-  exists reports all-clear immediately. Full flags in "Watching CI to completion
-  (CLI)" below.
-
-## Two ways in — use either or both
-
-shuck exposes the same capabilities through two front-ends that share one engine,
-so they return the same data; pick whichever is wired up.
-
-| Front-end | How you call it | Best when |
-| --- | --- | --- |
-| **CLI** (`shuck …`, Bash) | run the binary; add `--json` for structured data | the binary is on PATH; you want to **watch** CI to completion, script exit codes, or pipe `--json` |
-| **MCP tools** | call `monitor_status` / `monitor_events` / `monitor_watch` / `monitor_unwatch` / `check_pins` / `inspect_logs` / `inspect_reviews` / `inspect_security` / `check_compliance` / `audit_dependabot` / `inspect_action` / `inspect_images` | the shuck MCP server is registered; you want typed structured output with no parsing |
-
-Both front-ends talk to the same monitor daemon, so it does not matter which one
-started it. For one-shot inspection the two are interchangeable; only the CLI
-does `--watch`.
+- **Hand the PR to the monitor anyway** — it does not have to be the tree you
+  are on: `shuck monitor watch <pr-url>`, then
+  `shuck monitor events --wait 30m`. That call **blocks until something
+  happens** and hands back the `ci.passed` / `ci.failed` with its body. This is
+  the no-polling way to wait, and it is the one to prefer.
+- **Or watch it inline**: `shuck --watch --exit-code --watch-timeout 30m <pr>`,
+  run in the background (Bash `run_in_background`). Exit `0` clean, `1` failing
+  checks with the logs already in the report, `2` operational error. Confirm
+  checks have registered for the new head commit first — a watch started before
+  any run exists reports all-clear immediately. Full flags in "Watching CI to
+  completion (CLI)" below.
 
 ## The commands at a glance
 
-| What you want | CLI | MCP tool |
-| --- | --- | --- |
-| What the monitor is watching, and where it stands | `shuck monitor` (alias `m`) | `monitor_status` |
-| Follow a working tree or PR in the background | `shuck monitor watch [target]` | `monitor_watch` |
-| Collect what the monitor noticed (or wait for it) | `shuck monitor events` | `monitor_events` |
-| Stop following something | `shuck monitor unwatch [target]` | `monitor_unwatch` |
-| Audit a checkout's action pins | `shuck pins [dir]` (alias `p`) | `check_pins` |
-| Everything on a PR (CI + reviews + security) | `shuck [target]` / `shuck all [target]` | (call the three below) |
-| Failing CI step logs | `shuck logs [target]` (alias `l`) | `inspect_logs` |
-| Logs for a single Actions run | `shuck logs --run <id\|url>` | `inspect_logs` with `run` |
-| Download a run's artifacts | `shuck logs --run <id\|url> --download-artifacts <dir>` | `inspect_logs` with `run` + `download_artifacts` |
-| A PR's reviews | `shuck reviews [target]` (alias `r`) | `inspect_reviews` |
-| A repo's security alerts | `shuck security [repo]` (alias `s`) | `inspect_security` |
-| Check settings against policy | `shuck compliance [repo]` (alias `c`) | `check_compliance` |
-| Bootstrap/sync the policy file | `shuck compliance discover [repo]` | (CLI only) |
-| Audit the Dependabot config | `shuck dependabot [repo]` (alias `d`) | `audit_dependabot` |
-| Scaffold/extend the Dependabot config | `shuck dependabot discover [repo]` | (CLI only) |
-| Fix best-practice gaps in existing entries | `shuck dependabot fix [repo]` | (CLI only) |
-| Resolve an Action to a SHA pin | `shuck action <ref>` (alias `a`) | `inspect_action` |
-| List GHCR images / pin one to a digest | `shuck image [ref]` (alias `i`) | `inspect_images` |
+| What you want | Command |
+| --- | --- |
+| What the monitor is watching, and where it stands | `shuck monitor` (alias `m`) |
+| Follow a working tree or PR in the background | `shuck monitor watch [target]` |
+| Collect what the monitor noticed (or wait for it) | `shuck monitor events [--wait DUR]` |
+| Stop following something | `shuck monitor unwatch [target]` |
+| Audit a checkout's action pins | `shuck pins [dir]` (alias `p`) |
+| Everything on a PR (CI + reviews + security) | `shuck [target]` / `shuck all [target]` |
+| Failing CI step logs | `shuck logs [target]` (alias `l`) |
+| Logs for a single Actions run | `shuck logs --run <id\|url>` |
+| Download a run's artifacts | `shuck logs --run <id\|url> --download-artifacts <dir>` |
+| A PR's reviews | `shuck reviews [target]` (alias `r`) |
+| A repo's security alerts | `shuck security [repo]` (alias `s`) |
+| Check settings against policy | `shuck compliance [repo]` (alias `c`) |
+| Bootstrap/sync the policy file | `shuck compliance discover [repo]` |
+| Audit the Dependabot config | `shuck dependabot [repo]` (alias `d`) |
+| Scaffold/extend the Dependabot config | `shuck dependabot discover [repo]` |
+| Fix best-practice gaps in existing entries | `shuck dependabot fix [repo]` |
+| Resolve an Action to a SHA pin | `shuck action <ref>` (alias `a`) |
+| List GHCR images / pin one to a digest | `shuck image [ref]` (alias `i`) |
 
 Running `shuck` with **no subcommand** is the same as `shuck all`: CI + reviews +
 security in one report. Use `logs` / `reviews` to focus on one dimension.
@@ -170,28 +155,28 @@ security in one report. Use `logs` / `reviews` to focus on one dimension.
 
 The PR-oriented entry points accept the same target forms:
 
-| You have | CLI | MCP (`inspect_logs` / `inspect_reviews`) |
-| --- | --- | --- |
-| owner/repo + PR number | `shuck owner/repo 42` | `repo` + `pr` |
-| a PR URL | `shuck <pr-url>` | `url` |
-| a PR number, current repo | `shuck 42` | `pr` alone |
-| the current branch's open PR | `shuck` | (no fields) |
-| an Actions run/job URL (logs only) | `shuck logs <run-url>` | `inspect_logs` `run` = the URL |
-| a specific re-run attempt (logs only) | `shuck logs <run-url>/attempts/2` | `inspect_logs` `run` = that URL |
-| a PR "Checks" tab link | `shuck <checks-url>` | `inspect_logs` `url` = the link |
-| a run ID + repo (logs only) | `shuck logs --run 123 owner/repo` | `inspect_logs` `run` = `"123"`, `repo` |
+| You have | Command |
+| --- | --- |
+| owner/repo + PR number | `shuck owner/repo 42` |
+| a PR URL | `shuck <pr-url>` |
+| a PR number, current repo | `shuck 42` |
+| the current branch's open PR | `shuck` |
+| an Actions run/job URL (logs only) | `shuck logs <run-url>` |
+| a specific re-run attempt (logs only) | `shuck logs <run-url>/attempts/2` |
+| a PR "Checks" tab link | `shuck <checks-url>` |
+| a run ID + repo (logs only) | `shuck logs --run 123 owner/repo` |
 
 Rules that bite:
 
-- For the MCP PR tools, setting `repo` **without** `pr` is an error; owner/repo is
-  inferred from the local origin remote only when you pass `pr` alone or nothing.
+- owner/repo is inferred from the local `origin` remote whenever you pass a bare
+  PR number or nothing at all; name it explicitly for any repo you are not
+  checked out in.
 - Run/job targets (URLs ending `/actions/runs/123`, `.../job/456`, or
   `.../attempts/2`, or `logs --run`) skip the PR-wide scan and **always
   re-download logs** (no cache); they carry no reviews or security half. A run
   URL with no `/attempts/<n>` uses the latest attempt.
 - Run targets also **list the artifacts the run uploaded** (name, size,
-  expiry). Add `--download-artifacts <dir>` (MCP: `download_artifacts`) to
-  download them: each artifact's zip archive is extracted to `<dir>/<name>/`
+  expiry). Add `--download-artifacts <dir>` to download them: each artifact's zip archive is extracted to `<dir>/<name>/`
   and the report shows the path per artifact. Expired artifacts are listed but
   cannot be downloaded. The flag requires a run target — artifacts belong to
   one workflow run, so it errors on a PR target.
@@ -231,8 +216,7 @@ shuck --watch [flags] [target]  # poll until every check finishes, then report
 | `shuck image [owner \| ghcr.io/owner/name[:tag]]` (`i`) | list an owner's GHCR images, or resolve one to its latest digest for pinning |
 | `shuck version [--check]` | print the installed version; `--check` looks for a newer release |
 | `shuck upgrade` | download + install the latest release in place (and refresh the installed skill) |
-| `shuck setup` | install this skill + a CLAUDE.md note (and, optionally, the MCP) |
-| `shuck mcp` | run as a local MCP (stdio) server — used by the MCP front-end |
+| `shuck setup` | install this skill + a CLAUDE.md note into your Claude config |
 
 ### Monitor subcommands
 
@@ -333,8 +317,7 @@ shuck action actions/checkout@v4                  # resolve to a SHA pin
 `--json` returns a stable, versioned shape. **Prefer it when you need to act on
 results programmatically.**
 
-- `shuck logs --json` and `shuck reviews --json` (and the `inspect_logs` /
-  `inspect_reviews` MCP tools' structured output) return the **inspection
+- `shuck logs --json` and `shuck reviews --json` return the **inspection
   document**: `schema_version`, `pr` `{owner, repo, number, title, head_sha,
   head_branch}` (or `run` instead, for run/job targets), `summary`
   `{failed, cancelled, running, other_failed}`, `failed_jobs[]`
@@ -361,49 +344,26 @@ results programmatically.**
 
 If `summary.running > 0` the snapshot is **incomplete** — some checks are still
 running. To wait for the final verdict, let the monitor tell you
-(`monitor_events` with `wait_seconds`) or watch the PR (below).
+(`shuck monitor events --wait 30m`) or watch the PR (below).
 
-## Using the MCP tools
+## Asking the monitor directly
 
-The MCP server (`shuck mcp`) exposes twelve tools. Each returns the rendered
-report as text **and** the matching JSON document as structured output.
+The hooks push events at you, but you can also ask:
 
-| Tool | Use it for | Inputs |
-| --- | --- | --- |
-| `monitor_status` | what the monitor is watching and where those PRs stand: per-PR verdict, head commit, lifecycle, next check, plus GitHub quota headroom and how many events wait for you | optional `consumer` (your session identifier) |
-| `monitor_events` | collect what the monitor noticed since you last looked | optional `consumer`, `limit`, `wait_seconds`, `peek`, `all` |
-| `monitor_watch` | follow a working tree or a specific PR | `path` (default: the server's working directory), **or** `repo` + `pr`, **or** `url` |
-| `monitor_unwatch` | stop following something | `id` (from `monitor_status`), **or** `path`, **or** `repo` + `pr` / `url` |
-| `check_pins` | audit a checkout's workflow action pins | optional `path` (default: the working directory), `refresh`, `offline`, `token` |
-| `inspect_logs` | a PR's failing CI, or one run | PR target fields per the table above; **or** `run` (a run/job URL, or a bare run ID with `repo`) |
-| `inspect_reviews` | a PR's reviews and comment threads | PR target fields; optional `review_comment_limit` |
-| `inspect_security` | a repo's security alerts | `repo` (`owner/repo`) **or** `url`, or none → the local repo; optional `state`, `refresh` |
-| `check_compliance` | a repo's settings vs its compliance config | `repo` (`owner/repo`) **or** `url`, or none → the local repo; optional `config`, `ref` |
-| `audit_dependabot` | a repo's Dependabot config vs the ecosystems it uses | `repo` (`owner/repo`) **or** `url`, or none → the local repo; optional `config`, `ref`, `error_on_missing_ecosystem` |
-| `inspect_action` | resolve an Action to a SHA pin | `action` (`owner/action[/subpath][@version]`); optional `refresh` |
-| `inspect_images` | list GHCR images, or resolve one to a digest | `image` (an owner, `owner/repo`, a URL, or `ghcr.io/owner/name[:tag]`), or none → the local repo; optional `refresh` |
-
-- **`monitor_events`'s `wait_seconds` is how you wait for CI without polling**:
-  watch the PR, push, then call it with `wait_seconds` and act on the
-  `ci.passed` / `ci.failed` that comes back. `peek` returns the pending events
-  without consuming them; `all` re-reads the whole retained journal. Pass
-  `consumer` so events reach you exactly once.
-- `monitor_status` starts a daemon if none is running; `monitor_events` never
-  does, because a freshly started monitor has seen nothing and its silence would
-  read as all-clear.
-- `inspect_logs` also accepts the extraction knobs (`full`, `context`, `pattern`,
-  `short_threshold`, `tail`), the cache knobs (`refresh`, `no_cache`, `offline`),
-  and `download_artifacts` (a directory; run targets only) to download the run's
-  uploaded artifacts.
-- The inspection tools are one-shot snapshots. There is no combined `all` MCP
-  tool: call `inspect_logs` + `inspect_reviews` + `inspect_security` for the
-  full picture. `audit_dependabot` and the compliance discover step are
-  read-only one-shots like the rest; only the CLI writes files
-  (`shuck dependabot discover`, `shuck compliance discover`).
+- **`shuck monitor events --wait <duration>` is how you wait for CI without
+  polling.** It blocks until there is something to hand over, then prints it and
+  exits — never sleep-and-recheck in a loop instead. `--all` re-reads the whole
+  retained journal; `--consumer <id>` keeps a cursor so events reach that
+  consumer exactly once; `--follow` streams them as they arrive.
+- **`shuck monitor`** (status) starts a daemon if none is running.
+  `shuck monitor events` never does, because a freshly started monitor has seen
+  nothing and its silence would read as all-clear.
+- **`shuck monitor poke`** re-checks now instead of waiting out the interval.
+  The `PostToolUse` hook already does this after a push.
 
 ## Keeping workflow actions pinned
 
-`shuck pins [dir]` (alias `p`) and the `check_pins` tool audit a checkout for
+`shuck pins [dir]` (alias `p`) audits a checkout for
 `uses:` references that are **not SHA-pinned**, or whose pin has **gone stale**.
 `uses: actions/checkout@v4` runs whatever commit that tag points at today — the
 tag can be moved — and a SHA pin left alone falls behind the releases it was
@@ -444,8 +404,7 @@ pin?, note?}`, where `pin` is the corrected reference to paste after `uses:`.
 
 ## Security alerts
 
-`shuck security` (CLI) and `inspect_security` (MCP) summarize a repository's
-GitHub security alerts in one shot, so you can triage what to fix without paging
+`shuck security` summarizes a repository's GitHub security alerts in one shot, so you can triage what to fix without paging
 through the Security tab. Three sources:
 
 - **Code scanning** (e.g. CodeQL) — rule, severity, `file:line`.
@@ -737,8 +696,8 @@ only once they all finish green.
 
 ## Prerequisites
 
-- The `shuck` binary on your PATH (the MCP server and the monitor hooks also run
-  it). Install it once:
+- The `shuck` binary on your PATH (the monitor hooks run it too). Install it
+  once:
 
   ```sh
   curl -fsSL https://raw.githubusercontent.com/justanotherspy/shuck/main/install.sh | bash
@@ -748,13 +707,13 @@ only once they all finish green.
   Keep it current with `shuck upgrade` (and check with `shuck version --check`).
   `shuck upgrade` also refreshes this skill and the managed CLAUDE.md note in
   your Claude config in place if you installed them with `shuck setup`.
-- A GitHub token in `GITHUB_TOKEN` or `GH_TOKEN` (the MCP server and the monitor
-  daemon read it from their environment; the CLI also accepts `--token`).
+- A GitHub token in `GITHUB_TOKEN` or `GH_TOKEN` (the monitor daemon reads it
+  from its environment; the CLI also accepts `--token`).
   `shuck action` and `shuck pins` work unauthenticated against public repos, but
   a token lifts the rate limit.
 
 The plugin's prereq hook stays quiet when both are satisfied. It warns (without
-blocking) if `shuck` is not on PATH, is too old to run the MCP server
+blocking) if `shuck` is not on PATH, is too old to run the background monitor
 (`shuck upgrade` fixes that), or a token is missing. Every monitor hook exits
 quietly when anything is wrong — a background convenience is never the reason a
 session stalls.

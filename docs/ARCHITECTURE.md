@@ -15,8 +15,8 @@ open, do the repo's settings match its policy, is Dependabot covering the
 ecosystems in the tree, are the workflow actions SHA-pinned.
 
 The constraint that shapes everything: **shuck is one portable binary you drop
-on a laptop.** A CLI, an MCP server, and a local background monitor in the same
-executable, driven by a GitHub token from the environment. No service to
+on a laptop.** A CLI and a local background monitor in the same executable,
+driven by a GitHub token from the environment. No service to
 deploy, no webhook to receive, no account, no state anyone else can see.
 
 That is not a preference, it is a gate. `ci.yml` runs the binary's import graph
@@ -28,8 +28,8 @@ go list -deps . | grep -E 'aws-sdk-go|aws-lambda-go|cloud\.google\.com|…'
 
 A match fails the build. If a feature seems to need a cloud SDK, a serverless
 runtime, or a server framework, it belongs outside shuck. The dependency budget
-that follows from it is small on purpose: five direct modules (go-git,
-go-github, the MCP SDK, `x/term`, `yaml.v3`).
+that follows from it is small on purpose: three direct modules (go-git,
+go-github, `yaml.v3`).
 
 ## Two ways to use it, one engine
 
@@ -37,12 +37,11 @@ go-github, the MCP SDK, `x/term`, `yaml.v3`).
                   ┌──────────────────────────────┐
   on demand       │                              │
   shuck <pr> ────▶│ target ▸ cache ▸ gh ▸ distil │───▶ text / JSON
-  MCP tools       │         ▸ render             │
+  shuck logs      │         ▸ render             │
                   │                              │
                   │    the same fetch + distil   │
   subscription    │                              │      ┌─────────┐  · CLI
-  shuck monitor ─▶│ watch ▸ poll ▸ diff ▸ event  │─────▶│ journal │─▸· MCP
-  (a local daemon)│                              │      └─────────┘  · hooks
+  shuck monitor ─▶│ watch ▸ poll ▸ diff ▸ event  │─────▶│ journal │─▸· hooks
                   └──────────────────────────────┘
                                  │
                                  ▼
@@ -50,8 +49,8 @@ go-github, the MCP SDK, `x/term`, `yaml.v3`).
 ```
 
 **On demand (pull).** You run a command, it fetches, it prints, it exits. This
-is `shuck`, `shuck logs`, `shuck reviews`, `shuck pins`, and the MCP inspection
-tools. Nothing persists but the cache.
+is `shuck`, `shuck logs`, `shuck reviews`, `shuck pins`, and the rest of the
+report commands. Nothing persists but the cache.
 
 **By subscription (the monitor).** You register a working tree once. A local
 daemon follows it, notices what changed, and hands each change to whoever asks
@@ -150,7 +149,7 @@ The protocol is deliberately dull — both ends ship in the same binary and are
 upgraded together, so there is no version negotiation to get wrong. A client
 that meets a daemon it cannot talk to restarts it.
 
-Clients are short-lived by design: a CLI subcommand, an MCP tool call, a hook.
+Clients are short-lived by design: a CLI subcommand or a hook.
 Nothing keeps a connection open, so nothing leaks when a hook is killed
 mid-call. The one exception is `events` with `Wait`: the daemon parks the
 request on a broadcast channel that is closed and replaced on every publish, so
@@ -167,7 +166,7 @@ to.
 | | Watch | Target |
 | --- | --- | --- |
 | Identity | `tree:/abs/path` or `pr:owner/repo#42` | `owner/repo#42` |
-| Created by | a client (`watch`, a hook, an MCP tool) | resolution, on a tick |
+| Created by | a client (`shuck monitor watch`, or a hook) | resolution, on a tick |
 | Holds | path, branch, last resolution, TTL clock | head SHA, verdict, review high-water marks, next poll |
 | Persisted in | `watches.json` | `targets.json` |
 
@@ -288,8 +287,8 @@ events.jsonl   append-only, one Event per line, id-ordered
 cursors.json   { "<consumer>": <last delivered id>, … }
 ```
 
-A consumer is any stable string: a Claude Code session id, `cli`, whatever an
-MCP caller passes. `Drain` returns everything after that consumer's cursor and
+A consumer is any stable string: a Claude Code session id, `cli`, whatever
+`--consumer` names. `Drain` returns everything after that consumer's cursor and
 advances it; `Since` reads without one; `Seek` moves a cursor without
 delivering; `Peek` reads pending events and leaves the cursor alone.
 

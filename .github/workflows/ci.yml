@@ -33,10 +33,10 @@ jobs:
       - name: Build
         run: go build ./...
       - name: shuck stays portable (no server/cloud deps)
-        # shuck is one self-contained binary you drop on a laptop: a CLI, an
-        # MCP server, and a local background monitor. It must never grow a
-        # cloud SDK, a serverless runtime, or a server framework — if a
-        # feature seems to need one, it belongs outside shuck.
+        # shuck is one self-contained binary you drop on a laptop: a CLI and a
+        # local background monitor. It must never grow a cloud SDK, a
+        # serverless runtime, or a server framework — if a feature seems to
+        # need one, it belongs outside shuck.
         run: |
           leaks=$(go list -deps . | grep -E 'aws-sdk-go|aws-lambda-go|cloud\.google\.com|Azure/azure-sdk|k8s\.io/(client-go|api)|gin-gonic|labstack/echo|gorilla/mux' || true)
           if [ -n "$leaks" ]; then
@@ -198,9 +198,8 @@ jobs:
       - name: Validate marketplace manifest
         run: ./.github/plugin-validate/node_modules/.bin/claude plugin validate --strict .claude-plugin/marketplace.json
       # The repo bakes the plugin's skill in for project-level use
-      # (.claude/skills/shuck) and mirrors its MCP config (.mcp.json); the
-      # plugin copies are the source of truth. Fail when they drift.
-      - name: Check baked-in skill and MCP config match the plugin
-        run: |
-          diff -u plugins/shuck/skills/shuck/SKILL.md .claude/skills/shuck/SKILL.md
-          diff -u plugins/shuck/.mcp.json .mcp.json
+      # (.claude/skills/shuck); the plugin copy is the source of truth, and it
+      # is also the file go:embed-ed into the binary for `shuck setup`. Fail
+      # when the two drift.
+      - name: Check baked-in skill matches the plugin
+        run: diff -u plugins/shuck/skills/shuck/SKILL.md .claude/skills/shuck/SKILL.md

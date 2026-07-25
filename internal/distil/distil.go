@@ -1,9 +1,8 @@
 // Package distil turns a raw GitHub Actions job log plus the job's step
 // metadata into the distilled failure detail shuck reports: which steps
 // failed, what they ran, the high-signal error excerpt, and a heuristic
-// failure class. It is the shared parser core behind the CLI, the MCP server,
-// and the background monitor, which turns the same distillation into the body
-// of an event.
+// failure class. It is the shared parser core behind the CLI and the background
+// monitor, which turns the same distillation into the body of an event.
 //
 // The package is pure and deterministic: strings and structs in, structs
 // out — no GitHub calls, no filesystem, no clock. Fetching logs and step

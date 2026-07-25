@@ -149,7 +149,7 @@ type ImageOptions struct {
 // Image resolves a single image ref to its latest matching tag + manifest
 // digest. With a token it uses the GitHub Packages API (and the shared owner
 // cache); without one it falls back to the anonymous GHCR registry API for
-// public images. It is exported so the MCP front-end reuses the pipeline.
+// public images. It is exported so embedders reuse the pipeline.
 func Image(ctx context.Context, ref image.Ref, opts ImageOptions) (image.Resolved, error) {
 	token := opts.Token
 	if token == "" {

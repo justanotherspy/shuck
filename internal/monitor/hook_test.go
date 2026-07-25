@@ -89,7 +89,7 @@ func TestHookSessionStartRegistersTheTree(t *testing.T) {
 		t.Errorf("hookEventName = %q", out.Specific.HookEventName)
 	}
 	ctx := out.Specific.AdditionalContext
-	for _, want := range []string{"background monitor is running", "retargets itself", "monitor_events"} {
+	for _, want := range []string{"background monitor is running", "retargets itself", "shuck monitor events"} {
 		if !strings.Contains(ctx, want) {
 			t.Errorf("context is missing %q:\n%s", want, ctx)
 		}

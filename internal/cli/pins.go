@@ -91,7 +91,7 @@ func runPins(args []string, stdout, stderr io.Writer) int {
 }
 
 // PinsOptions controls a pin audit. It is the front-end-agnostic input to
-// [Pins], shared by the CLI and the MCP server.
+// [Pins], shared by the CLI and the monitor's per-tree audit.
 type PinsOptions struct {
 	// Token authenticates the tag lookups. Empty falls back to
 	// GITHUB_TOKEN/GH_TOKEN, and then to unauthenticated requests — which work
@@ -105,7 +105,7 @@ type PinsOptions struct {
 }
 
 // Pins audits a checkout's workflow files and returns the report. It is the
-// reusable core behind `shuck pins` and the check_pins MCP tool.
+// reusable core behind `shuck pins` and the monitor's per-tree pin audit.
 func Pins(ctx context.Context, root string, opts PinsOptions) (pins.Report, error) {
 	if _, err := os.Stat(root); err != nil {
 		return pins.Report{}, fmt.Errorf("read %s: %w", root, err)

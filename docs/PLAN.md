@@ -10,9 +10,9 @@ When shuck's output falls short of what you needed to debug something — a
 report that made you go back to the Actions UI, an event that arrived without
 the detail to act on it, a flag you reached for that does not exist — write it
 down here or open an issue. That feedback loop is what the file is for; the
-first two rounds of it produced `--json`, the run/job targets, `--watch`, the
-MCP server, check-run annotations, and failure classification, all since
-shipped and no longer tracked here.
+first two rounds of it produced `--json`, the run/job targets, `--watch`,
+check-run annotations, and failure classification, all since shipped and no
+longer tracked here.
 
 ## Known gaps — the background monitor
 

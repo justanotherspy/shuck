@@ -2,7 +2,6 @@ package setup
 
 import (
 	"bytes"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,7 +22,7 @@ func TestRunInstallsSkillAndNote(t *testing.T) {
 	dir := useConfigDir(t)
 	var stdout, stderr strings.Builder
 
-	if code := Run([]string{"--no-mcp"}, fakeSkill, strings.NewReader(""), &stdout, &stderr); code != 0 {
+	if code := Run(nil, fakeSkill, &stdout, &stderr); code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr=%q", code, stderr.String())
 	}
 
@@ -47,8 +46,8 @@ func TestRunInstallsSkillAndNote(t *testing.T) {
 	if !strings.Contains(string(md), "shuck` skill") {
 		t.Errorf("CLAUDE.md missing skill mention:\n%s", md)
 	}
-	if !strings.Contains(stdout.String(), "skipping MCP server registration (--no-mcp)") {
-		t.Errorf("expected --no-mcp note, got %q", stdout.String())
+	if !strings.Contains(stdout.String(), "installed skill:") || !strings.Contains(stdout.String(), "added CLAUDE.md note:") {
+		t.Errorf("expected a note naming both files written, got %q", stdout.String())
 	}
 }
 
@@ -64,7 +63,7 @@ func TestRunIsIdempotent(t *testing.T) {
 
 	run := func() string {
 		var out, errOut strings.Builder
-		if code := Run([]string{"--no-mcp"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 0 {
+		if code := Run(nil, fakeSkill, &out, &errOut); code != 0 {
 			t.Fatalf("exit = %d, want 0; stderr=%q", code, errOut.String())
 		}
 		return out.String()
@@ -105,7 +104,7 @@ func TestRunUpdatesStaleBlock(t *testing.T) {
 	}
 
 	var out, errOut strings.Builder
-	if code := Run([]string{"--no-mcp"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 0 {
+	if code := Run(nil, fakeSkill, &out, &errOut); code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr=%q", code, errOut.String())
 	}
 
@@ -127,7 +126,7 @@ func TestRunUpdatesStaleBlock(t *testing.T) {
 func TestRunDryRunWritesNothing(t *testing.T) {
 	dir := useConfigDir(t)
 	var out, errOut strings.Builder
-	if code := Run([]string{"--dry-run", "--mcp"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 0 {
+	if code := Run([]string{"--dry-run"}, fakeSkill, &out, &errOut); code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr=%q", code, errOut.String())
 	}
 
@@ -138,117 +137,17 @@ func TestRunDryRunWritesNothing(t *testing.T) {
 		t.Errorf("dry-run created CLAUDE.md (err=%v)", err)
 	}
 	o := out.String()
-	for _, want := range []string{"[dry-run] would write skill", "[dry-run] would write CLAUDE.md note", "[dry-run] would register the shuck MCP server"} {
+	for _, want := range []string{"[dry-run] would write skill", "[dry-run] would write CLAUDE.md note"} {
 		if !strings.Contains(o, want) {
 			t.Errorf("dry-run output missing %q; got:\n%s", want, o)
 		}
 	}
 }
 
-func TestRunMCPViaClaudeCLI(t *testing.T) {
-	useConfigDir(t)
-	stubClaude(t, []byte("Added shuck MCP server\n"), nil)
-
-	var out, errOut strings.Builder
-	if code := Run([]string{"--mcp"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 0 {
-		t.Fatalf("exit = %d, want 0; stderr=%q", code, errOut.String())
-	}
-	if !strings.Contains(out.String(), "registered the shuck MCP server at user scope") {
-		t.Errorf("expected success message, got %q", out.String())
-	}
-}
-
-func TestRunMCPClaudeMissingPrintsInstructions(t *testing.T) {
-	useConfigDir(t)
-	orig := lookPath
-	lookPath = func(string) (string, error) { return "", fmt.Errorf("not found") }
-	t.Cleanup(func() { lookPath = orig })
-
-	var out, errOut strings.Builder
-	if code := Run([]string{"--mcp"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 0 {
-		t.Fatalf("exit = %d, want 0; stderr=%q", code, errOut.String())
-	}
-	if !strings.Contains(out.String(), "claude mcp add --scope user shuck -- shuck mcp") {
-		t.Errorf("expected manual instructions, got %q", out.String())
-	}
-}
-
-func TestRunMCPClaudeFailureFallsBack(t *testing.T) {
-	useConfigDir(t)
-	stubClaude(t, []byte("boom"), fmt.Errorf("exit status 1"))
-
-	var out, errOut strings.Builder
-	if code := Run([]string{"--mcp"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 0 {
-		t.Fatalf("exit = %d, want 0; stderr=%q", code, errOut.String())
-	}
-	if !strings.Contains(errOut.String(), "`claude mcp add` failed") {
-		t.Errorf("expected failure note on stderr, got %q", errOut.String())
-	}
-	if !strings.Contains(out.String(), "register the MCP server manually") {
-		t.Errorf("expected manual fallback, got %q", out.String())
-	}
-}
-
-func TestRunPromptYes(t *testing.T) {
-	useConfigDir(t)
-	var gotArgs []string
-	stubClaudeFunc(t, func(_ string, args ...string) ([]byte, error) {
-		gotArgs = args
-		return []byte("ok"), nil
-	})
-
-	// A bytes-backed stdin is not a terminal, so without a flag the MCP step is
-	// skipped; exercise the prompt parser directly instead.
-	var w strings.Builder
-	if !promptYesNo(strings.NewReader("yes\n"), &w, "q? ") {
-		t.Error("promptYesNo(yes) = false, want true")
-	}
-	if promptYesNo(strings.NewReader("\n"), &w, "q? ") {
-		t.Error("promptYesNo(empty) = true, want false")
-	}
-	if promptYesNo(strings.NewReader(""), &w, "q? ") {
-		t.Error("promptYesNo(EOF) = true, want false")
-	}
-
-	// Sanity-check the claude invocation shape via the --mcp path.
-	var out, errOut strings.Builder
-	if code := Run([]string{"--mcp"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 0 {
-		t.Fatalf("exit = %d, want 0; stderr=%q", code, errOut.String())
-	}
-	want := []string{"mcp", "add", "--scope", "user", "shuck", "--", "shuck", "mcp"}
-	if strings.Join(gotArgs, " ") != strings.Join(want, " ") {
-		t.Errorf("claude args = %v, want %v", gotArgs, want)
-	}
-}
-
-func TestRunNonInteractiveDefaultSkips(t *testing.T) {
-	useConfigDir(t)
-	// No --mcp/--no-mcp and a non-terminal stdin: the MCP step is skipped and
-	// the manual instructions are printed.
-	var out, errOut strings.Builder
-	if code := Run(nil, fakeSkill, strings.NewReader(""), &out, &errOut); code != 0 {
-		t.Fatalf("exit = %d, want 0; stderr=%q", code, errOut.String())
-	}
-	if !strings.Contains(out.String(), "no TTY; re-run with --mcp") {
-		t.Errorf("expected non-interactive skip note, got %q", out.String())
-	}
-}
-
-func TestRunMutuallyExclusiveMCPFlags(t *testing.T) {
-	useConfigDir(t)
-	var out, errOut strings.Builder
-	if code := Run([]string{"--mcp", "--no-mcp"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 2 {
-		t.Fatalf("exit = %d, want 2", code)
-	}
-	if !strings.Contains(errOut.String(), "mutually exclusive") {
-		t.Errorf("expected mutually-exclusive error, got %q", errOut.String())
-	}
-}
-
 func TestRunRejectsPositionalArg(t *testing.T) {
 	useConfigDir(t)
 	var out, errOut strings.Builder
-	if code := Run([]string{"oops"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 2 {
+	if code := Run([]string{"oops"}, fakeSkill, &out, &errOut); code != 2 {
 		t.Fatalf("exit = %d, want 2", code)
 	}
 	if !strings.Contains(errOut.String(), "takes no positional arguments") {
@@ -259,7 +158,7 @@ func TestRunRejectsPositionalArg(t *testing.T) {
 func TestRefreshSkillNoopWhenNotInstalled(t *testing.T) {
 	dir := useConfigDir(t)
 	var out, errOut strings.Builder
-	if code := Run([]string{"--refresh-skill"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 0 {
+	if code := Run([]string{"--refresh-skill"}, fakeSkill, &out, &errOut); code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr=%q", code, errOut.String())
 	}
 	// A user who never ran setup has no skill: refresh must not create one,
@@ -286,7 +185,7 @@ func TestRefreshSkillUpdatesStaleAndLeavesRest(t *testing.T) {
 	}
 
 	var out, errOut strings.Builder
-	if code := Run([]string{"--refresh-skill"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 0 {
+	if code := Run([]string{"--refresh-skill"}, fakeSkill, &out, &errOut); code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr=%q", code, errOut.String())
 	}
 	got, err := os.ReadFile(skillPath)
@@ -299,14 +198,14 @@ func TestRefreshSkillUpdatesStaleAndLeavesRest(t *testing.T) {
 	if !strings.Contains(out.String(), "refreshed installed skill") {
 		t.Errorf("expected refresh note, got %q", out.String())
 	}
-	// MCP must not be touched by the skill-only path.
+	// CLAUDE.md must not be created by the skill-only path.
 	if _, err := os.Stat(filepath.Join(dir, "CLAUDE.md")); !os.IsNotExist(err) {
 		t.Errorf("refresh-skill wrote CLAUDE.md (err=%v)", err)
 	}
 
 	// Re-running is a no-op that reports up to date.
 	out.Reset()
-	if code := Run([]string{"--refresh-skill"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 0 {
+	if code := Run([]string{"--refresh-skill"}, fakeSkill, &out, &errOut); code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr=%q", code, errOut.String())
 	}
 	if !strings.Contains(out.String(), "already up to date") {
@@ -337,7 +236,7 @@ func TestRefreshUpdatesStaleNoteWhenPresent(t *testing.T) {
 	}
 
 	var out, errOut strings.Builder
-	if code := Run([]string{"--refresh-skill"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 0 {
+	if code := Run([]string{"--refresh-skill"}, fakeSkill, &out, &errOut); code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr=%q", code, errOut.String())
 	}
 
@@ -379,7 +278,7 @@ func TestRefreshLeavesUnmanagedClaudeMDAlone(t *testing.T) {
 	}
 
 	var out, errOut strings.Builder
-	if code := Run([]string{"--refresh-skill"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 0 {
+	if code := Run([]string{"--refresh-skill"}, fakeSkill, &out, &errOut); code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr=%q", code, errOut.String())
 	}
 
@@ -413,7 +312,7 @@ func TestRefreshNoteDryRun(t *testing.T) {
 	}
 
 	var out, errOut strings.Builder
-	if code := Run([]string{"--refresh-skill", "--dry-run"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 0 {
+	if code := Run([]string{"--refresh-skill", "--dry-run"}, fakeSkill, &out, &errOut); code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr=%q", code, errOut.String())
 	}
 	if !strings.Contains(out.String(), "[dry-run] would refresh CLAUDE.md note") {
@@ -443,24 +342,10 @@ func TestRefreshNoteUpToDate(t *testing.T) {
 	}
 
 	var out, errOut strings.Builder
-	if code := Run([]string{"--refresh-skill"}, fakeSkill, strings.NewReader(""), &out, &errOut); code != 0 {
+	if code := Run([]string{"--refresh-skill"}, fakeSkill, &out, &errOut); code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr=%q", code, errOut.String())
 	}
 	if !strings.Contains(out.String(), "installed CLAUDE.md note already up to date") {
 		t.Errorf("expected up-to-date note, got %q", out.String())
 	}
-}
-
-// stubClaude points lookPath at a fake claude and makes runCommand return out/err.
-func stubClaude(t *testing.T, out []byte, err error) {
-	t.Helper()
-	stubClaudeFunc(t, func(string, ...string) ([]byte, error) { return out, err })
-}
-
-func stubClaudeFunc(t *testing.T, fn func(string, ...string) ([]byte, error)) {
-	t.Helper()
-	origLook, origRun := lookPath, runCommand
-	lookPath = func(string) (string, error) { return "/usr/bin/claude", nil }
-	runCommand = fn
-	t.Cleanup(func() { lookPath, runCommand = origLook, origRun })
 }

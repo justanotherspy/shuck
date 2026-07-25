@@ -6,8 +6,8 @@
 # prerequisites the plugin needs and reports any that are missing, without
 # blocking the session or touching the network:
 #
-#   1. the `shuck` binary is on PATH (the monitor hooks, the MCP server, and
-#      the /shuck skill all run it);
+#   1. the `shuck` binary is on PATH (the monitor hooks and the /shuck skill
+#      both run it);
 #   2. it is new enough to have the background monitor (`shuck monitor`);
 #   3. a GitHub token is available (GITHUB_TOKEN or GH_TOKEN).
 #

@@ -642,3 +642,22 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// TestMCPSubcommandExplainsItsRemoval covers the stub left behind for the
+// removed MCP server. An MCP client that still has `shuck mcp` registered
+// spawns it on every session start, so the message has to say what happened
+// and how to clean it up — not fail as an unparseable target.
+func TestMCPSubcommandExplainsItsRemoval(t *testing.T) {
+	code, stdout, stderr := runCLI("mcp")
+	if code != 2 {
+		t.Errorf("exit = %d, want 2 for a removed subcommand", code)
+	}
+	if stdout != "" {
+		t.Errorf("the notice belongs on stderr, got stdout %q", stdout)
+	}
+	for _, want := range []string{"MCP server was removed", "shuck monitor events", "claude mcp remove"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr is missing %q:\n%s", want, stderr)
+		}
+	}
+}

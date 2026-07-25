@@ -70,8 +70,7 @@ Subcommands (single-letter shorthands in parentheses):
   shuck dependabot (d) [owner/repo | url]    audit .github/dependabot.yml against the repo's ecosystems
   shuck dependabot discover [owner/repo]     scaffold or extend .github/dependabot.yml from detected ecosystems
   shuck pins (p) [dir]                       find workflow actions that are unpinned or whose SHA pin is stale
-  shuck mcp                   run as a local MCP (stdio) server exposing shuck tools
-  shuck setup                 install the shuck skill + CLAUDE.md note for Claude Code (and, optionally, the MCP)
+  shuck setup                 install the shuck skill + CLAUDE.md note for Claude Code
   shuck version [--check]     print the installed version; --check looks for a newer release
   shuck upgrade               download and install the latest release in place
 
@@ -147,6 +146,16 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			return runCompliance(args[1:], stdout, stderr)
 		case "dependabot":
 			return runDependabot(args[1:], stdout, stderr)
+		case "mcp":
+			// The MCP server is gone: everything it exposed is a subcommand
+			// here. Say so plainly — an MCP client that still has `shuck mcp`
+			// registered spawns this on every session start, and a target-parse
+			// error would leave whoever sees it guessing.
+			fmt.Fprintln(stderr, "shuck: the MCP server was removed — every tool it exposed is a subcommand now")
+			fmt.Fprintln(stderr, "  (inspect_logs → `shuck logs`, monitor_events → `shuck monitor events`, check_pins → `shuck pins`, …)")
+			fmt.Fprintln(stderr, "Run `shuck --help` for the full list, and drop the shuck entry from your MCP config:")
+			fmt.Fprintln(stderr, "  claude mcp remove --scope user shuck")
+			return 2
 		case "logs":
 			return runLogs(args[1:], stdout, stderr)
 		case "reviews":
@@ -344,7 +353,7 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 
 // InspectOptions controls a single inspection: the log-extraction tuning that
 // mirrors the CLI flags plus the cache behavior. It is the front-end-agnostic
-// input to [Inspect], used by alternative entry points such as the MCP server.
+// input to [Inspect], used by alternative entry points and embedders.
 type InspectOptions struct {
 	Context            int
 	ShortThreshold     int
@@ -367,7 +376,7 @@ type InspectOptions struct {
 
 // Inspect runs shuck's pipeline for an already-resolved target and returns the
 // report without rendering it. It is the reusable core behind the CLI and the
-// MCP server: callers decide how to present the result (text, JSON, or a
+// embedders: callers decide how to present the result (text, JSON, or a
 // structured tool response).
 func Inspect(ctx context.Context, tgt target.Target, opts InspectOptions) (*model.Report, error) {
 	return inspectWith(ctx, tgt, options{
@@ -388,7 +397,7 @@ func Inspect(ctx context.Context, tgt target.Target, opts InspectOptions) (*mode
 	})
 }
 
-// Version reports the shuck version for non-CLI front-ends (e.g. the MCP
+// Version reports the shuck version for non-CLI callers (e.g. an embedder
 // server advertises it in its server info).
 func Version() string { return versionString() }
 

@@ -4,8 +4,8 @@ Guidance for agents working in this repository.
 
 ## What this is
 
-`shuck` is one portable Go binary — a CLI, an MCP server, and a Claude Code
-plugin — that prints the exact failing CI step logs for a GitHub PR. Its
+`shuck` is one portable Go binary — a CLI and a Claude Code plugin — that
+prints the exact failing CI step logs for a GitHub PR. Its
 centrepiece is `shuck monitor`: a local background daemon that follows the
 working trees you are in, tracks whichever PR the current branch belongs to,
 and turns new CI failures, review comments, and stale action pins into events a
@@ -24,19 +24,15 @@ outside shuck.
 ## Dogfood shuck
 
 This repo bakes its own tool in for agents: the `shuck` skill
-(`.claude/skills/shuck/`), the plugin's monitor hooks, the `shuck` MCP server
-(`.mcp.json` → `shuck mcp`, tools `inspect_logs` / `inspect_reviews` /
-`inspect_security` / `check_compliance` / `audit_dependabot` / `check_pins` /
-`inspect_action` / `inspect_images` / `monitor_status` / `monitor_events` /
-`monitor_watch` / `monitor_unwatch`), and — in dev environments — the `shuck`
-binary on PATH.
+(`.claude/skills/shuck/`), the plugin's monitor hooks, and — in dev
+environments — the `shuck` binary on PATH.
 
 **The loop here is that the monitor watches and you get told.** The plugin
 registers this working tree at `SessionStart`, so after you push you do not
 poll: the next CI failure arrives in the conversation as a `<shuck-monitor>`
 block, with the failing step's logs already in it. To wait for a verdict
-deliberately, call `monitor_events` with `wait_seconds` rather than sleeping and
-re-checking. `monitor_status` answers "is my PR green?" without spending a
+deliberately, run `shuck monitor events --wait 30m` rather than sleeping and
+re-checking. `shuck monitor` answers "is my PR green?" without spending a
 fetch.
 
 **When you do want to pull something yourself — here or in any repo — reach for
@@ -66,9 +62,9 @@ issue.
   (deps + lint + modernize-check + test + cover-check + build).
 - CI (`ci.yml`) additionally gates on: `go.mod`/`go.sum` tidiness, `go vet`,
   govulncheck, actionlint + shellcheck, and **Plugin validate** — which fails
-  if `.claude/skills/shuck/SKILL.md` or `.mcp.json` drift from their sources
-  of truth under `plugins/shuck/` (the plugin's `SKILL.md` is also
-  `go:embed`-ed into the binary for `shuck setup`). Update them together.
+  if `.claude/skills/shuck/SKILL.md` drifts from its source of truth under
+  `plugins/shuck/` (that same file is `go:embed`-ed into the binary for
+  `shuck setup`). Update them together.
 - Coverage must stay ≥ `COVER_THRESHOLD` (80%); CI posts a sticky coverage
   comment on PRs.
 - Issue and PR templates live in `.github/`. Security vulnerabilities go
@@ -99,7 +95,7 @@ make ci              # exactly what CI runs
 
 ## Architecture
 
-Two ways in, one engine. **On demand** (the CLI / MCP tools): resolve target →
+Two ways in, one engine. **On demand** (the report commands): resolve target →
 load/validate cache → fetch checks (cheap metadata) → drill only new
 failed/cancelled jobs for logs → parse → extract errors → render → update
 cache. **By subscription** (`shuck monitor`): a local daemon runs the same
@@ -108,11 +104,10 @@ what changed as events.
 
 | Package | Responsibility |
 | --- | --- |
-| `main.go` | Thin entry: dispatches `mcp` and `setup`, else `cli.Run`. Holds the `go:embed` of the plugin's `SKILL.md`. |
-| `internal/cli` | Flag parsing + orchestration. Subcommands: `logs`, `reviews`, `all` (the bare-`shuck` default), `monitor`, `pins`, `action`, `image`, `security`, `compliance` (+ `discover`), `dependabot` (+ `discover`, `fix`), `version`, `upgrade`; single-letter aliases via `subcommandAliases` (`m` = monitor, `p` = pins). The exported cores (`Inspect`, `Security`, `Compliance`, `ComplianceDiscover`, `Dependabot`, `DependabotDiscover`, `DependabotFix`, `Action`, `Image`, `Images`, `Pins`) back both the CLI and the MCP server. `monitor.go` is a thin client over the daemon; `pins.go` also builds the cache-backed `pins.Resolver` the daemon is handed. |
+| `main.go` | Thin entry: dispatches `setup`, else `cli.Run`. Holds the `go:embed` of the plugin's `SKILL.md`. |
+| `internal/cli` | Flag parsing + orchestration. Subcommands: `logs`, `reviews`, `all` (the bare-`shuck` default), `monitor`, `pins`, `action`, `image`, `security`, `compliance` (+ `discover`), `dependabot` (+ `discover`, `fix`), `version`, `upgrade`; single-letter aliases via `subcommandAliases` (`m` = monitor, `p` = pins). The exported cores (`Inspect`, `Security`, `Compliance`, `ComplianceDiscover`, `Dependabot`, `DependabotDiscover`, `DependabotFix`, `Action`, `Image`, `Images`, `Pins`) are the front-end-agnostic pipeline embedders reuse. `monitor.go` is a thin client over the daemon; `pins.go` also builds the cache-backed `pins.Resolver` the daemon is handed. |
 | `internal/monitor` | The background monitor (`shuck monitor`): a local daemon that follows working trees, resolves each to its open PR, polls GitHub on an adaptive cadence, and publishes events. `git.go` reads a tree's repo + branch (worktrees included, no git library); `watch.go` the watch set; `poll.go` one target's round; `event.go` the event model + agent-facing rendering; `journal.go` the durable JSONL log + per-consumer cursors; `protocol.go`/`server.go`/`client.go` the one-line-JSON local IPC; `hook.go` the Claude Code hook entry points; `pins.go` the per-tree workflow pin audit. |
 | `internal/pins` | `shuck pins` / `check_pins`: find the `uses:` references in a checkout's workflow and action files (`WorkflowFiles` → `Scan`, a schema-free `yaml.Node` walk keyed on any mapping key spelled `uses`) and classify each against its action's latest release (`Audit`, via a caller-supplied `Resolver`) into pinned / stale / unpinned / skipped, each finding carrying the corrected line. `Render` + `Document` are the text and stable-JSON views. Pure and offline-testable. |
-| `internal/mcp` | Stdio MCP server (`shuck mcp`): a thin typed front-end over the `cli` cores (`mcp.go`) plus the monitor and pin tools (`monitor.go`: `monitor_status` / `monitor_events` / `monitor_watch` / `monitor_unwatch` / `check_pins`). |
 | `internal/jsonout` | The stable, versioned `--json` schema. Its view types are deliberately separate from `model` so internal refactors don't break consumers. |
 | `internal/action` | `shuck action`: pick the latest semver tag matching an `owner/action[@version]` ref (stable preferred, prerelease fallback; `Select`) → SHA-pin line / JSON (`action.Document`). |
 | `internal/image` | `shuck image`: resolve a GHCR image ref's latest matching tag + manifest digest (`Select`) → digest-pin line / JSON (`image.Document` / `ListDocument`). |
@@ -121,12 +116,12 @@ what changed as events.
 | `internal/compliance` | Strict-parse `.github/compliance.yml` (`Parse`) and `Evaluate` it against live settings into a `model.ComplianceReport`; the inverse snapshot (`Discover` / `FromActual`, comment-preserving yaml.Node patching) lives in `discover.go`. Pure logic. |
 | `internal/dependabot` | Strict-parse `.github/dependabot.yml` (`Parse`), detect the repo's ecosystems from its file paths (`Detect`, `ecosystem.go`), and `Audit` the two into a `model.DependabotReport` (coverage + best-practice findings). `Discover` scaffolds/extends a best-practice config (comment-preserving yaml.Node append); `Fix` fills best-practice fields onto existing entries in place (comment-preserving yaml.Node patch). Pure logic. |
 | `internal/release` | Self-update: resolve the latest release, download + checksum-verify, replace the binary. Backs `version --check` / `upgrade`. |
-| `internal/setup` | `shuck setup`: install the embedded skill to `~/.claude/skills/shuck`, add a managed CLAUDE.md note, optionally register the MCP at user scope. |
+| `internal/setup` | `shuck setup`: install the embedded skill to `~/.claude/skills/shuck` and add a managed CLAUDE.md note. |
 | `internal/target` | Resolve owner/repo/PR from args or the local repo (go-git). |
 | `internal/gh` | go-github (v89) wrappers: PR head (`GetPR`), open-PR lookup by branch (`FindOpenPR`), Actions runs/jobs/logs, checks, the free `RateRemaining` quota probe, security alerts, compliance reads (repo settings, branch protection incl. rulesets, Actions policy), the recursive Git Trees file listing (`RepoTree`, for dependabot ecosystem detection), GHCR Packages API. Plus two hand-rolled clients: GraphQL for reviews (`reviews.go`) and anonymous OCI registry-v2 (`registry.go`). `reviewcomments.go` is the REST review feed the monitor polls (`PRReviewsSince`, `PRReviewCommentsSince`, `PRCommentThread`). |
 | `internal/cache` | On-disk cache under `~/.cache/shuck/…`: per-PR reports + whole raw job logs, action tag lists, security reports, image listings. `Purge(ttl, keep)` sweeps stale entries on every run. |
 | `internal/logs` | Parse a job log into `##[group]`-delimited sections; extract the high-signal error excerpt. |
-| `internal/distil` | The shared distillation core (`CIFailure`): raw job log + Actions-API step metadata → per-step failure detail (`FailedSteps`) + an agent-ready `Summary`. `CapSummary` byte-budgets a summary for delivery (UTF-8-safe line-prefix cut + caller's truncation note) — used for event bodies and for the text a hook injects. `ReviewComment` / `Review` format a review event for the monitor (goldens under `testdata/review/`); the CLI's reviews view is a separate GraphQL path. Pure — layers on `logs` / `classify` / `model`; backs `cli`, `mcp`, and `monitor`. |
+| `internal/distil` | The shared distillation core (`CIFailure`): raw job log + Actions-API step metadata → per-step failure detail (`FailedSteps`) + an agent-ready `Summary`. `CapSummary` byte-budgets a summary for delivery (UTF-8-safe line-prefix cut + caller's truncation note) — used for event bodies and for the text a hook injects. `ReviewComment` / `Review` format a review event for the monitor (goldens under `testdata/review/`); the CLI's reviews view is a separate GraphQL path. Pure — layers on `logs` / `classify` / `model`; backs `cli` and `monitor`. |
 | `internal/render` | Format a `model.Report` to text. |
 | `internal/model` | Shared domain types (imports nothing internal). |
 

@@ -81,7 +81,7 @@ func (s Section) FullCommand() string {
 
 // DefaultMaxCommandLines is the default cap on how many lines of a failed step's
 // command shuck shows; longer commands are truncated. Shared by the CLI flag and
-// the MCP server so the two never drift. 0 would mean no limit.
+// the monitor's event bodies so the two never drift. 0 would mean no limit.
 const DefaultMaxCommandLines = 30
 
 // ClampCommand limits cmd to at most maxLines lines. A non-positive maxLines
