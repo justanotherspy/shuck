@@ -28,15 +28,18 @@ const hookTimeout = 3 * time.Second
 type HookEvent string
 
 // The hooks shuck installs. Each maps to one Claude Code hook event, and
-// together they are the whole integration: register on start, feed on every
-// prompt, re-check right after a push, and speak up if the agent tries to
-// finish with a red build.
+// together they are the integration wherever a plugin monitor cannot run:
+// register on start, feed on every prompt, re-check right after a push, and
+// speak up if the agent tries to finish with a red build. Where one can, the
+// stream takes the feeding over — see StreamServes — and the rest of them
+// carry on unchanged.
 const (
 	// HookSessionStart registers the session's working tree and reports what
 	// the monitor is already watching.
 	HookSessionStart HookEvent = "session-start"
 	// HookUserPromptSubmit delivers whatever the monitor has noticed since the
-	// session last looked. This is the hook that makes the monitor feel live.
+	// session last looked, unless a stream is already delivering it. This is
+	// the hook that makes the monitor feel live where no stream can run.
 	HookUserPromptSubmit HookEvent = "user-prompt-submit"
 	// HookPostToolUse notices a push and asks the monitor to re-check now,
 	// instead of at the next interval.
@@ -158,15 +161,9 @@ func readHookInput(r io.Reader) hookInput {
 // about what happens from now on, not handed an hour of another session's CI
 // history as if it had just arrived.
 func hookSessionStart(ctx context.Context, c *Client, in hookInput) *hookOutput {
-	dir := in.CWD
-	if dir == "" {
-		dir = os.Getenv("CLAUDE_PROJECT_DIR")
-	}
-	if dir == "" {
-		var err error
-		if dir, err = os.Getwd(); err != nil {
-			return nil
-		}
+	dir, ok := hookTree(in)
+	if !ok {
+		return nil
 	}
 
 	spec, err := ParseWatchSpec(nil, dir)
@@ -191,7 +188,25 @@ func hookSessionStart(ctx context.Context, c *Client, in hookInput) *hookOutput 
 		}
 	}
 
-	return context_(HookSessionStart, sessionStartContext(ctx, c, watch))
+	return context_(HookSessionStart, sessionStartContext(ctx, c, watch, StreamServes(dir)))
+}
+
+// hookTree resolves the working tree a hook payload is about, reporting whether
+// there is one. The payload's own cwd is the only authority worth having; the
+// two fallbacks exist because a hook that cannot name a directory can neither
+// register a watch nor tell whether a stream is already serving it.
+func hookTree(in hookInput) (string, bool) {
+	dir := in.CWD
+	if dir == "" {
+		dir = os.Getenv("CLAUDE_PROJECT_DIR")
+	}
+	if dir == "" {
+		var err error
+		if dir, err = os.Getwd(); err != nil {
+			return "", false
+		}
+	}
+	return dir, true
 }
 
 // isNewSession reports whether a SessionStart is a fresh conversation rather
@@ -209,7 +224,15 @@ func isNewSession(source string) bool {
 
 // sessionStartContext words the one paragraph a session gets at startup: what
 // the monitor is watching, and what will happen without anyone asking.
-func sessionStartContext(ctx context.Context, c *Client, w *Watch) string {
+//
+// streaming says which channel that will be. Both are automatic, so the
+// paragraph promises the same thing either way; naming the shape is what stops
+// an agent waiting for a <shuck-monitor> block that this session is never going
+// to see, or hunting for the notification that is not how it was told. A stream
+// that has not yet written its marker when this runs reads as the conversation
+// case, which is the harmless way round: the sentence is stale, the delivery is
+// not.
+func sessionStartContext(ctx context.Context, c *Client, w *Watch, streaming bool) string {
 	var b strings.Builder
 	b.WriteString("The shuck background monitor is running. ")
 	switch {
@@ -225,9 +248,16 @@ func sessionStartContext(ctx context.Context, c *Client, w *Watch) string {
 	b.WriteString(
 		"\nIt tracks whichever pull request the current branch belongs to and retargets itself " +
 			"when you switch branches or worktrees. New CI failures, review comments, and stale " +
-			"GitHub Action pins will be delivered to you automatically as <shuck-monitor> blocks — " +
-			"you do not need to poll for them. To ask it something directly, run `shuck monitor status`, " +
-			"or `shuck monitor events --wait 10m` to block until there is something to know.")
+			"GitHub Action pins will reach you automatically — ")
+	if streaming {
+		b.WriteString("as monitor notifications, since a shuck monitor stream is already " +
+			"following this working tree")
+	} else {
+		b.WriteString("as <shuck-monitor> blocks in the conversation")
+	}
+	b.WriteString(" — you do not need to poll for them. To ask it something directly, run " +
+		"`shuck monitor status`, or `shuck monitor events --wait 10m` to block until there is " +
+		"something to know.")
 
 	if st, err := c.Status(ctx, ""); err == nil && len(st.Targets) > 1 {
 		fmt.Fprintf(&b, "\nIt is also watching: %s.", otherTargets(st, w))
@@ -253,13 +283,27 @@ func otherTargets(st *Status, w *Watch) string {
 }
 
 // hookUserPrompt delivers what the monitor has noticed since this session last
-// looked. It is the hook that makes the whole thing feel live: no polling, no
-// tool call, the news simply arrives with the next thing the user says.
+// looked. Where no plugin monitor is running it is the hook that makes the
+// whole thing feel live: no polling, no tool call, the news simply arrives with
+// the next thing the user says.
 func hookUserPrompt(ctx context.Context, c *Client, in hookInput) *hookOutput {
 	if in.SessionID == "" {
 		// Without an identity there is no cursor, and a cursorless read hands
 		// over the whole journal — every prompt, forever. A payload shuck
 		// cannot identify is one it stays out of.
+		return nil
+	}
+	if dir, ok := hookTree(in); ok && StreamServes(dir) {
+		// A `shuck monitor stream` is already turning this tree's events into
+		// notifications. Delivering them here as well would hand the agent the
+		// same CI failure twice, which is the one thing a second channel must
+		// never introduce.
+		//
+		// Standing down reads nothing and — deliberately — seeks nothing. The
+		// stream holds its own cursor, so this session's stays exactly where it
+		// was, and every event remains pending for the Stop hook to gate on.
+		// That is what keeps "do not finish on a red build" working if the
+		// stream dies, or if nobody reads its notifications.
 		return nil
 	}
 	c.AutoStart = false // a prompt is not the moment to start a daemon

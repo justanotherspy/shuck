@@ -144,6 +144,162 @@ func TestHookUserPromptDeliversNewEvents(t *testing.T) {
 	}
 }
 
+// liveStream fabricates the marker a `shuck monitor stream` running in tree
+// would have written. Writing the file is the whole seam: the hooks and the
+// stream are separate processes and the marker is the only thing they share.
+func liveStream(t *testing.T, tree string) {
+	t.Helper()
+	writeStreamMarker(t, streamRecord{
+		Watch:     TreeWatchID(tree),
+		Path:      tree,
+		Consumer:  StreamConsumer(TreeWatchID(tree)),
+		PID:       os.Getpid(),
+		Heartbeat: time.Now(),
+	})
+}
+
+// TestHookUserPromptStandsDownForALiveStream is the rule that keeps two
+// delivery channels from becoming two copies. The stream is already turning
+// these events into notifications; injecting them here as well hands the agent
+// the same CI failure twice.
+//
+// The second half is the more important one: standing down must not consume
+// anything. The stream keeps its own cursor, so this session's has to stay
+// exactly where it was — that backlog is what the Stop hook gates on if the
+// stream dies or nobody reads it.
+func TestHookUserPromptStandsDownForALiveStream(t *testing.T) {
+	d, home := hookDaemon(t, newFakeClient())
+	tree := treeAt(t, "feature")
+	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": tree, "source": "startup"}, home)
+	d.publish([]Event{{Kind: KindCIFailed, Target: "o/r#7", Title: "test failed", Body: "the error"}})
+
+	liveStream(t, tree)
+
+	if out := runHook(t, HookUserPromptSubmit, map[string]any{"session_id": "sess-1", "cwd": tree}, home); out != nil {
+		t.Errorf("the prompt hook delivered what the stream is already sending:\n%s", out.Specific.AdditionalContext)
+	}
+	if got := d.journal.Pending("sess-1"); got != 1 {
+		t.Errorf("Pending = %d, want the failure still on this session's cursor for the Stop hook", got)
+	}
+	// A session in a subdirectory of the tree the stream registered is the same
+	// work, and would otherwise be handed everything a second time.
+	sub := filepath.Join(tree, "internal")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out := runHook(t, HookUserPromptSubmit, map[string]any{"session_id": "sess-1", "cwd": sub}, home); out != nil {
+		t.Errorf("a session below the streamed tree was delivered to as well:\n%s", out.Specific.AdditionalContext)
+	}
+}
+
+// TestHookUserPromptDeliversWhenNoStreamIsLive is the other half, and the one
+// that decides whether a crashed stream costs a session its monitor entirely.
+// A marker outlives the process that wrote it, so anything but a fresh
+// heartbeat from a process that still exists has to count as gone.
+func TestHookUserPromptDeliversWhenNoStreamIsLive(t *testing.T) {
+	tests := []struct {
+		name   string
+		marker func(t *testing.T, tree string)
+	}{
+		{"no stream has ever run here", func(*testing.T, string) {}},
+		{
+			name: "a stream whose heartbeat stopped",
+			marker: func(t *testing.T, tree string) {
+				writeStreamMarker(t, streamRecord{Watch: TreeWatchID(tree), Path: tree, PID: os.Getpid(),
+					Heartbeat: time.Now().Add(-streamStaleAfter - time.Minute)})
+			},
+		},
+		{
+			name: "a stream on somebody else's working tree",
+			marker: func(t *testing.T, _ string) {
+				other := t.TempDir()
+				writeStreamMarker(t, streamRecord{Watch: TreeWatchID(other), Path: other, PID: os.Getpid(),
+					Heartbeat: time.Now()})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, home := hookDaemon(t, newFakeClient())
+			tree := treeAt(t, "feature")
+			runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": tree, "source": "startup"}, home)
+			d.publish([]Event{{Kind: KindCIFailed, Target: "o/r#7", Title: "test failed", Body: "the error"}})
+
+			tt.marker(t, tree)
+
+			out := runHook(t, HookUserPromptSubmit, map[string]any{"session_id": "sess-1", "cwd": tree}, home)
+			if out == nil || out.Specific == nil {
+				t.Fatal("with nothing streaming, the prompt hook is the only channel there is")
+			}
+			if !strings.Contains(out.Specific.AdditionalContext, "test failed") {
+				t.Errorf("delivered context is missing the failure:\n%s", out.Specific.AdditionalContext)
+			}
+		})
+	}
+}
+
+// TestHookStopStillGatesWhileAStreamIsLive is the reason the stream gets a
+// cursor of its own. Notifications are delivery, not acknowledgement: the
+// finish gate has to survive a session that read none of them.
+func TestHookStopStillGatesWhileAStreamIsLive(t *testing.T) {
+	d, home := hookDaemon(t, newFakeClient())
+	tree := treeAt(t, "feature")
+	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": tree, "source": "startup"}, home)
+	liveStream(t, tree)
+
+	d.publish([]Event{{Kind: KindCIFailed, Target: "o/r#7", Title: "test failed", Body: "the error"}})
+	runHook(t, HookUserPromptSubmit, map[string]any{"session_id": "sess-1", "cwd": tree}, home)
+
+	out := runHook(t, HookStop, map[string]any{"session_id": "sess-1", "cwd": tree}, home)
+	if out == nil || out.Decision != "block" {
+		t.Fatalf("the agent finished quietly on a red build because a stream was running, got %+v", out)
+	}
+	if !strings.Contains(out.Reason, "test failed") {
+		t.Errorf("reason should carry the event:\n%s", out.Reason)
+	}
+}
+
+// TestHookSessionStartSaysWhereEventsWillArrive covers the one sentence a
+// session is told this by. Both channels are automatic, so the promise is the
+// same either way; naming the wrong shape leaves an agent waiting for a block
+// that is never coming.
+func TestHookSessionStartSaysWhereEventsWillArrive(t *testing.T) {
+	tests := []struct {
+		name        string
+		streaming   bool
+		want, avoid string
+	}{
+		{"with a stream running", true, "notifications", "<shuck-monitor> blocks"},
+		{"with only the hooks", false, "<shuck-monitor> blocks", "notifications"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newFakeClient()
+			c.openPR = 42
+			_, home := hookDaemon(t, c)
+			tree := treeAt(t, "feature")
+			if tt.streaming {
+				liveStream(t, tree)
+			}
+
+			out := runHook(t, HookSessionStart, map[string]any{
+				"session_id": "sess-1", "cwd": tree, "source": "startup",
+			}, home)
+			if out == nil || out.Specific == nil {
+				t.Fatal("session start should introduce the monitor to the session")
+			}
+			got := out.Specific.AdditionalContext
+			if !strings.Contains(got, tt.want) {
+				t.Errorf("context does not say events arrive as %s:\n%s", tt.want, got)
+			}
+			if strings.Contains(got, tt.avoid) {
+				t.Errorf("context promises %s, which is not how this session will hear:\n%s", tt.avoid, got)
+			}
+		})
+	}
+}
+
 func TestHookUserPromptIsSilentWhenNothingHappened(t *testing.T) {
 	_, home := hookDaemon(t, newFakeClient())
 	if out := runHook(t, HookUserPromptSubmit, map[string]any{"session_id": "sess-1"}, home); out != nil {
@@ -649,7 +805,7 @@ func TestSessionStartContextNamesTheOtherPRs(t *testing.T) {
 	d.due(time.Now()) // materialize both targets, as a poll round would
 
 	mine := &Watch{ID: "pr:o/r#7", Kind: WatchPR, Owner: "o", Repo: "r", Number: 7, Branch: "feature"}
-	got := sessionStartContext(context.Background(), &Client{dir: dir}, mine)
+	got := sessionStartContext(context.Background(), &Client{dir: dir}, mine, false)
 
 	if !strings.Contains(got, "It is following o/r#7 (branch feature).") {
 		t.Errorf("context should open with this session's own target:\n%s", got)
@@ -679,7 +835,7 @@ func TestSessionStartContextStaysQuietAboutOneTarget(t *testing.T) {
 	d.due(time.Now()) // materialize the one target, as a poll round would
 
 	mine := &Watch{ID: "pr:o/r#7", Kind: WatchPR, Owner: "o", Repo: "r", Number: 7, Branch: "feature"}
-	got := sessionStartContext(context.Background(), &Client{dir: dir}, mine)
+	got := sessionStartContext(context.Background(), &Client{dir: dir}, mine, false)
 
 	if !strings.Contains(got, "It is following o/r#7 (branch feature).") {
 		t.Errorf("context should still open with this session's own target:\n%s", got)

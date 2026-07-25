@@ -227,6 +227,29 @@ func (j *journal) Seek(consumer string, to uint64) {
 	j.saveCursorsLocked()
 }
 
+// SeekNew moves a consumer's cursor to `to` only if that consumer has never
+// been seen, and reports where its cursor ended up. It is what a channel with a
+// derived, durable identity needs at start-up: an unconditional Seek would throw
+// away the events a restarted reader was down for, while reading straight from a
+// cursor that does not exist yet hands a first-ever reader the retained journal
+// — another tree's CI history, delivered as if it had just happened.
+//
+// Absence is the test, not a zero cursor: a consumer explicitly seeked to 0 has
+// asked for the whole journal and gets it.
+func (j *journal) SeekNew(consumer string, to uint64) uint64 {
+	if consumer == "" {
+		return 0
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if at, ok := j.marks[consumer]; ok {
+		return at
+	}
+	j.marks[consumer] = to
+	j.saveCursorsLocked()
+	return to
+}
+
 // Cursor reports where a consumer's cursor sits, with an explicit override
 // taking precedence — the shape both the peeking and the consuming reads need.
 func (j *journal) Cursor(consumer string, override uint64) uint64 {

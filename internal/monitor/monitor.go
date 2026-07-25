@@ -26,6 +26,7 @@
 //   - poll.go    one watch's GitHub round: what changed, and which events that means
 //   - protocol.go / server.go / client.go  the local IPC between daemon and CLI
 //   - hook.go    the Claude Code hook entry points
+//   - stream.go  the marker a plugin monitor's stream leaves for the hooks
 package monitor
 
 import (

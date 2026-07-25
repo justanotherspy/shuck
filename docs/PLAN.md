@@ -44,8 +44,24 @@ theoretical ones:
   build must never delay a finish. Only `ci.failed`, `review.comment` and a
   `review.submitted` that is *not* an approval can hold a turn open;
   `watch.target`, `ci.started`, `pr.state`, `pins.stale` and `monitor.error`
-  never do. Every one of them still reaches the session on the next prompt, but
-  an agent that finishes right before a failure lands hears about it only then.
+  never do. Every one of them still reaches the session — as a notification
+  where the plugin monitor runs, on the next prompt where it does not — but an
+  agent that finishes right before a failure lands hears about it only then.
+- **A stand-down lets the session's backlog grow.** While a stream serves the
+  tree, `UserPromptSubmit` delivers nothing and consumes nothing, so the
+  session's own cursor is not advanced between `SessionStart` and the first
+  `Stop`. Nothing is lost, but the `Stop` hook's peek can then hold a long
+  batch, and `capFeed` trims from the *end* at 3.5 KB — so a very long session
+  on a busy PR can have the newest event, the one that justified the block,
+  truncated out of the block reason. Giving that peek a `Limit` would fix it
+  (the journal keeps the newest on overflow and the seek target is unchanged);
+  it is left alone until someone actually hits it.
+- **A killed stream is silent for up to its staleness window.** The liveness
+  marker is removed on exit and on the signal path, but a SIGKILL leaves it
+  behind and it reads as live until the heartbeat ages out. During that window
+  the prompt hook stands down and the stream is not reading either. Again
+  nothing is lost — the stand-down consumes nothing — but delivery waits for the
+  first prompt after the marker expires.
 - **Event delivery is at-most-once per consumer.** The cursor advances as
   events are handed over, so a caller that takes a batch and then dies has lost
   it. That is the deliberate trade (re-delivering a fixed CI

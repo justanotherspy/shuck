@@ -232,6 +232,21 @@ func (c *Client) Seek(ctx context.Context, consumer string) (uint64, error) {
 	return resp.Cursor, nil
 }
 
+// SeekNew starts a consumer the daemon has never seen at the present, and
+// leaves one it has alone. A stream's identity is derived from its working tree
+// rather than from the process, so it is both durable — a restarted stream picks
+// up where it left off — and brand new the first time a tree is streamed at all,
+// when reading from a cursor that does not exist yet would deliver the retained
+// journal (another branch's CI history, most of it stale) as this session's
+// first notification.
+func (c *Client) SeekNew(ctx context.Context, consumer string) (uint64, error) {
+	resp, err := c.Do(ctx, Request{Op: OpSeek, Consumer: consumer, IfNew: true})
+	if err != nil {
+		return 0, err
+	}
+	return resp.Cursor, nil
+}
+
 // Poke brings the next poll forward, for the moment right after a push.
 func (c *Client) Poke(ctx context.Context, id string) (string, error) {
 	resp, err := c.Do(ctx, Request{Op: OpPoke, ID: id})

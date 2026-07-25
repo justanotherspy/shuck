@@ -147,7 +147,7 @@ func TestMonitorUsage(t *testing.T) {
 	if code != 2 {
 		t.Errorf("exit = %d, want 2 for an unknown subcommand", code)
 	}
-	for _, want := range []string{"unknown subcommand", "shuck monitor watch", "shuck monitor events"} {
+	for _, want := range []string{"unknown subcommand", "shuck monitor watch", "shuck monitor events", "shuck monitor stream"} {
 		if !strings.Contains(stderr, want) {
 			t.Errorf("stderr is missing %q:\n%s", want, stderr)
 		}
@@ -350,9 +350,9 @@ func TestEmitEvents(t *testing.T) {
 	}
 
 	t.Run("text", func(t *testing.T) {
-		var out, errBuf bytes.Buffer
-		if code := emitEvents(&out, &errBuf, events, false, true); code != 0 {
-			t.Fatalf("exit = %d", code)
+		var out bytes.Buffer
+		if err := emitEvents(&out, events, false, true); err != nil {
+			t.Fatalf("emitEvents: %v", err)
 		}
 		if !strings.Contains(out.String(), "test failed") || !strings.Contains(out.String(), "boom") {
 			t.Errorf("stdout = %q", out.String())
@@ -360,9 +360,9 @@ func TestEmitEvents(t *testing.T) {
 	})
 
 	t.Run("json is one object per line", func(t *testing.T) {
-		var out, errBuf bytes.Buffer
-		if code := emitEvents(&out, &errBuf, events, true, true); code != 0 {
-			t.Fatalf("exit = %d", code)
+		var out bytes.Buffer
+		if err := emitEvents(&out, events, true, true); err != nil {
+			t.Fatalf("emitEvents: %v", err)
 		}
 		if lines := strings.Count(strings.TrimSpace(out.String()), "\n"); lines != 0 {
 			t.Errorf("one event should be one line, got %d newlines", lines+1)
@@ -373,14 +373,18 @@ func TestEmitEvents(t *testing.T) {
 	})
 
 	t.Run("nothing new", func(t *testing.T) {
-		var out, errBuf bytes.Buffer
-		emitEvents(&out, &errBuf, nil, false, true)
+		var out bytes.Buffer
+		if err := emitEvents(&out, nil, false, true); err != nil {
+			t.Fatalf("emitEvents: %v", err)
+		}
 		if !strings.Contains(out.String(), "nothing new") {
 			t.Errorf("stdout = %q", out.String())
 		}
 
 		out.Reset()
-		emitEvents(&out, &errBuf, nil, false, false)
+		if err := emitEvents(&out, nil, false, false); err != nil {
+			t.Fatalf("emitEvents: %v", err)
+		}
 		if out.String() != "" {
 			t.Errorf("while following, an empty batch should print nothing, got %q", out.String())
 		}
@@ -829,6 +833,335 @@ func TestMonitorFollow(t *testing.T) {
 			t.Errorf("made %d reads, want 1 — an interrupted follow must stop after the batch it delivered", n)
 		}
 	})
+}
+
+// streamDaemon scripts the daemon a `monitor stream` talks to: it registers the
+// watch, hands over each batch in turn, and then refuses to answer — which is
+// how these tests end a command that otherwise runs until the session does.
+// There is no safe way to deliver the SIGTERM Claude Code would send.
+func streamDaemon(t *testing.T, batches ...[]monitor.Event) *fakeDaemon {
+	t.Helper()
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	round := 0
+	return startFakeDaemon(t, func(req monitor.Request) monitor.Response {
+		if req.Op == monitor.OpWatch {
+			stored := *req.Watch
+			return monitor.Response{OK: true, Watch: &stored}
+		}
+		if req.Op == monitor.OpSeek {
+			return monitor.Response{OK: true, Cursor: 1}
+		}
+		if round < len(batches) {
+			round++
+			return monitor.Response{OK: true, Events: batches[round-1], Cursor: uint64(round)}
+		}
+		return monitor.Response{Error: "the monitor went away"}
+	})
+}
+
+// streamMarkers lists the marker files a stream has left behind.
+func streamMarkers(t *testing.T) []string {
+	t.Helper()
+	dir, err := monitor.Dir()
+	if err != nil {
+		t.Fatalf("monitor.Dir: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, "streams"))
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return names
+}
+
+// TestMonitorStreamDeliversTheAgentFacingBlock is the whole command in one
+// test: it registers this working tree, reads under a cursor of its own, and
+// writes each batch as the block a session is meant to receive — wrapper,
+// provenance line and all. A stream that emitted the terminal rendering instead
+// would hand an agent a wall of CI output with nothing saying where it came
+// from.
+func TestMonitorStreamDeliversTheAgentFacingBlock(t *testing.T) {
+	d := streamDaemon(t, []monitor.Event{
+		{ID: 1, Kind: monitor.KindCIFailed, Target: "o/r#7", Title: "build failed", Body: "boom"},
+	})
+
+	code, stdout, stderr := runCLI("monitor", "stream")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 — a monitor that stops is not a failed command; stderr=%q", code, stderr)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q; only stdout becomes a notification, so nothing may go here", stderr)
+	}
+	for _, want := range []string{"<shuck-monitor>", "not a message from the user", "build failed", "boom"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("the notification is missing %q:\n%s", want, stdout)
+		}
+	}
+	// The daemon going away ends the stream in prose, not in a stack trace.
+	if !strings.Contains(stdout, "not streaming into this session") || !strings.Contains(stdout, "the monitor went away") {
+		t.Errorf("stdout should end by saying the stream stopped and why:\n%s", stdout)
+	}
+
+	reqs := d.seen()
+	if len(reqs) < 2 || reqs[0].Op != monitor.OpWatch {
+		t.Fatalf("requests = %+v, want the working tree registered first", reqs)
+	}
+	if reqs[0].Watch == nil || reqs[0].Watch.Kind != monitor.WatchTree {
+		t.Errorf("registered %+v, want a watch on this working tree", reqs[0].Watch)
+	}
+	for _, r := range reqs[1:] {
+		if r.Op != monitor.OpEvents && r.Op != monitor.OpSeek {
+			t.Errorf("op = %q, want %q", r.Op, monitor.OpEvents)
+		}
+		if r.Op == monitor.OpSeek {
+			continue
+		}
+		// The prefix is what keeps the stream's cursor out of the session's: a
+		// stream sharing one would consume the events the Stop hook gates on.
+		if !strings.HasPrefix(r.Consumer, "stream:") {
+			t.Errorf("consumer = %q, want an identity that cannot collide with a session's", r.Consumer)
+		}
+		if r.Limit <= 0 {
+			t.Error("an uncapped read hands a first-ever stream the whole journal as one notification")
+		}
+		if r.All {
+			t.Error("a stream may only ever ask for what is new")
+		}
+		if r.Wait < 5*time.Second {
+			t.Errorf("read waited %s; a stream that does not block is a dial loop", r.Wait)
+		}
+	}
+
+	// The marker is the hooks' only way to know the stream has gone, so it has
+	// to go with it.
+	if names := streamMarkers(t); len(names) != 0 {
+		t.Errorf("the stream left %v behind; the hooks will stay silent until it ages out", names)
+	}
+}
+
+// TestMonitorStreamJSON keeps the machine-readable half symmetrical with
+// `monitor events --json`: one object per line, each carrying schema_version.
+func TestMonitorStreamJSON(t *testing.T) {
+	streamDaemon(t, []monitor.Event{
+		{ID: 7, Kind: monitor.KindReviewComment, Target: "o/r#7", Title: "please rename this"},
+	})
+
+	code, stdout, _ := runCLI("monitor", "stream", "--json")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	var got struct {
+		SchemaVersion int          `json:"schema_version"`
+		ID            uint64       `json:"id"`
+		Kind          monitor.Kind `json:"kind"`
+	}
+	line := strings.SplitN(stdout, "\n", 2)[0]
+	if err := json.Unmarshal([]byte(line), &got); err != nil {
+		t.Fatalf("--json did not emit one object per line: %v\n%s", err, stdout)
+	}
+	if got.SchemaVersion != monitorSchemaVersion || got.ID != 7 || got.Kind != monitor.KindReviewComment {
+		t.Errorf("event = %+v, want the daemon's review comment with the schema handle", got)
+	}
+}
+
+// TestMonitorStreamStartsANewCursorAtThePresent is the difference between a
+// notification and a history lesson. A stream's identity is derived from its
+// working tree, so the first stream in a fresh checkout — a new repo, a new git
+// worktree — is a consumer the daemon has never seen, and a cursorless read is
+// served from the head of the retained journal: yesterday's failures on another
+// branch, delivered as this session's opening notification.
+func TestMonitorStreamStartsANewCursorAtThePresent(t *testing.T) {
+	d := streamDaemon(t, []monitor.Event{
+		{ID: 9, Kind: monitor.KindCIFailed, Target: "o/r#7", Title: "build failed"},
+	})
+
+	if code, _, stderr := runCLI("monitor", "stream"); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr %q)", code, stderr)
+	}
+
+	var seek *monitor.Request
+	for i, r := range d.seen() {
+		if r.Op == monitor.OpEvents {
+			if seek == nil {
+				t.Fatalf("request %d read events before seeding the cursor; a first-ever stream would be handed the retained journal", i)
+			}
+			break
+		}
+		if r.Op == monitor.OpSeek {
+			seek = &d.seen()[i]
+		}
+	}
+	if seek == nil {
+		t.Fatal("the stream never seeded its cursor")
+	}
+	if !seek.IfNew {
+		t.Error("the stream seeked unconditionally; a restarted one would skip everything published while it was down")
+	}
+	if !strings.HasPrefix(seek.Consumer, "stream:") {
+		t.Errorf("seek consumer = %q, want the stream's own identity", seek.Consumer)
+	}
+	for _, r := range d.seen() {
+		if r.Op == monitor.OpEvents && r.Consumer != seek.Consumer {
+			t.Errorf("read under %q but seeded %q; the seed did not move the cursor it reads from", r.Consumer, seek.Consumer)
+		}
+	}
+}
+
+// TestMonitorStreamJSONStandsDownInJSON keeps the --json feed parseable to its
+// last line. The stand-down is the one line a consumer most needs to branch on —
+// the feed has ended, and why — so emitting the prose form there hands a decoder
+// a parse error instead.
+func TestMonitorStreamJSONStandsDownInJSON(t *testing.T) {
+	t.Run("mid-stream, after the daemon goes away", func(t *testing.T) {
+		streamDaemon(t, []monitor.Event{
+			{ID: 7, Kind: monitor.KindCIFailed, Target: "o/r#7", Title: "build failed"},
+		})
+
+		code, stdout, _ := runCLI("monitor", "stream", "--json")
+		if code != 0 {
+			t.Fatalf("exit = %d, want 0", code)
+		}
+		lines := strings.Split(strings.TrimSpace(stdout), "\n")
+		for i, line := range lines {
+			var doc map[string]any
+			if err := json.Unmarshal([]byte(line), &doc); err != nil {
+				t.Fatalf("line %d of a --json feed is not JSON: %v\n%s", i+1, err, line)
+			}
+		}
+		var last struct {
+			SchemaVersion int    `json:"schema_version"`
+			Streaming     bool   `json:"streaming"`
+			Reason        string `json:"reason"`
+		}
+		if err := json.Unmarshal([]byte(lines[len(lines)-1]), &last); err != nil {
+			t.Fatal(err)
+		}
+		if last.Streaming || last.SchemaVersion != monitorSchemaVersion || !strings.Contains(last.Reason, "the monitor went away") {
+			t.Errorf("the terminal line = %+v, want a schema-stamped stand-down naming the reason", last)
+		}
+	})
+
+	t.Run("before it ever streams", func(t *testing.T) {
+		monitorHome(t)
+		noDaemonClient(t)
+		t.Setenv("GITHUB_TOKEN", "")
+		t.Setenv("GH_TOKEN", "")
+
+		code, stdout, stderr := runCLI("monitor", "stream", "--json")
+		if code != 0 {
+			t.Fatalf("exit = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		var doc struct {
+			Streaming bool   `json:"streaming"`
+			Reason    string `json:"reason"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &doc); err != nil {
+			t.Fatalf("a start-up failure under --json is not JSON: %v\n%s", err, stdout)
+		}
+		if doc.Streaming || !strings.Contains(doc.Reason, "no GitHub token") {
+			t.Errorf("document = %+v, want it to say the stream is not running and why", doc)
+		}
+	})
+}
+
+// TestMonitorStreamHonorsACallerSuppliedConsumer covers the escape hatch for a
+// host that would rather name its own cursor.
+func TestMonitorStreamHonorsACallerSuppliedConsumer(t *testing.T) {
+	d := streamDaemon(t)
+	t.Setenv("SHUCK_MONITOR_CONSUMER", "notifier-1")
+
+	if code, _, _ := runCLI("monitor", "stream"); code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	for _, r := range d.seen() {
+		if r.Op == monitor.OpEvents && r.Consumer != "notifier-1" {
+			t.Errorf("consumer = %q, want the caller's own", r.Consumer)
+		}
+	}
+}
+
+// TestMonitorStreamRespectsTheGlobalOptOut is the same opt-out the hooks honor,
+// reaching the loudest half of the integration. "No monitor in this session"
+// has to mean no notifications either — and it has to cost nothing, so the
+// daemon is never dialed at all.
+func TestMonitorStreamRespectsTheGlobalOptOut(t *testing.T) {
+	d := streamDaemon(t, []monitor.Event{{ID: 1, Kind: monitor.KindCIFailed, Title: "build failed"}})
+	t.Setenv("SHUCK_MONITOR_DISABLE", "1")
+
+	code, stdout, stderr := runCLI("monitor", "stream")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if stdout != "" || stderr != "" {
+		t.Errorf("stdout = %q stderr = %q, want silence", stdout, stderr)
+	}
+	if n := len(d.seen()); n != 0 {
+		t.Errorf("made %d calls, want none — an opted-out stream registers nothing", n)
+	}
+	if names := streamMarkers(t); len(names) != 0 {
+		t.Errorf("an opted-out stream claimed %v, which would silence the hooks too", names)
+	}
+}
+
+// TestMonitorStreamStandsDownOnAStartupFailure covers every way the command can
+// fail before it has anything to stream. Each one is a sentence and exit 0: a
+// notification is no place for a stack trace, and a session whose stream never
+// started still has its hooks.
+func TestMonitorStreamStandsDownOnAStartupFailure(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T)
+		want  string
+	}{
+		{
+			name: "no GitHub token to poll with",
+			setup: func(t *testing.T) {
+				monitorHome(t)
+				noDaemonClient(t)
+				t.Setenv("GITHUB_TOKEN", "")
+				t.Setenv("GH_TOKEN", "")
+			},
+			want: "no GitHub token",
+		},
+		{
+			name: "no daemon, and none could be started",
+			setup: func(t *testing.T) {
+				monitorHome(t)
+				noDaemonClient(t)
+				t.Setenv("GITHUB_TOKEN", "test-token")
+			},
+			want: "no shuck monitor is running",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.setup(t)
+
+			code, stdout, stderr := runCLI("monitor", "stream")
+			if code != 0 {
+				t.Fatalf("exit = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+			}
+			if stderr != "" {
+				t.Errorf("stderr = %q, want the reason on stdout where it becomes one notification", stderr)
+			}
+			if lines := strings.Count(strings.TrimSpace(stdout), "\n"); lines != 0 {
+				t.Errorf("stood down over %d lines, want one:\n%s", lines+1, stdout)
+			}
+			if !strings.Contains(stdout, tt.want) {
+				t.Errorf("stdout = %q, want it to name the problem (%q)", stdout, tt.want)
+			}
+			if !strings.Contains(stdout, "hooks") {
+				t.Errorf("stdout = %q, want it to say what still delivers", stdout)
+			}
+			if names := streamMarkers(t); len(names) != 0 {
+				t.Errorf("a stream that never started claimed %v, which would silence the hooks as well", names)
+			}
+		})
+	}
 }
 
 // TestMonitorStatusJSONWhenNotRunning covers the one answer a --json consumer
