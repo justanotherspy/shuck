@@ -41,6 +41,60 @@ func FuzzParse(f *testing.F) {
 	})
 }
 
+// FuzzStripTimestamps asserts that stripping only ever removes one leading
+// timestamp per line and never touches the line grid: the monitor hands the
+// result straight to a reader as a whole log, so a lost line or a byte eaten off
+// the wrong end would be an invisible lie about what CI printed.
+func FuzzStripTimestamps(f *testing.F) {
+	f.Add("")
+	f.Add("plain line with no timestamp\n")
+	f.Add("2024-05-01T10:00:00.0000000Z hello\n2024-05-01T10:00:01Z world\n")
+	f.Add("2024-05-01T10:00:00.0000000Z 2024-05-01T10:00:00.0000000Z stacked\n")
+	f.Add("2024-05-01T10:00:00.0000000Z \n\n2024-05-01T10:00:01Z a\r\n")
+	if data, err := os.ReadFile(filepath.Join("testdata", "job_failure.log")); err == nil {
+		f.Add(string(data))
+	}
+
+	f.Fuzz(func(t *testing.T, raw string) {
+		got := StripTimestamps(raw)
+
+		if len(got) > len(raw) {
+			t.Fatalf("output grew: %d -> %d bytes", len(raw), len(got))
+		}
+		in, out := strings.Split(raw, "\n"), strings.Split(got, "\n")
+		if len(in) != len(out) {
+			t.Fatalf("line count changed: %d -> %d", len(in), len(out))
+		}
+		for i := range in {
+			if out[i] == in[i] {
+				continue
+			}
+			// Whatever changed must be a removal from the front of the line,
+			// and exactly the one prefix the regexp matches there — cutting two
+			// prefixes, or anything the regexp did not match, shows up here.
+			if !strings.HasSuffix(in[i], out[i]) {
+				t.Fatalf("line %d is not a suffix of the input line: %q from %q", i, out[i], in[i])
+			}
+			cut := in[i][:len(in[i])-len(out[i])]
+			if m := tsPrefix.FindString(in[i]); m != cut {
+				t.Fatalf("line %d removed %q, but the timestamp prefix of %q is %q", i, cut, in[i], m)
+			}
+		}
+		// Idempotent once no line still opens with a timestamp — the state every
+		// GitHub log reaches in one pass. Stacked timestamps are the deliberate
+		// exception: the second one is the tool's own output, not GitHub's, so a
+		// re-run would strip content and is not asserted to be a no-op.
+		for _, l := range out {
+			if tsPrefix.MatchString(l) {
+				return
+			}
+		}
+		if again := StripTimestamps(got); again != got {
+			t.Fatalf("not a fixpoint: %q -> %q", got, again)
+		}
+	})
+}
+
 // FuzzExtract checks the excerpt builder. Extract must never panic and must
 // only emit content lines that came from the input (or synthetic "… omitted …"
 // markers): it selects and elides, it never fabricates content. Blank lines are

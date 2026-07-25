@@ -74,6 +74,82 @@ func TestParseLeadingSection(t *testing.T) {
 	}
 }
 
+// TestStripTimestamps pins the prefix contract line by line. The monitor puts a
+// short raw log straight into a CI-failure event, so whatever this returns is
+// what an agent reads: a chewed-up tail or a lost line is a wrong answer, not a
+// cosmetic one. Only a full "<ISO-8601>Z " at the very start of a line is
+// GitHub's; everything else on the line is somebody's output.
+func TestStripTimestamps(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"empty input", "", ""},
+		{"fractional seconds", "2024-05-01T10:00:03.5000000Z --- FAIL: TestThing", "--- FAIL: TestThing"},
+		{"fraction is optional", "2024-05-01T10:00:03Z --- FAIL: TestThing", "--- FAIL: TestThing"},
+		{"single fractional digit", "2024-05-01T10:00:03.5Z boom", "boom"},
+		{"untimestamped line comes back byte-identical", "  --- FAIL: TestThing\t(0.00s)  ", "  --- FAIL: TestThing\t(0.00s)  "},
+		{"only the separator space goes, indentation stays", "2024-05-01T10:00:03.6000000Z     thing_test.go:42: expected 1 got 2", "    thing_test.go:42: expected 1 got 2"},
+		{"a timestamp mid-line is content, not a prefix", "deploy started at 2024-05-01T10:00:03.5000000Z and failed", "deploy started at 2024-05-01T10:00:03.5000000Z and failed"},
+		{"no separator space is not a prefix", "2024-05-01T10:00:03.5000000Zboom", "2024-05-01T10:00:03.5000000Zboom"},
+		{"bare timestamp with nothing after it", "2024-05-01T10:00:03.5000000Z", "2024-05-01T10:00:03.5000000Z"},
+		{"timestamp with an empty payload collapses to a blank line", "2024-05-01T10:00:03.5000000Z ", ""},
+		// A tool that stamps its own lines (docker logs -t, kubectl
+		// --timestamps) leaves two prefixes stacked. Exactly one of them is
+		// GitHub's; the other is output, and eating it would be data loss.
+		{"only the first of two stacked timestamps is GitHub's", "2024-05-01T10:00:03.5000000Z 2024-05-01T10:00:03.6000000Z container said hi", "2024-05-01T10:00:03.6000000Z container said hi"},
+		{"each line is judged on its own", "2024-05-01T10:00:03.5000000Z stamped\nunstamped\n2024-05-01T10:00:04Z stamped too", "stamped\nunstamped\nstamped too"},
+		{"trailing newline survives", "2024-05-01T10:00:03.5000000Z last\n", "last\n"},
+		{"blank lines between entries survive", "2024-05-01T10:00:03.5000000Z a\n\n2024-05-01T10:00:04.0000000Z b", "a\n\nb"},
+		{"lone newline", "\n", "\n"},
+		{"CRLF keeps its carriage return", "2024-05-01T10:00:03.5000000Z a\r\n2024-05-01T10:00:04.0000000Z b\r\n", "a\r\nb\r\n"},
+		{"##[error] marker is left for the extractor to find", "2024-05-01T10:00:04.0000000Z ##[error]Process completed with exit code 1.", "##[error]Process completed with exit code 1."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := StripTimestamps(tc.raw); got != tc.want {
+				t.Errorf("StripTimestamps(%q) = %q, want %q", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestStripTimestampsWholeLog runs the real fixture through the whole-log path
+// the monitor uses: the noise goes, the line grid the reader relies on does not,
+// and the markers Parse and Extract key on survive untouched. A second pass over
+// a GitHub log is a no-op — every prefix is already gone — which is what makes it
+// safe for a caller not to track whether stripping has happened yet.
+func TestStripTimestampsWholeLog(t *testing.T) {
+	raw := readFixture(t, "job_failure.log")
+	got := StripTimestamps(raw)
+
+	rawLines, gotLines := strings.Split(raw, "\n"), strings.Split(got, "\n")
+	if len(rawLines) != len(gotLines) {
+		t.Fatalf("line count changed: %d -> %d", len(rawLines), len(gotLines))
+	}
+	if len(got) >= len(raw) {
+		t.Errorf("a fully timestamped log should shrink: %d -> %d bytes", len(raw), len(got))
+	}
+	for i, line := range gotLines {
+		if tsPrefix.MatchString(line) {
+			t.Errorf("line %d still carries a timestamp: %q", i, line)
+		}
+	}
+	for _, want := range []string{
+		"##[group]Run go test ./...",
+		"    thing_test.go:42: expected 1 got 2",
+		"##[error]Process completed with exit code 1.",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("stripped log lost %q:\n%s", want, got)
+		}
+	}
+	if again := StripTimestamps(got); again != got {
+		t.Errorf("second pass over an already-stripped log changed it:\n%q\n%q", got, again)
+	}
+}
+
 func TestFullCommand(t *testing.T) {
 	raw := strings.Join([]string{
 		`2024-05-01T10:00:00.0000000Z ##[group]Run echo "first"`,
