@@ -28,9 +28,14 @@ outside shuck.
 
 ## Dogfood shuck
 
-This repo bakes its own tool in for agents: the `shuck` skill
-(`.claude/skills/shuck/`), the plugin's monitor stream and its hooks, and — in
-dev environments — the `shuck` binary on PATH.
+This repo runs its own tool on itself. It does that **through the plugin**, not
+around it: `.claude/settings.json` enables `shuck@justanotherspy`, whose
+marketplace entry sources `plugins/shuck` straight out of this repository, so
+the skill, the monitor and the hooks an agent gets here are the ones being
+edited. There is deliberately no second copy of the skill under `.claude/` —
+one file, `plugins/shuck/skills/shuck/SKILL.md`, is the skill, the plugin's
+skill, and the file `go:embed`-ed into the binary for `shuck setup`. In dev
+environments the `shuck` binary is on PATH too.
 
 **The loop here is that the monitor watches and you get told.** The plugin
 registers this working tree at `SessionStart`, so after you push you do not
@@ -68,10 +73,9 @@ issue.
 - Before pushing, run what CI runs: `make ci`
   (deps + lint + modernize-check + test + cover-check + build).
 - CI (`ci.yml`) additionally gates on: `go.mod`/`go.sum` tidiness, `go vet`,
-  govulncheck, actionlint + shellcheck, and **Plugin validate** — which fails
-  if `.claude/skills/shuck/SKILL.md` drifts from its source of truth under
-  `plugins/shuck/` (that same file is `go:embed`-ed into the binary for
-  `shuck setup`). Update them together.
+  govulncheck, actionlint + shellcheck, and **Plugin validate** — which runs
+  `claude plugin validate --strict` over `plugins/shuck` and the marketplace
+  manifest, so a malformed manifest, hook or monitor entry fails the build.
 - Coverage must stay ≥ `COVER_THRESHOLD` (80%); CI posts a sticky coverage
   comment on PRs.
 - Issue and PR templates live in `.github/`. Security vulnerabilities go
