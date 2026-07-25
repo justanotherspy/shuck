@@ -115,6 +115,46 @@ func TestJournalSeekAndPending(t *testing.T) {
 	j.Seek("", 1)
 }
 
+// TestJournalSeekNewOnlyStartsAConsumerOnce is what keeps a stream's derived,
+// durable identity from meaning two incompatible things. The first time a tree
+// is streamed the consumer does not exist, and reading from a cursor that does
+// not exist serves the retained journal — another branch's day-old CI failures,
+// delivered as this session's first notification. Every start after that must
+// leave the cursor where it is, or a restarted stream would seek past everything
+// published while it was down.
+func TestJournalSeekNewOnlyStartsAConsumerOnce(t *testing.T) {
+	j := testJournal(t)
+	j.Append(Event{Kind: KindCIFailed, Title: "yesterday's build"})
+	j.Append(Event{Kind: KindCIFailed, Title: "and the one before"})
+
+	at := j.SeekNew("stream:tree:/repo", j.Latest())
+	if at != j.Latest() {
+		t.Errorf("a first-ever consumer landed at %d, want the present (%d)", at, j.Latest())
+	}
+	if pending := j.Pending("stream:tree:/repo"); pending != 0 {
+		t.Errorf("Pending = %d for a consumer that just started, want 0 — that backlog is not its news", pending)
+	}
+
+	// Now it has a cursor, and events pile up while nothing is reading.
+	j.Append(Event{Kind: KindCIFailed, Title: "broke while the stream was down"})
+	if at := j.SeekNew("stream:tree:/repo", j.Latest()); at != j.Latest()-1 {
+		t.Errorf("a restart moved the cursor to %d, want it left at %d", at, j.Latest()-1)
+	}
+	if pending := j.Pending("stream:tree:/repo"); pending != 1 {
+		t.Errorf("Pending = %d after a restart, want the 1 event it was down for", pending)
+	}
+
+	// A consumer deliberately parked at 0 has asked for the whole journal, and
+	// an anonymous one is not tracked at all.
+	j.Seek("archivist", 0)
+	if at := j.SeekNew("archivist", j.Latest()); at != 0 {
+		t.Errorf("SeekNew moved a consumer that is deliberately at the start to %d", at)
+	}
+	if at := j.SeekNew("", j.Latest()); at != 0 {
+		t.Errorf("SeekNew tracked the anonymous consumer, landing at %d", at)
+	}
+}
+
 func TestJournalCursorHonoursOverride(t *testing.T) {
 	j := testJournal(t)
 	j.Append(Event{Kind: KindCIFailed})

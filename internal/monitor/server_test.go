@@ -179,6 +179,37 @@ func TestServeRoundTrip(t *testing.T) {
 		}
 	})
 
+	t.Run("seek --if-new starts a stranger and leaves a regular alone", func(t *testing.T) {
+		d.publish([]Event{{Kind: KindCIFailed, Title: "before anyone was reading"}})
+
+		// A consumer the daemon has never seen starts at the present rather than
+		// at the head of the retained journal.
+		if _, err := client.SeekNew(ctx, "stream:tree:/repo"); err != nil {
+			t.Fatal(err)
+		}
+		events, _, err := client.Events(ctx, Request{Consumer: "stream:tree:/repo"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(events) != 0 {
+			t.Errorf("a first-ever stream was handed %d retained events as its first notification", len(events))
+		}
+
+		// One that already has a cursor keeps it, so a restart still collects
+		// what was published while it was not reading.
+		d.publish([]Event{{Kind: KindCIFailed, Title: "while the stream was down"}})
+		if _, err := client.SeekNew(ctx, "stream:tree:/repo"); err != nil {
+			t.Fatal(err)
+		}
+		events, _, err = client.Events(ctx, Request{Consumer: "stream:tree:/repo"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(events) != 1 || events[0].Title != "while the stream was down" {
+			t.Errorf("a restarted stream got %+v, want the event it was down for", events)
+		}
+	})
+
 	t.Run("poke", func(t *testing.T) {
 		msg, err := client.Poke(ctx, "")
 		if err != nil {

@@ -30,6 +30,7 @@ Usage:
   shuck monitor watch [target]     follow something (default: this working tree)
   shuck monitor unwatch [target]   stop following it
   shuck monitor events             hand over what has happened since you last looked
+  shuck monitor stream             keep printing this tree's events, for a plugin monitor
   shuck monitor poke [target]      re-check now, without waiting for the interval
   shuck monitor stop               shut the monitor down
   shuck monitor run                run the monitor in the foreground (what start execs)
@@ -39,9 +40,10 @@ A target is a directory to follow, or a pull request — owner/repo#42, a PR URL
 "owner/repo 42", or a bare number for the local repository.
 
 In Claude Code the monitor needs none of this: the shuck plugin registers the
-session's working tree on start and delivers events into the conversation as
-they arrive. "shuck monitor hook <event>" is that integration's entry point and
-is not meant to be run by hand.
+session's working tree on start and delivers events as they arrive — as
+notifications where it can run "shuck monitor stream", and into the conversation
+through its hooks everywhere else. That command and "shuck monitor hook <event>"
+are the integration's entry points and are not meant to be run by hand.
 
 Flags:
 `
@@ -62,6 +64,8 @@ func runMonitor(args []string, stdout, stderr io.Writer) int {
 		return monitorUnwatch(args, stdout, stderr)
 	case "events":
 		return monitorEvents(args, stdout, stderr)
+	case "stream":
+		return monitorStream(args, stdout, stderr)
 	case "poke":
 		return monitorPoke(args, stdout, stderr)
 	case "stop":
@@ -382,7 +386,11 @@ func monitorEvents(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "shuck:", err)
 		return 2
 	}
-	return emitEvents(stdout, stderr, events, jsonOut, true)
+	if err := emitEvents(stdout, events, jsonOut, true); err != nil {
+		fmt.Fprintln(stderr, "shuck:", err)
+		return 2
+	}
+	return 0
 }
 
 // eventsWithin performs the one-shot read, re-asking until the caller's own
@@ -447,52 +455,253 @@ const eventsRetryFloor = 10 * time.Millisecond
 // long a quiet feed holds a connection open.
 const followInterval = 30 * time.Second
 
-// monitorFollow streams events until interrupted.
-func monitorFollow(ctx context.Context, client *monitor.Client, req monitor.Request, jsonOut bool, stdout, stderr io.Writer) int {
+// followEvents reads batch after batch until the caller interrupts it or the
+// daemon stops answering, handing each batch — empty ones included, which is
+// what lets a caller use the loop as a heartbeat — to emit.
+//
+// It reports what happened rather than deciding what it means: nil for an
+// interruption, the reason otherwise. Its two callers word that reason in
+// opposite ways. `monitor events --follow` is somebody's terminal and a daemon
+// that went away is a failure worth two on the exit code; a plugin monitor's
+// stream is a notification channel, and there the same event is one quiet
+// sentence and exit 0.
+func followEvents(ctx context.Context, client *monitor.Client, req monitor.Request, emit func([]monitor.Event) error) error {
 	req.All = false
 	req.Wait = followInterval
 	for {
 		events, _, err := client.Events(ctx, req)
 		if err != nil {
 			if ctx.Err() != nil {
-				return 0
+				return nil
 			}
-			fmt.Fprintln(stderr, "shuck:", err)
-			return 2
+			return err
 		}
-		if code := emitEvents(stdout, stderr, events, jsonOut, false); code != 0 {
-			return code
+		if err := emit(events); err != nil {
+			return err
 		}
 		if ctx.Err() != nil {
-			return 0
+			return nil
 		}
 	}
 }
 
+// monitorFollow streams events until interrupted.
+func monitorFollow(ctx context.Context, client *monitor.Client, req monitor.Request, jsonOut bool, stdout, stderr io.Writer) int {
+	err := followEvents(ctx, client, req, func(events []monitor.Event) error {
+		return emitEvents(stdout, events, jsonOut, false)
+	})
+	if err != nil {
+		fmt.Fprintln(stderr, "shuck:", err)
+		return 2
+	}
+	return 0
+}
+
 // emitEvents prints a batch. quietWhenEmpty says whether "nothing new" deserves
 // a line of its own — it does for a one-shot read and does not while following.
-func emitEvents(stdout, stderr io.Writer, events []monitor.Event, jsonOut, quietWhenEmpty bool) int {
+func emitEvents(stdout io.Writer, events []monitor.Event, jsonOut, quietWhenEmpty bool) error {
 	if jsonOut {
 		enc := json.NewEncoder(stdout)
 		for _, e := range events {
 			if err := enc.Encode(eventDocument{monitorSchemaVersion, e}); err != nil {
-				fmt.Fprintln(stderr, "shuck:", err)
-				return 2
+				return err
 			}
 		}
-		return 0
+		return nil
 	}
 	if len(events) == 0 {
 		if quietWhenEmpty {
 			fmt.Fprintln(stdout, "nothing new")
 		}
-		return 0
+		return nil
 	}
 	for _, e := range events {
 		fmt.Fprintln(stdout, e.Text())
 		fmt.Fprintln(stdout)
 	}
+	return nil
+}
+
+// streamBatchLimit caps one notification's worth of events. A stream's consumer
+// id is stable, which is what lets a restarted one resume rather than replay —
+// but the first stream on a machine has no cursor at all, and an uncapped read
+// would hand the session the whole retained journal in a single notification.
+// The journal keeps the newest events when a read overflows, so the cap costs a
+// first run the stale half of a backlog and nothing else; in steady state a
+// batch is one or two events and it never applies.
+const streamBatchLimit = 20
+
+// monitorStream is what a Claude Code plugin monitor runs. It registers the
+// session's working tree and then prints every event the monitor produces for
+// it, until the session ends and the process is killed; Claude Code turns each
+// block it writes into a notification, which is how a session hears that its
+// build went red without anyone asking.
+//
+// Nothing that can go wrong here is worth a stack trace in a notification. A
+// monitor that exits is simply a monitor that is not running, so every start-up
+// failure — no token, an unusable cache directory, no daemon — is one plain
+// sentence on stdout and exit 0. The session then falls back to the hooks,
+// which deliver the same events into the conversation.
+func monitorStream(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("shuck monitor stream", flag.ContinueOnError)
+	var jsonOut bool
+	monitorFlags(fs, stderr)
+	fs.BoolVar(&jsonOut, "json", false, "emit one JSON object per event, line-delimited, each carrying schema_version")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	// The opt-out the hooks honor has to reach the loudest half of the
+	// integration too, and it is read here rather than in the plugin's shim
+	// because a shim cannot know what the binary it found supports.
+	if os.Getenv("SHUCK_MONITOR_DISABLE") != "" {
+		return 0
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	spec, client, err := streamRegister(ctx)
+	if err != nil {
+		return streamStandDown(stdout, jsonOut, err)
+	}
+
+	// A caller-supplied identity is for the host that would rather name its own
+	// cursor; the derived one is prefixed so it can never be mistaken for — or
+	// collide with — a Claude Code session's own, and takes a process of its own
+	// when a second stream is already live on this tree. It is chosen before the
+	// marker below is written, which is what lets it see the sibling rather than
+	// this process.
+	consumer := os.Getenv("SHUCK_MONITOR_CONSUMER")
+	if consumer == "" {
+		consumer = monitor.StreamIdentity(spec)
+	}
+	stream, err := monitor.BeginStream(spec, consumer)
+	if err != nil {
+		// Without the marker the hooks cannot tell that this stream is
+		// delivering, and the session would be handed every CI failure twice.
+		// One channel is the point; two is the bug.
+		return streamStandDown(stdout, jsonOut, err)
+	}
+	defer stream.Close()
+	// Drop the claim the instant an interrupt arrives rather than waiting for
+	// the read in flight to come back: the hooks have to take delivery over
+	// promptly, and the deferred Close above can be up to a follow interval
+	// away.
+	go func() {
+		<-ctx.Done()
+		stream.Close()
+	}()
+
+	// The daemon was started above if it needed starting. Leaving AutoStart on
+	// for the follow would turn `shuck monitor stop` in another terminal into a
+	// thirty-second pause, since the next read would simply spawn another one.
+	client.AutoStart = false
+
+	// Start this identity at the present the first time it is ever used. The id
+	// is derived from the working tree, so a stream in a tree nobody has streamed
+	// before — a new repo, a new git worktree — is a consumer with no cursor, and
+	// a cursorless read is served from the start of the retained journal: a
+	// session would open to yesterday's failures on another branch, rendered as
+	// something to address now. Only a *new* identity is moved, so a restarted
+	// stream still resumes. A daemon that will not answer this is not worth
+	// standing down over: the read that follows fails the same way and says so.
+	_, _ = client.SeekNew(ctx, consumer)
+
+	req := monitor.Request{Consumer: consumer, Limit: streamBatchLimit}
+	err = followEvents(ctx, client, req, func(events []monitor.Event) error {
+		stream.Beat()
+		return emitStream(stdout, events, jsonOut)
+	})
+	if err != nil {
+		return streamStandDown(stdout, jsonOut, err)
+	}
 	return 0
+}
+
+// streamRegister resolves the working directory to a watch and registers it,
+// starting the daemon if this is the first thing to ask for one.
+func streamRegister(ctx context.Context) (monitor.Watch, *monitor.Client, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return monitor.Watch{}, nil, err
+	}
+	spec, err := monitor.ParseWatchSpec(nil, cwd)
+	if err != nil {
+		return monitor.Watch{}, nil, err
+	}
+	client, err := newMonitorClient()
+	if err != nil {
+		return monitor.Watch{}, nil, err
+	}
+	// The daemon this client starts inherits this process's environment, so it
+	// polls with whatever token resolves here — and a missing one is the single
+	// most likely reason a stream never says anything.
+	token, err := resolveToken("")
+	if err != nil {
+		return monitor.Watch{}, nil, err
+	}
+	client.Token = token
+	if _, err := client.Watch(ctx, spec); err != nil {
+		return monitor.Watch{}, nil, err
+	}
+	return spec, client, nil
+}
+
+// standDownDocument is the --json form of a stand-down: the one line a consumer
+// most needs to branch on — the feed has ended, and why — as something it can
+// parse. It carries `streaming` so the shape is a statement about the stream
+// rather than a bare error string, matching how `monitor status --json` reports
+// a daemon that is not running.
+type standDownDocument struct {
+	SchemaVersion int    `json:"schema_version"`
+	Streaming     bool   `json:"streaming"`
+	Reason        string `json:"reason"`
+}
+
+// streamStandDown says once that this session will not be getting notifications
+// and why. It exits 0: a monitor that could not start is not a failed command,
+// and a non-zero exit in a notification tells a session about a problem it
+// cannot do anything about.
+//
+// Under --json it says the same thing as one more line of line-delimited JSON.
+// The prose is for Claude Code, which turns stdout into notifications; a caller
+// that asked for JSON gets JSON for the terminal line too, or the feed ends in
+// the one thing its decoder cannot read.
+func streamStandDown(stdout io.Writer, jsonOut bool, err error) int {
+	if jsonOut {
+		// Compact and unindented, like every other line of this feed: a document
+		// spread over several lines is not line-delimited JSON.
+		if encErr := json.NewEncoder(stdout).Encode(standDownDocument{
+			SchemaVersion: monitorSchemaVersion,
+			Streaming:     false,
+			Reason:        err.Error(),
+		}); encErr != nil {
+			return 0
+		}
+		return 0
+	}
+	fmt.Fprintf(stdout, "The shuck monitor is not streaming into this session (%v). "+
+		"CI and review feedback will arrive through the session's hooks instead, if they are installed.\n", err)
+	return 0
+}
+
+// emitStream writes one batch the way a notification wants it: the agent-facing
+// rendering, in a single write, so the whole block lands inside Claude Code's
+// batching window and arrives as one notification rather than a line at a time.
+//
+// FormatFeed rather than the terminal rendering emitEvents uses. The block says
+// where it came from and that it is not a message from the user, and that
+// framing is the only thing standing between a wall of CI output and an agent
+// reading it as part of the request it was given.
+func emitStream(stdout io.Writer, events []monitor.Event, jsonOut bool) error {
+	if len(events) == 0 {
+		return nil
+	}
+	if jsonOut {
+		return emitEvents(stdout, events, true, false)
+	}
+	_, err := fmt.Fprintln(stdout, monitor.FormatFeed(events))
+	return err
 }
 
 // monitorPoke brings the next check forward, for the moment right after a push.

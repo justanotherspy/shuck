@@ -29,16 +29,18 @@ outside shuck.
 ## Dogfood shuck
 
 This repo bakes its own tool in for agents: the `shuck` skill
-(`.claude/skills/shuck/`), the plugin's monitor hooks, and — in dev
-environments — the `shuck` binary on PATH.
+(`.claude/skills/shuck/`), the plugin's monitor stream and its hooks, and — in
+dev environments — the `shuck` binary on PATH.
 
 **The loop here is that the monitor watches and you get told.** The plugin
 registers this working tree at `SessionStart`, so after you push you do not
-poll: the next CI failure arrives in the conversation as a `<shuck-monitor>`
-block, with the failing step's logs already in it. To wait for a verdict
-deliberately, run `shuck monitor events --wait 30m` rather than sleeping and
-re-checking. `shuck monitor` answers "is my PR green?" without spending a
-fetch.
+poll: the next CI failure arrives on its own, with the failing step's logs
+already in it — as a notification where the plugin's monitor (`shuck monitor
+stream`) is running, and as a `<shuck-monitor>` block in the conversation
+through the `UserPromptSubmit` hook everywhere else. Either way it is monitor
+output, not a message from the user. To wait for a verdict deliberately, run
+`shuck monitor events --wait 30m` rather than sleeping and re-checking.
+`shuck monitor` answers "is my PR green?" without spending a fetch.
 
 **When you do want to pull something yourself — here or in any repo — reach for
 shuck before raw GitHub API calls or the Actions UI:**
@@ -109,7 +111,7 @@ what changed as events.
 | --- | --- |
 | `main.go` | Thin entry: dispatches `setup`, else `cli.Run`. Holds the `go:embed` of the plugin's `SKILL.md`. |
 | `internal/cli` | Flag parsing + orchestration. Subcommands: `logs`, `reviews`, `all` (the bare-`shuck` default), `monitor`, `pins`, `action`, `security`, `version`, `upgrade`; single-letter aliases via `subcommandAliases` (`m` = monitor, `p` = pins, `s` = security). The pipeline cores (`Security`, `Action`, `Pins`) are front-end-agnostic: flag parsing and rendering sit outside them. `monitor.go` is a thin client over the daemon; `pins.go` also builds the cache-backed `pins.Resolver` the daemon is handed. |
-| `internal/monitor` | The background monitor (`shuck monitor`): a local daemon that follows working trees, resolves each to its open PR, polls GitHub on an adaptive cadence, and publishes events. `git.go` reads a tree's repo + branch (worktrees included, no git library); `watch.go` the watch set; `poll.go` one target's round; `event.go` the event model + agent-facing rendering; `journal.go` the durable JSONL log + per-consumer cursors; `protocol.go`/`server.go`/`client.go` the one-line-JSON local IPC; `hook.go` the Claude Code hook entry points; `pins.go` the per-tree workflow pin audit. |
+| `internal/monitor` | The background monitor (`shuck monitor`): a local daemon that follows working trees, resolves each to its open PR, polls GitHub on an adaptive cadence, and publishes events. `git.go` reads a tree's repo + branch (worktrees included, no git library); `watch.go` the watch set; `poll.go` one target's round; `event.go` the event model + agent-facing rendering; `journal.go` the durable JSONL log + per-consumer cursors; `protocol.go`/`server.go`/`client.go` the one-line-JSON local IPC; `hook.go` the Claude Code hook entry points; `stream.go` the liveness marker a running `shuck monitor stream` leaves behind (with `stream_unix.go`/`stream_other.go` for the pid check), which is how the hooks know not to deliver twice; `pins.go` the per-tree workflow pin audit. |
 | `internal/pins` | `shuck pins`: find the `uses:` references in a checkout's workflow and action files (`WorkflowFiles` → `Scan`, a schema-free `yaml.Node` walk keyed on any mapping key spelled `uses`) and classify each against its action's latest release (`Audit`, via a caller-supplied `Resolver`) into pinned / stale / unpinned / skipped, each finding carrying the corrected line. `Render` + `Document` are the text and stable-JSON views. Pure and offline-testable. |
 | `internal/jsonout` | The stable, versioned `--json` schema. Its view types are deliberately separate from `model` so internal refactors don't break consumers. |
 | `internal/action` | `shuck action`: pick the latest semver tag matching an `owner/action[@version]` ref (stable preferred, prerelease fallback; `Select`) → SHA-pin line / JSON (`action.Document`). |
@@ -177,7 +179,32 @@ what changed as events.
   failure. `Drain` advances the cursor as it hands events over, which makes
   delivery **at-most-once per consumer** on purpose: repeating a CI failure into
   a session that already acted on it is worse than missing the tail of a batch
-  nobody read. `Peek` (the Stop hook) reads without advancing.
+  nobody read. `Peek` (the Stop hook) reads without advancing. A session and a
+  stream over the same tree are two consumers with two cursors, which is what
+  lets the Stop gate keep working while a stream is the one delivering. A
+  consumer with a *derived* identity — a stream's `stream:<watch id>` — seeds its
+  cursor with `SeekNew` (`OpSeek` + `IfNew`) on start-up: an identity nobody has
+  used starts at the present rather than at the head of the retained journal,
+  while one that already exists is left where it is so a restart still resumes.
+- **A plugin monitor is the primary channel; the hooks are the fallback**:
+  `shuck monitor stream` is what `plugins/shuck/monitors/monitors.json` runs, and
+  every line it writes to stdout becomes a notification, so it renders whole
+  batches with `monitor.FormatFeed` in one write and never puts a diagnostic
+  there. While it runs it holds a marker under
+  `~/.cache/shuck/monitor/streams/`, refreshed on a heartbeat and removed on the
+  signal path as well as on a clean exit; `monitor.StreamServes` counts it live
+  only on a fresh heartbeat *and* a pid that still exists, because a stale marker
+  that reads as live means CI failures reach nobody. `hookUserPrompt` stands down
+  while one serves its tree — and deliberately consumes nothing when it does, so
+  standing down can never lose an event. Two sessions in one directory are
+  ordinary, so the marker is one file per process (`<hash>-<pid>.json`, matched on
+  the recorded path, never by name) and the second stream takes an identity of its
+  own (`monitor.StreamIdentity`) — otherwise one session's exit would revoke the
+  other's claim, and one shared cursor would notify each failure to exactly one of
+  the two. Everything else stays: plugin monitors
+  are experimental, interactive-CLI-only, and skipped where the Monitor tool is
+  unavailable, so the hook path has to remain a complete delivery route on its
+  own.
 - **Hooks may never cost a session anything**: every path in `monitor.RunHook`
   exits 0 and writes nothing that changes what the session does — no daemon, no
   token, an unusable cache directory (`NewClient` → `monitor.Dir`), a malformed
@@ -186,7 +213,13 @@ what changed as events.
   so once as plain prose, so nobody waits for a feed that is never coming. The
   Stop hook stands down the instant `stop_hook_active` is set (that is what
   keeps it from looping), blocks only on `SeverityAction` events, and seeks past
-  what it hands over. `SHUCK_MONITOR_DISABLE` / `SHUCK_MONITOR_NO_STOP` opt out.
+  what it hands over — it reads the session's own cursor, which no stream ever
+  touches, so the finish gate is unaffected by whether a stream is running.
+  `monitor stream` holds itself to the same bar: one prose line on stdout and
+  exit 0 for every start-up failure — or, under `--json`, one more line of
+  line-delimited JSON, since the mode a consumer opted into has to stay parseable
+  through the line that says the feed ended. `SHUCK_MONITOR_DISABLE` /
+  `SHUCK_MONITOR_NO_STOP` opt out; the stream reads the former once, at startup.
 - **Pin audit is repo-driven and ref-driven**: the checkout's own files are the
   source of truth (`.github/workflows/*.y{a,}ml`, the root `action.y{a,}ml`,
   `.github/actions/*/action.y{a,}ml`), walked as `yaml.Node` so line numbers and
@@ -253,6 +286,13 @@ what changed as events.
 - Other automation: `scorecard.yml`, `semgrep.yml`, `secret-scan.yml`,
   `zizmor.yml` (workflow security), `labeler.yml`, `release-drafter.yml`, and
   Dependabot.
-- The Claude Code plugin source lives under `plugins/shuck/` (manifest, hooks,
-  prereq script, skill); `.claude/settings.json` enables it from the
-  `justanotherspy/claude-plugins` marketplace.
+- The Claude Code plugin source lives under `plugins/shuck/` (manifest,
+  `monitors/monitors.json` + its `scripts/monitor-stream.sh` shim, hooks, prereq
+  script, skill); `.claude/settings.json` enables it from the
+  `justanotherspy/claude-plugins` marketplace — *not* from this repo's own
+  `.claude-plugin/marketplace.json`, so a plugin change here does not take
+  effect in this repo's sessions until it lands there too. `monitors.json` must
+  be a bare JSON array at the default path and must not also be declared in the
+  manifest (a manifest declaration shadows the folder); nothing in CI reads that
+  file, so `claude plugin validate` passing says nothing about whether the
+  monitor will arm.

@@ -59,6 +59,11 @@ type Request struct {
 	// Since, when non-zero, overrides the consumer cursor for OpEvents and
 	// gives the cursor position for OpSeek.
 	Since uint64 `json:"since,omitempty"`
+	// IfNew narrows OpSeek to a consumer the daemon has never seen, which is
+	// how a reader with a durable identity starts at the present without
+	// discarding what it was down for. Without it a restarted reader would seek
+	// past everything published while it was away.
+	IfNew bool `json:"if_new,omitempty"`
 	// All asks OpEvents for the whole retained journal rather than what is
 	// pending.
 	All bool `json:"all,omitempty"`

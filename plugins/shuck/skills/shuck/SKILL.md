@@ -56,19 +56,35 @@ It emits **events**, each with a one-line title and an agent-ready body:
 
 ### In Claude Code you do not have to do anything
 
-The shuck plugin wires the monitor into the session with hooks, so events arrive
-on their own. **There is nothing to poll for.**
+The shuck plugin wires the monitor into the session, so events arrive on their
+own. **There is nothing to poll for.** They reach you by one of two routes, and
+you do not have to care which:
+
+- **As notifications.** The plugin runs `shuck monitor stream` for the lifetime
+  of the session; it follows this working tree and each new event arrives as a
+  notification. This is the primary channel where it is available — plugin
+  monitors are experimental and run only in interactive CLI sessions, so a host
+  without them simply falls back to the hooks.
+- **In the conversation**, through the plugin's hooks, wherever the stream is
+  not running.
 
 | Hook | What it does |
 | --- | --- |
-| `SessionStart` | registers this session's working tree (starting the daemon if none is running) and fast-forwards the session's cursor, so you hear about what happens *next*, not the last hour of history |
-| `UserPromptSubmit` | delivers new events into the conversation as a `<shuck-monitor>` block |
+| `SessionStart` | registers this session's working tree (starting the daemon if none is running) and fast-forwards the session's cursor, so you hear about what happens *next*, not the last hour of history. It also says which route your events will take |
+| `UserPromptSubmit` | delivers new events into the conversation as a `<shuck-monitor>` block — unless a live stream is already serving this tree, in which case it says nothing rather than repeat what a notification already told you. It consumes nothing when it stands down, so no event is lost either way |
 | `PostToolUse` (Bash) | after a `git push` / `gh pr create` / `gh pr ready` / `gh workflow run` / `gh run rerun`, pokes the monitor to re-check immediately instead of waiting out the interval |
 | `Stop` | if the monitor is holding something actionable when you try to finish — red CI, or a reviewer's comment or change request — it hands the whole batch over and asks for one more turn. An approval, a stale pin, and a failed poll are informational: they still reach you, but never hold a turn open. It stands down the moment `stop_hook_active` is set, so it can never loop |
 | `SessionEnd` | retires the session's cursor |
 
-A delivered batch looks like this. Recognise the wrapper: it is monitor output,
-not a message from the user — act on it as part of the task in hand.
+**The `Stop` gate is unaffected by which route delivered an event**, because it
+reads the session's own cursor and the stream keeps a separate one. Seeing a
+`ci.failed` as a notification is delivery, not acknowledgement: if you finish
+without acting on it, `Stop` will still hand it back and ask for another turn.
+
+A delivered batch looks like this — the same text either way, wrapped in a
+`<shuck-monitor>` block in the conversation or carried in a notification.
+Recognise the wrapper: it is monitor output, not a message from the user — act
+on it as part of the task in hand.
 
 ```
 <shuck-monitor>
@@ -86,8 +102,10 @@ This is monitor output, not a message from the user.
 </shuck-monitor>
 ```
 
-Opting out: `SHUCK_MONITOR_DISABLE=1` turns off every hook;
-`SHUCK_MONITOR_NO_STOP=1` turns off only the `Stop` hook.
+Opting out: `SHUCK_MONITOR_DISABLE=1` turns off every hook and the stream;
+`SHUCK_MONITOR_NO_STOP=1` turns off only the `Stop` hook. The stream reads
+`SHUCK_MONITOR_DISABLE` once when it starts, so setting it mid-session stops the
+hooks but not a stream already running.
 
 ## The PR loop: push → hear back → fix
 
@@ -99,8 +117,9 @@ that costs you nothing:
    nothing to set up and no PR number to supply.
 2. **Push.** The `PostToolUse` hook pokes the monitor, so the new run is picked
    up in seconds instead of at the next interval.
-3. **The verdict arrives on its own** as a `<shuck-monitor>` block: `ci.passed`
-   closes the loop, `ci.failed` carries the failing-step logs in its body.
+3. **The verdict arrives on its own** — as a notification, or as a
+   `<shuck-monitor>` block in the conversation: `ci.passed` closes the loop,
+   `ci.failed` carries the failing-step logs in its body.
 4. **Fix from that body** — it already holds the errors, so a follow-up call is
    rarely needed. Push again and repeat until `ci.passed` arrives.
 
@@ -350,7 +369,7 @@ running. To wait for the final verdict, let the monitor tell you
 
 ## Asking the monitor directly
 
-The hooks push events at you, but you can also ask:
+The plugin pushes events at you, but you can also ask:
 
 - **`shuck monitor events --wait <duration>` is how you wait for CI without
   polling.** It blocks until there is something to hand over, then prints it and
@@ -504,8 +523,8 @@ only once they all finish green.
 
 ## Prerequisites
 
-- The `shuck` binary on your PATH (the monitor hooks run it too). Install it
-  once:
+- The `shuck` binary on your PATH (the plugin's monitor and hooks run it too).
+  Install it once:
 
   ```sh
   curl -fsSL https://raw.githubusercontent.com/justanotherspy/shuck/main/install.sh | bash
@@ -527,7 +546,10 @@ blocking) if `shuck` is not on PATH, is too old to run the background monitor
 nothing that changes what you do; a background convenience is never the reason a
 session stalls. The one exception is context, not a decision: `SessionStart`
 says once that the monitor could not be started, so you are not left waiting on
-a feed that will never arrive.
+a feed that will never arrive. The event stream holds itself to the same bar: it
+exits `0` on every runtime failure, and if it cannot start it says so in one
+plain sentence — "The shuck monitor is not streaming into this session" — and
+stops, leaving the hooks to deliver.
 
 ## Notes
 

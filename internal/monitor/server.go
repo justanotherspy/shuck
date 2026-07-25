@@ -340,6 +340,12 @@ func (d *Daemon) handleSeek(req Request) Response {
 	if to == 0 {
 		to = d.journal.Latest()
 	}
+	if req.IfNew {
+		// A consumer that already has a cursor keeps it: this is the seek a
+		// long-lived identity makes on every start, and moving an existing
+		// cursor would drop what was published while it was not reading.
+		return Response{OK: true, Cursor: d.journal.SeekNew(req.Consumer, to)}
+	}
 	d.journal.Seek(req.Consumer, to)
 	return Response{OK: true, Cursor: to}
 }
