@@ -6,12 +6,14 @@ import (
 	"testing"
 )
 
-// jobKey is the shape stringSet actually holds: "<job id>/<attempt>", with the
-// ids fixed-width as GitHub's are, so byte order and age order agree.
-func jobKey(id int) string { return fmt.Sprintf("%011d/1", id) }
+// jobKey builds a key exactly as the poller does — fmt.Sprintf("%d/%d", id,
+// attempt), unpadded. Padding it here would be a fiction that makes byte order
+// and age order agree, which is precisely the assumption byJobKey exists to
+// stop relying on.
+func jobKey(id int) string { return fmt.Sprintf("%d/1", id) }
 
 func TestStringSetSliceSortsDeduplicatesAndRoundTrips(t *testing.T) {
-	s := newStringSet([]string{jobKey(12), jobKey(3), jobKey(12)})
+	s := newStringSet([]string{jobKey(12), jobKey(3), jobKey(12)}, byJobKey)
 	s.add(jobKey(7))
 	s.add(jobKey(3)) // already there
 
@@ -23,7 +25,7 @@ func TestStringSetSliceSortsDeduplicatesAndRoundTrips(t *testing.T) {
 
 	// The slice is how the set survives a daemon restart, so re-loading it has
 	// to produce the same set — otherwise a restart re-reports a job.
-	restored := newStringSet(got)
+	restored := newStringSet(got, byJobKey)
 	if !slices.Equal(restored.slice(), got) {
 		t.Errorf("round trip = %v, want %v", restored.slice(), got)
 	}
@@ -35,7 +37,7 @@ func TestStringSetSliceSortsDeduplicatesAndRoundTrips(t *testing.T) {
 	if restored.has(jobKey(99)) {
 		t.Error("has reported a job that was never added")
 	}
-	if got := newStringSet(nil).slice(); len(got) != 0 {
+	if got := newStringSet(nil, byJobKey).slice(); len(got) != 0 {
 		t.Errorf("an empty set sliced to %v", got)
 	}
 }
@@ -44,7 +46,7 @@ func TestStringSetSliceSortsDeduplicatesAndRoundTrips(t *testing.T) {
 // dump: the poller writes this list on every tick, and a PR that runs for a
 // week must not grow it without end.
 func TestStringSetSliceIsBounded(t *testing.T) {
-	s := newStringSet(nil)
+	s := newStringSet(nil, byJobKey)
 	for i := 1; i <= maxRemembered+50; i++ {
 		s.add(jobKey(i))
 	}
@@ -58,8 +60,8 @@ func TestStringSetSliceIsBounded(t *testing.T) {
 	if got[0] != jobKey(51) || got[len(got)-1] != jobKey(maxRemembered+50) {
 		t.Errorf("kept %s…%s, want %s…%s", got[0], got[len(got)-1], jobKey(51), jobKey(maxRemembered+50))
 	}
-	if !slices.IsSorted(got) {
-		t.Error("the slice must be sorted; an unstable order churns the state file on every tick")
+	if !slices.IsSortedFunc(got, byJobKey) {
+		t.Error("the slice must be ordered; an unstable order churns the state file on every tick")
 	}
 
 	// The trim is applied to the set itself, not just to the copy handed back —
@@ -141,5 +143,77 @@ func TestInt64SetSliceIsBounded(t *testing.T) {
 	}
 	if !s.has(newest) {
 		t.Error("the newest id was trimmed")
+	}
+}
+
+// TestByJobKeyOrdersNumericallyNotLexically is the regression test for a real
+// eviction bug.
+//
+// The poller writes job keys as fmt.Sprintf("%d/%d", id, attempt) — plain
+// decimals of whatever width GitHub's ids currently have. A text sort is not a
+// numeric sort across a digit-width boundary: "9999999999/1" sorts *after*
+// "123456789012/1", so trimming an overflowing set by byte order drops the
+// newer job and keeps the older one. The dropped job is then no longer known to
+// have been reported, and its failure is delivered a second time into a session
+// that already acted on it — the exact delivery mistake the journal's
+// at-most-once design exists to prevent.
+func TestByJobKeyOrdersNumericallyNotLexically(t *testing.T) {
+	// Ids spanning 10, 11, and 12 digits. GitHub is on 11 today; the boundary
+	// is a matter of time, not of hypotheticals.
+	old10 := "9999999999/1"
+	mid11 := "89660393168/1"
+	new12 := "123456789012/1"
+
+	got := []string{new12, old10, mid11}
+	slices.SortFunc(got, byJobKey)
+	want := []string{old10, mid11, new12}
+	if !slices.Equal(got, want) {
+		t.Fatalf("byJobKey ordered %v, want oldest-first %v", got, want)
+	}
+
+	// The property that actually matters: trimming keeps the newest.
+	if kept := got[len(got)-1]; kept != new12 {
+		t.Errorf("trimming to one kept %s, want the newest id %s", kept, new12)
+	}
+
+	// A higher attempt on the same job is newer than attempt 1.
+	if byJobKey("500/1", "500/2") >= 0 {
+		t.Error("attempt 2 of a job should rank after attempt 1")
+	}
+
+	// Malformed keys rank oldest so they are sacrificed before real entries,
+	// rather than displacing a job whose failure would then repeat.
+	for _, junk := range []string{"", "nope", "12", "abc/1", "12/xyz"} {
+		if byJobKey(junk, "1/1") >= 0 {
+			t.Errorf("%q should rank before a well-formed key", junk)
+		}
+	}
+	// And the order stays total: equal inputs compare equal, so sorting is
+	// deterministic and the persisted file does not churn.
+	if byJobKey(mid11, mid11) != 0 {
+		t.Error("a key must compare equal to itself")
+	}
+}
+
+// TestStringSetEvictsTheOldestJobAcrossADigitBoundary drives the same bug
+// through the set itself, at the size where the trim actually fires.
+func TestStringSetEvictsTheOldestJobAcrossADigitBoundary(t *testing.T) {
+	s := newStringSet(nil, byJobKey)
+	// Fill past the bound with ids that straddle 10 and 11 digits.
+	base := 9999999000
+	for i := range maxRemembered + 10 {
+		s.add(jobKey(base + i))
+	}
+	got := s.slice()
+
+	if len(got) != maxRemembered {
+		t.Fatalf("kept %d, want %d", len(got), maxRemembered)
+	}
+	newest := jobKey(base + maxRemembered + 9)
+	if !s.has(newest) {
+		t.Errorf("the newest job %s was evicted; its failure will be reported twice", newest)
+	}
+	if s.has(jobKey(base)) {
+		t.Errorf("the oldest job %s survived while newer ones were dropped", jobKey(base))
 	}
 }

@@ -320,7 +320,7 @@ func (p *poller) startedEvent(st *prState, pr model.PR, failed, cancelled []mode
 // downloading a log is the one genuinely expensive call in a round, and a job
 // that failed three polls ago has not changed its mind.
 func (p *poller) failureEvents(ctx context.Context, st *prState, pr model.PR, jobs []model.JobResult, now time.Time) []Event {
-	reported := newStringSet(st.ReportedJobs)
+	reported := newStringSet(st.ReportedJobs, byJobKey)
 	var events []Event
 
 	for _, job := range jobs {

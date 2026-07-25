@@ -63,7 +63,11 @@ func (d *Daemon) scanPins(ctx context.Context, st pinState, now time.Time) (pinS
 		return st, nil
 	}
 
-	seen := newStringSet(st.Reported)
+	// Pin keys are "<file>:<line>:<ref>" — there is no time in them, so no
+	// ordering can name the "oldest" finding. Text order at least keeps the
+	// persisted file stable; on the (unlikely) overflow of a repo with more
+	// than maxRemembered findings, the cost is one finding mentioned twice.
+	seen := newStringSet(st.Reported, strings.Compare)
 	var events []Event
 	for _, f := range report.Findings {
 		if f.Status != pins.StatusUnpinned && f.Status != pins.StatusStale {
