@@ -207,6 +207,7 @@ func (d *Daemon) handleStatus(ctx context.Context, req Request) Response {
 
 	sortTargets(targets)
 	status := &Status{
+		Running:   true,
 		PID:       os.Getpid(),
 		Version:   d.opts.Version,
 		StartedAt: d.startedAt,

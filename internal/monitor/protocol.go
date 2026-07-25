@@ -86,6 +86,11 @@ type Response struct {
 
 // Status is the daemon's whole state, as `shuck monitor status` reports it.
 type Status struct {
+	// Running says whether there is a daemon behind this answer. It is always
+	// true on a real status reply; the field exists so the `--json` view has one
+	// uniform shape to report "nothing is running" with, rather than a bare
+	// line of prose a consumer cannot parse.
+	Running bool `json:"running"`
 	// PID and Version identify the running daemon.
 	PID     int    `json:"pid"`
 	Version string `json:"version"`

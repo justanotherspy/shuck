@@ -497,11 +497,39 @@ func (p *poller) reviewEvents(ctx context.Context, st *prState, pr model.PR, now
 	return append(reviews, comments...)
 }
 
+// watermarkSlack is how far back a review/comment watermark reaches when it is
+// used as a query bound. GitHub stamps both feeds to the whole second, so one
+// second is exactly the ambiguity being covered.
+const watermarkSlack = time.Second
+
+// queryFrom widens a stored watermark by [watermarkSlack] for the fetch.
+//
+// Both review feeds are filtered strictly-after, and both watermarks advance to
+// the newest timestamp seen. Two reviews submitted in the *same second* are
+// therefore indistinguishable to the watermark: reporting the first advances it
+// to that second, and the second review — if it was not yet visible to the API
+// on that poll — is excluded from every later poll and never delivered at all.
+// The ReportedReviews dedupe cannot rescue it, because it never survives the
+// filter to reach the set.
+//
+// Re-asking from one second earlier makes that boundary second visible again,
+// and the ID dedupe (bounded newest-first, so the boundary is never the entry
+// that gets trimmed) is what stops the already-reported half arriving twice.
+// The cost is bounded and one-directional: at worst a watch's first poll
+// reconsiders the second before it started. Silently dropping a reviewer's
+// changes-requested is much worse than considering one extra second.
+func queryFrom(watermark time.Time) time.Time {
+	if watermark.IsZero() {
+		return watermark
+	}
+	return watermark.Add(-watermarkSlack)
+}
+
 // submittedReviewEvents reports reviews submitted since the last round. A
 // review is reported as one event with its inline comments folded in, rather
 // than as a verdict plus N comments, because that is how a human would read it.
 func (p *poller) submittedReviewEvents(ctx context.Context, st *prState, now time.Time) (events []Event, ok bool) {
-	reviews, err := p.client.PRReviewsSince(ctx, st.Owner, st.Repo, st.Number, st.ReviewsSince)
+	reviews, err := p.client.PRReviewsSince(ctx, st.Owner, st.Repo, st.Number, queryFrom(st.ReviewsSince))
 	if err != nil {
 		p.logf("reviews for %s: %v", st.Target, err)
 		return nil, false
@@ -544,7 +572,7 @@ func (p *poller) submittedReviewEvents(ctx context.Context, st *prState, now tim
 // the PR head — so acting on a comment does not need a round trip to read the
 // code it is about.
 func (p *poller) commentEvents(ctx context.Context, st *prState, pr model.PR, now time.Time) (events []Event, ok bool) {
-	comments, err := p.client.PRReviewCommentsSince(ctx, st.Owner, st.Repo, st.Number, st.CommentsSince)
+	comments, err := p.client.PRReviewCommentsSince(ctx, st.Owner, st.Repo, st.Number, queryFrom(st.CommentsSince))
 	if err != nil {
 		p.logf("review comments for %s: %v", st.Target, err)
 		return nil, false

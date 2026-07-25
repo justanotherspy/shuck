@@ -674,3 +674,49 @@ func TestMonitorFollow(t *testing.T) {
 		}
 	})
 }
+
+// TestMonitorStatusJSONWhenNotRunning covers the one answer a --json consumer
+// most needs to branch on. `--no-start` with no daemon is a legitimate reply,
+// not a failure, so it exits 0 — but it used to print a bare line of prose on
+// stdout regardless of --json, which lands in a parser as a syntax error at the
+// exact moment the caller is trying to find out whether the monitor is up.
+func TestMonitorStatusJSONWhenNotRunning(t *testing.T) {
+	t.Setenv("SHUCK_HOME", t.TempDir())
+	t.Setenv("GITHUB_TOKEN", "test-token")
+
+	code, stdout, stderr := runCLI("monitor", "status", "--json", "--no-start")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 — 'not running' is an answer; stderr=%q", code, stderr)
+	}
+
+	var got struct {
+		Running *bool `json:"running"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("--json emitted something unparseable: %v\n%s", err, stdout)
+	}
+	if got.Running == nil {
+		t.Fatalf("the JSON answer must carry `running` so a consumer can branch on it:\n%s", stdout)
+	}
+	if *got.Running {
+		t.Errorf("running = true with no daemon:\n%s", stdout)
+	}
+}
+
+// TestMonitorStatusPlainWhenNotRunning keeps the human-facing half of the same
+// path: without --json it stays a readable line, not a JSON document.
+func TestMonitorStatusPlainWhenNotRunning(t *testing.T) {
+	t.Setenv("SHUCK_HOME", t.TempDir())
+	t.Setenv("GITHUB_TOKEN", "test-token")
+
+	code, stdout, _ := runCLI("monitor", "status", "--no-start")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "not running") {
+		t.Errorf("stdout = %q, want a plain-language answer", stdout)
+	}
+	if strings.HasPrefix(strings.TrimSpace(stdout), "{") {
+		t.Errorf("the default view must stay prose, got JSON:\n%s", stdout)
+	}
+}

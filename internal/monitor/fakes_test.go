@@ -129,7 +129,11 @@ func (f *fakeClient) PRReviewCommentsSince(_ context.Context, _, _ string, _ int
 	}
 	var out []gh.PRReviewComment
 	for _, c := range f.comments {
-		if !c.CreatedAt.Before(since) {
+		// GitHub's `since` on the review-comments endpoint is strictly after,
+		// exactly like the reviews filter above. Modeling it as at-or-after
+		// here would make the fake kinder than the API and hide the watermark's
+		// same-second gap from every test that uses it.
+		if c.CreatedAt.After(since) {
 			out = append(out, c)
 		}
 	}

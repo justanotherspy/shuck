@@ -676,3 +676,115 @@ func TestVerdictPhrase(t *testing.T) {
 		}
 	}
 }
+
+// TestPollDeliversAReviewSharingTheWatermarkSecond is a regression test for a
+// silent review loss.
+//
+// GitHub stamps submitted_at to the whole second, the feed is filtered
+// strictly-after, and the poller advances its watermark to the newest timestamp
+// it saw. So when two reviewers land in the same second and only the first is
+// visible to the API on the poll that reports it, the second falls permanently
+// into the gap: every later poll asks for "after 10:00:00" and GitHub keeps
+// answering without it. The ReportedReviews dedupe cannot save it either — it
+// never survives the filter to reach that set.
+//
+// This is the failure mode the monitor exists to not have: a reviewer asks for
+// changes and nobody is ever told.
+func TestPollDeliversAReviewSharingTheWatermarkSecond(t *testing.T) {
+	sameSecond := now.Add(-time.Minute).Truncate(time.Second)
+
+	c := newFakeClient()
+	c.pr = openPR("abc1234def")
+	c.fingerprint = "fp-1"
+	p := testPoller(c)
+
+	// A first sighting is not news: it records the high-water marks.
+	st, _ := p.Poll(context.Background(), baseState(), now)
+
+	// Alice's review is the only one the API can see yet.
+	c.fingerprint = "fp-2"
+	c.reviews = []gh.PRReview{
+		{ID: 1, State: "APPROVED", Body: "lgtm", UserLogin: "alice", SubmittedAt: sameSecond},
+	}
+	st, events := p.Poll(context.Background(), st, now.Add(time.Second))
+	if hasKind(events, KindReviewSubmitted) == nil {
+		t.Fatalf("alice's review should be reported, got %v", kinds(events))
+	}
+
+	// Bob submitted in the same second but only becomes visible now.
+	c.fingerprint = "fp-3"
+	c.reviews = append(c.reviews, gh.PRReview{
+		ID: 2, State: "CHANGES_REQUESTED", Body: "one blocker", UserLogin: "bob", SubmittedAt: sameSecond,
+	})
+	st, events = p.Poll(context.Background(), st, now.Add(2*time.Second))
+
+	e := hasKind(events, KindReviewSubmitted)
+	if e == nil {
+		t.Fatalf("bob's review shares alice's second and was dropped: %v", kinds(events))
+	}
+	if !strings.Contains(e.Title, "bob") {
+		t.Errorf("title = %q, want bob's review", e.Title)
+	}
+	if len(events) != 1 {
+		t.Errorf("only bob is new; alice must not be re-delivered: %v", kinds(events))
+	}
+
+	// And the widened query must not turn into a repeat every tick: another
+	// round with nothing new says nothing.
+	c.fingerprint = "fp-4"
+	if _, events = p.Poll(context.Background(), st, now.Add(3*time.Second)); len(events) != 0 {
+		t.Errorf("a quiet round re-delivered the boundary second: %v", kinds(events))
+	}
+}
+
+// TestPollDeliversACommentSharingTheWatermarkSecond is the same trap on the
+// inline-comment feed, whose watermark advances from CreatedAt — also
+// second-granular.
+func TestPollDeliversACommentSharingTheWatermarkSecond(t *testing.T) {
+	sameSecond := now.Add(-time.Minute).Truncate(time.Second)
+
+	c := newFakeClient()
+	c.pr = openPR("abc1234def")
+	c.fingerprint = "fp-1"
+	p := testPoller(c)
+	st, _ := p.Poll(context.Background(), baseState(), now)
+
+	c.fingerprint = "fp-2"
+	c.comments = []gh.PRReviewComment{
+		{ID: 1, Path: "a.go", Line: 3, Side: "RIGHT", Body: "nit", UserLogin: "alice", CreatedAt: sameSecond},
+	}
+	st, events := p.Poll(context.Background(), st, now.Add(time.Second))
+	if hasKind(events, KindReviewComment) == nil {
+		t.Fatalf("alice's comment should be reported, got %v", kinds(events))
+	}
+
+	c.fingerprint = "fp-3"
+	c.comments = append(c.comments, gh.PRReviewComment{
+		ID: 2, Path: "b.go", Line: 9, Side: "RIGHT", Body: "this leaks", UserLogin: "bob", CreatedAt: sameSecond,
+	})
+	_, events = p.Poll(context.Background(), st, now.Add(2*time.Second))
+
+	e := hasKind(events, KindReviewComment)
+	if e == nil {
+		t.Fatalf("bob's comment shares alice's second and was dropped: %v", kinds(events))
+	}
+	if !strings.Contains(e.Body, "this leaks") {
+		t.Errorf("body = %q, want bob's comment", e.Body)
+	}
+	if len(events) != 1 {
+		t.Errorf("only bob is new; alice must not be re-delivered: %v", kinds(events))
+	}
+}
+
+// TestQueryFromLeavesTheZeroWatermarkAlone guards the first-sighting path: a
+// zero watermark means "no history recorded yet", and shifting it backwards
+// would make it a real instant a second before the epoch.
+func TestQueryFromLeavesTheZeroWatermarkAlone(t *testing.T) {
+	if got := queryFrom(time.Time{}); !got.IsZero() {
+		t.Errorf("queryFrom(zero) = %v, want the zero time untouched", got)
+	}
+	at := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	if got := queryFrom(at); !got.Equal(at.Add(-time.Second)) {
+		t.Errorf("queryFrom(%v) = %v, want one second earlier", at, got)
+	}
+}

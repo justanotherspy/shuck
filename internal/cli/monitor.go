@@ -115,6 +115,12 @@ func monitorStatus(args []string, stdout, stderr io.Writer) int {
 	st, err := client.Status(context.Background(), "")
 	if err != nil {
 		if noStart {
+			// "Not running" is an answer, not a failure — but a caller that
+			// asked for JSON has to get JSON for it too, or the one case they
+			// most need to branch on arrives as an unparseable line.
+			if jsonOut {
+				return emitJSON(stdout, stderr, &monitor.Status{Running: false})
+			}
 			fmt.Fprintln(stdout, "shuck monitor: not running")
 			return 0
 		}
