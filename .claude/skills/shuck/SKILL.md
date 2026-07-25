@@ -382,7 +382,7 @@ shuck pins --json                # the stable JSON document
   optional for public actions; a token lifts the unauthenticated rate limit. Tag
   lists are cached for an hour.
 
-The pin JSON document (also `check_pins`'s structured output):
+The pin JSON document (`shuck pins --json`):
 `schema_version` (int), `root`, `checked_at`, `summary`
 `{total, pinned, stale, unpinned, skipped}`, and `findings[]` — each
 `{file, line, ref, slug?, version?, comment?, kind, status, latest?, sha?,
@@ -412,7 +412,7 @@ to the token** is reported and skipped, not failed — so a repo with only some
 features on still produces output. By default only **open** alerts show; widen
 with `--state open|all|dismissed|fixed|resolved`.
 
-The security JSON document (also `inspect_security`'s structured output):
+The security JSON document (`shuck security --json`):
 
 - `schema_version` (int), `repo` `{owner, repo}`, `state`.
 - `summary` `{total, by_severity{critical…unknown}, by_source{code_scanning, secret_scanning, dependabot}}`.
@@ -430,9 +430,9 @@ Security data — especially private repos — needs a token with the
 
 ## Pinning actions to SHAs
 
-`shuck action <owner>/<action>[@<version>]` (alias `a`) and the `inspect_action`
-tool resolve an Action to its latest matching tag and commit SHA, and print a pin
-line ready to drop after `uses:`:
+`shuck action <owner>/<action>[@<version>]` (alias `a`) resolves an Action to
+its latest matching tag and commit SHA, and prints a pin line ready to drop
+after `uses:`:
 
 ```sh
 shuck action actions/checkout          # latest stable
@@ -469,8 +469,8 @@ How to run it well:
 - **Bound the wait** with `--watch-timeout <dur>` (e.g. `--watch-timeout 30m`);
   on timeout shuck prints the latest snapshot instead of waiting forever.
 - **Want structured final output?** Add `--json`, or once watch reports failures
-  (exit `1` with `--exit-code`) call `inspect_logs` for the typed failing-step
-  detail.
+  (exit `1` with `--exit-code`) run `shuck logs --json` for the typed
+  failing-step detail.
 - Progress lines ("N running, M failed so far …") go to **stderr**; the final
   report (text or `--json`) is the only thing on **stdout**.
 

@@ -25,13 +25,12 @@ theoretical ones:
   checks run and then stop, so a watch that starts *after* a run has finished
   reports nothing about it. That is the right default (a finished run is not
   news), but it means "is it green?" for a commit you did not watch is a
-  question to ask (`shuck monitor status` / `monitor_status`), not something
-  you will be told.
+  question to ask (`shuck monitor status`), not something you will be told.
 - **No progress while something is in flight.** `shuck --watch` prints progress
   to stderr as it polls; the monitor has no equivalent. Between "checks
   running" and the next terminal event there is nothing to see, and
-  `monitor events --follow` blocks silently. An agent that wants a heartbeat has
-  to poll `monitor_status`.
+  `shuck monitor events --follow` blocks silently. An agent that wants a
+  heartbeat has to poll `shuck monitor status`.
 - **Pending non-Actions checks are invisible.** `gh.OtherChecks` returns only
   non-Actions check runs that have *completed* and failed, so a third-party
   check still in progress cannot hold a verdict back. The verdict is about the
@@ -45,9 +44,9 @@ theoretical ones:
   build must never delay a finish — but it means `watch.target`, `ci.started`
   and `pr.state` will never hold a turn open, and an agent that finishes right
   before a failure lands hears about it only in the next session's first prompt.
-- **`monitor_events` delivery is at-most-once per consumer.** The cursor
-  advances as events are handed over, so a caller that takes a batch and then
-  dies has lost it. That is the deliberate trade (re-delivering a fixed CI
+- **Event delivery is at-most-once per consumer.** The cursor advances as
+  events are handed over, so a caller that takes a batch and then dies has lost
+  it. That is the deliberate trade (re-delivering a fixed CI
   failure is worse than dropping the tail of a batch nobody read); callers that
   need to look before committing pass `peek`.
 
