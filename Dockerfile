@@ -51,7 +51,7 @@ FROM cgr.dev/chainguard/static:latest@sha256:60582b2ae6074f641094af0f370d4ab241a
 
 # OCI metadata: lets GHCR, `docker scout`, etc. link the image to its source.
 LABEL org.opencontainers.image.source="https://github.com/justanotherspy/shuck" \
-      org.opencontainers.image.description="Print the exact failing CI step logs for a GitHub PR" \
+      org.opencontainers.image.description="Background monitor for GitHub PR CI failures, reviews, and action pins" \
       org.opencontainers.image.licenses="MIT"
 
 COPY --from=build /shuck /usr/bin/shuck

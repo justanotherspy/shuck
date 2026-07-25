@@ -221,7 +221,8 @@ shuck --watch [flags] [target]  # poll until every check finishes, then report
   consumer, so a session and the CLI do not steal each other's news. The CLI
   defaults to `cli`; each Claude Code session uses its own session ID.
 - `--wait DUR` blocks until an event lands (or the wait elapses) instead of
-  returning "nothing new" — the CLI equivalent of `wait_seconds`.
+  returning "nothing new" — wait for a verdict this way rather than sleeping
+  and re-checking.
 - `shuck monitor` (status) **auto-starts** the daemon; the other read commands do
   not, so they never report a false all-clear from a monitor that has seen
   nothing. `--no-start` suppresses the auto-start.

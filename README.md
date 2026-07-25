@@ -190,8 +190,11 @@ already downloaded are re-parsed locally instead of re-fetched.
 
 **Exit codes are operational, gating is opt-in**: `0` means the report was
 produced (even if it shows failures), `2` means an operational error. Pass
-`--exit-code` to make failing checks (or open security alerts, or unpinned
-actions) exit `1` for CI gating.
+`--exit-code` to exit `1` on the verdict of the command you ran — and each gate
+belongs to the command that owns it. On the default/`all` path (and on `logs`)
+that verdict is the CI one alone: security findings never flip the exit code
+there. Gate on those with `shuck security --exit-code`, and on action pins with
+`shuck pins --exit-code`.
 
 ### Flags
 
@@ -211,7 +214,7 @@ actions) exit `1` for CI gating.
 | `--no-cache` | false | Do not read or write the cache. |
 | `--offline` | false | Render only from cache, without network access. |
 | `--json` | false | Emit machine-readable JSON (stable schema) instead of text. |
-| `--exit-code` | false | Exit `1` when failing checks are found (CI gating). |
+| `--exit-code` | false | Exit `1` on the command's own verdict (CI gating): failing checks here; open alerts on `security`, unpinned/stale refs on `pins`. |
 | `--watch` | false | Poll until every check reaches a terminal state, then report. |
 | `--interval D` | 15s | Poll interval for `--watch`. |
 | `--watch-timeout D` | 0 | Give up watching after this long (`0` = no limit). |
@@ -276,8 +279,9 @@ For a loop you don't have to sit in front of, use the
 
 ### JSON output
 
-`--json` emits a stable, versioned document for every command, so agents and
-scripts can consume results deterministically:
+`--json` emits a stable, versioned document for every report command (`shuck` /
+`all`, `logs`, `reviews`, `pins`, `security`, `action`), so agents and scripts
+can consume results deterministically:
 
 ```jsonc
 {
@@ -297,7 +301,9 @@ scripts can consume results deterministically:
 ```
 
 `schema_version` is bumped only on breaking changes; lists are always present
-(`[]`, never `null`).
+(`[]`, never `null`). The monitor's `--json` is a different, narrower shape —
+one status document, or one object per event, line-delimited — and does not
+follow the report schema.
 
 ## Action pin audit
 

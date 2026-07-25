@@ -12,9 +12,6 @@ name: GHCR Cleanup
 #     provenance referrers, and orphaned untagged images. The action walks
 #     multi-arch indices and referrers, so deleting an image also deletes
 #     its platform children and attached artifacts.
-#
-# The `charts/shuck` Helm OCI package is deliberately not listed: it only
-# receives semver tags (one per release), which this policy never deletes.
 on:
   schedule:
     - cron: "45 4 * * 1" # weekly, Monday 04:45 UTC
@@ -28,9 +25,9 @@ on:
 permissions:
   contents: read
 
-# The cleanup action is not safe to run concurrently against the same
-# package; the matrix legs each target a distinct package, so they may run
-# in parallel, but two workflow runs must not overlap.
+# The cleanup action is not safe to run concurrently against the same package:
+# two overlapping runs would race on the same version list and delete versions
+# the other has already reaped. Serialize whole runs.
 concurrency:
   group: ghcr-cleanup
   cancel-in-progress: false
