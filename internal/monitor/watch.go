@@ -50,11 +50,12 @@ type Watch struct {
 	// every tick — that would be a request a second for a question whose
 	// answer changes at human speed.
 	Resolved time.Time `json:"resolved,omitzero"`
-	// LastSeen is refreshed whenever a client talks to the daemon at all —
-	// every call marks every watch, since a session asking anything is evidence
-	// somebody is still there. A watch nobody has asked about for
-	// DefaultWatchTTL is dropped, which is how the monitor stops working on a
-	// laptop whose sessions have all ended.
+	// LastSeen is refreshed by the ops that ask how things stand — status,
+	// events and poke — and each of them marks every watch, not the one it
+	// named, since a session asking anything is evidence somebody is still
+	// there. Registering a watch marks that one. A set that goes
+	// DefaultWatchTTL without any of those is dropped, which is how the monitor
+	// stops working on a laptop whose sessions have all ended.
 	LastSeen time.Time `json:"last_seen"`
 }
 
@@ -280,8 +281,12 @@ func (r *registry) Get(id string) (*Watch, bool) {
 	return w, ok
 }
 
-// TouchAll marks every watch as seen. Any client call counts: a session asking
-// the monitor anything is what keeps its watches alive.
+// TouchAll marks every watch as seen. The three ops that ask how things stand —
+// status, events, poke — call it, and they refresh the whole set rather than the
+// watch the question named, because which watch somebody asked about says
+// nothing about whether the others still matter. The teardown ops do not: seek,
+// unwatch and stop are a session leaving, and ping is a client deciding whether
+// there is a daemon at all. Registering a watch refreshes that one, in Add.
 func (r *registry) TouchAll() {
 	now := time.Now()
 	for _, w := range r.watches {
@@ -292,7 +297,8 @@ func (r *registry) TouchAll() {
 	}
 }
 
-// Expire drops watches nobody has asked about within ttl and returns them.
+// Expire drops watches whose LastSeen has gone ttl without a refresh, and
+// returns them. See LastSeen for which calls refresh it.
 func (r *registry) Expire(ttl time.Duration, now time.Time) []Watch {
 	if ttl <= 0 {
 		return nil

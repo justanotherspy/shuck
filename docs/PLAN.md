@@ -41,9 +41,11 @@ theoretical ones:
   there is no per-watch credential and no way to swap the token without
   `shuck monitor stop` and a restart.
 - **The Stop hook only speaks up for actionable events.** By design — a passing
-  build must never delay a finish — but it means `watch.target`, `ci.started`
-  and `pr.state` will never hold a turn open, and an agent that finishes right
-  before a failure lands hears about it only in the next session's first prompt.
+  build must never delay a finish. Only `ci.failed`, `review.comment` and a
+  `review.submitted` that is *not* an approval can hold a turn open;
+  `watch.target`, `ci.started`, `pr.state`, `pins.stale` and `monitor.error`
+  never do. Every one of them still reaches the session on the next prompt, but
+  an agent that finishes right before a failure lands hears about it only then.
 - **Event delivery is at-most-once per consumer.** The cursor advances as
   events are handed over, so a caller that takes a batch and then dies has lost
   it. That is the deliberate trade (re-delivering a fixed CI

@@ -750,3 +750,66 @@ func TestNewToken(t *testing.T) {
 		t.Errorf("token length = %d, want 64 hex characters", len(a))
 	}
 }
+
+// TestOpsThatRefreshWatches pins which requests keep a watch alive, because the
+// answer is not "all of them" and the docs said it was for a while. A watch
+// expires after DefaultWatchTTL with nobody asking, so getting this wrong in
+// either direction is a real fault: a teardown op that refreshed would keep a
+// dead session's watches polling GitHub overnight, and a read that did not would
+// let the monitor drop the watch out from under a session still using it.
+//
+// TouchAll refreshes the whole set rather than the watch a request named, so the
+// second watch — which no request here mentions — is the one that proves it.
+func TestOpsThatRefreshWatches(t *testing.T) {
+	// A stale mark that any refresh will visibly move.
+	stale := time.Now().Add(-24 * time.Hour)
+
+	tests := []struct {
+		name string
+		req  Request
+		// named is whether the op refreshes the watch it addresses; all is
+		// whether it refreshes every watch, the one it never mentions included.
+		named, all bool
+	}{
+		{"status is a client asking how things stand", Request{Op: OpStatus}, true, true},
+		{"events is the hook reading the feed on every prompt", Request{Op: OpEvents, Consumer: "sess"}, true, true},
+		{"poke is somebody who just pushed", Request{Op: OpPoke}, true, true},
+		// Registering refreshes what it registered and nothing else: it is
+		// evidence about that watch only.
+		{"watch refreshes the one it registers", Request{Op: OpWatch, Watch: &Watch{ID: "a", Kind: WatchTree, Path: "/a"}}, true, false},
+		// The rest are a client leaving, or deciding whether anyone is home.
+		{"ping is a liveness probe, not a session", Request{Op: OpPing}, false, false},
+		{"seek is SessionEnd, not somebody arriving", Request{Op: OpSeek, Consumer: "sess"}, false, false},
+		{"unwatch is a watch going away", Request{Op: OpUnwatch, ID: "a"}, false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d, _ := newTestDaemon(t, newFakeClient())
+			d.watches.Add(Watch{ID: "a", Kind: WatchTree, Path: "/a"})
+			d.watches.Add(Watch{ID: "b", Kind: WatchTree, Path: "/b"})
+			for _, id := range []string{"a", "b"} {
+				w, _ := d.watches.Get(id)
+				w.LastSeen = stale
+			}
+
+			if resp := d.handle(context.Background(), tc.req); !resp.OK {
+				t.Fatalf("%s: %s", tc.req.Op, resp.Error)
+			}
+
+			named, ok := d.watches.Get("a")
+			if ok {
+				if moved := named.LastSeen.After(stale); moved != tc.named {
+					t.Errorf("%s refreshed the watch it named = %v, want %v", tc.req.Op, moved, tc.named)
+				}
+			} else if tc.named {
+				t.Errorf("%s was expected to refresh watch a, but dropped it", tc.req.Op)
+			}
+
+			other, _ := d.watches.Get("b")
+			if moved := other.LastSeen.After(stale); moved != tc.all {
+				t.Errorf("%s refreshed the watch it never mentioned = %v, want %v — TouchAll is all-or-nothing",
+					tc.req.Op, moved, tc.all)
+			}
+		})
+	}
+}

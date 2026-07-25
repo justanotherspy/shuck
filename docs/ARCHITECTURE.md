@@ -162,12 +162,18 @@ business, not the caller's: `shuck monitor events --wait 30m` re-asks until the
 half hour it was given has actually elapsed, because an early "nothing new" is
 indistinguishable — same text, same exit code — from a genuinely quiet wait.
 
-A `status`, `events`, or `poke` call refreshes the last-seen time of *every*
-watch (`registry.TouchAll`), not just the one it named; registering a watch
-refreshes that one. Beyond registration there is no per-watch refresh path, and
-that is the intent: a client asking the monitor anything at all is the evidence
-that somebody is still there, and which watch the question happened to be about
-says nothing about whether the others still matter.
+Three of the eight ops refresh a watch's last-seen time, and the split is the
+point. `status`, `events` and `poke` — the ones that ask how things stand — call
+`registry.TouchAll`, which refreshes *every* watch rather than the one the
+request named: somebody is evidently still there, and which watch they happened
+to ask about says nothing about whether the others still matter. Registering a
+watch refreshes that one, and only that one. `ping`, `seek`, `unwatch` and
+`stop` refresh nothing — a liveness probe is a client deciding whether there is
+a daemon at all, and the other three are a session on its way out.
+
+In a Claude Code session the clock therefore resets on every prompt, because the
+`UserPromptSubmit` hook reads the event feed. `TestOpsThatRefreshWatches` pins
+the whole table, in both directions.
 
 ### Watches and targets are different things
 
@@ -197,9 +203,10 @@ target no watch points at any more is pruned, so moving through ten branches
 does not leave ten pollers behind.
 
 Watches expire after `DefaultWatchTTL` (12 hours) with no client asking the
-monitor anything — not 12 hours of that particular watch going unmentioned,
-since any call keeps every watch alive. A laptop closed overnight should not
-still be polling GitHub in the morning.
+monitor how things stand — not 12 hours of that particular watch going
+unmentioned, since a `status`, `events` or `poke` call keeps the whole set
+alive. A laptop closed overnight should not still be polling GitHub in the
+morning.
 
 ### One poll round, in order, with what it costs
 
@@ -343,7 +350,11 @@ Two properties matter:
 
 A consumer starting fresh should call `Seek` first — its cursor then sits at the
 present, and it hears what happens next rather than the last hour of another
-session's history. That is exactly what the `SessionStart` hook does.
+session's history. That is what the `SessionStart` hook does, but only for a
+session that is genuinely starting: `SessionStart` also fires on resume and on
+compaction, and seeking then would discard events the ongoing conversation has
+not been shown yet — the exact moment a CI failure is most likely to be waiting
+(`isNewSession`).
 
 Cursors that fall more than a journal-length behind the retained window are
 dropped on the next save, so sessions coming and going do not grow the file
@@ -364,7 +375,7 @@ the next poll.
 | `ResolveInterval` | 1m | a tree watch that has not found a PR |
 | `MaxBackoff` | 15m | ceiling on the ×3 error backoff |
 | `LowRateThreshold` | 500 | remaining REST quota below which every interval doubles |
-| `DefaultWatchTTL` | 12h | every watch, once no client has asked the monitor anything for that long |
+| `DefaultWatchTTL` | 12h | every watch, once no `status`/`events`/`poke` call has come in for that long |
 | `pinScanInterval` | 10m | floor between two pin scans of one tree, the file walk included |
 
 A target claims its next slot *before* the poll runs, so a slow round does not
@@ -482,9 +493,14 @@ rotated journal) is written through a temp file and renamed, so a reader sees
 either the previous contents or the new ones, never half of each — the daemon
 rewrites on a tick while clients read at will.
 
-The inspection caches are TTL'd and swept from both ends (`cache.Purge`). A
-report command purges on every run, at an hour, exempting the entry the run in
-front of you is writing. The daemon sweeps at the end of a round, no more often
+The inspection caches are TTL'd and swept from both ends (`cache.Purge`). On the
+report side the sweep is a side effect of the paths that own a cache, at an
+hour, exempting the entry the run in front of you is writing: `prReport` before
+it fetches a PR, `resolveAction` and `Security` before their TTL'd entries. It
+is not universal — `shuck pins` reaches the tag cache through `loadOrFetchTags`
+rather than `resolveAction`, and a run- or job-URL target returns through
+`runReport` before it gets there, so neither sweeps anything. The daemon sweeps
+at the end of a round, no more often
 than `cachePurgeInterval` (1 hour — a purge walks the whole cache tree while the
 daemon wakes every second) and at a `cachePurgeTTL` of 24 hours, with no
 exemption: it polls many targets rather than writing one entry, and nothing it

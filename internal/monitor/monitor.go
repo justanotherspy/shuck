@@ -82,11 +82,14 @@ const MaxWait = 10 * time.Minute
 // away what has already been reported — see Daemon.pruneTargets.
 const TargetGrace = 5 * time.Minute
 
-// DefaultWatchTTL is how long a watch survives without any client asking about
-// it. A laptop left closed overnight should not still be polling GitHub in the
-// morning: sessions come and go, and a watch nobody has looked at in half a day
-// is almost certainly the residue of one that ended. Every client request
-// refreshes the watches it touches.
+// DefaultWatchTTL is how long a watch survives with no client asking the monitor
+// how things stand. A laptop left closed overnight should not still be polling
+// GitHub in the morning: sessions come and go, and a watch nobody has looked at
+// in half a day is almost certainly the residue of one that ended. A status,
+// events, or poke call refreshes every watch (registry.TouchAll) and registering
+// one refreshes that one; ping, seek, unwatch and stop refresh nothing. In a
+// Claude Code session that means the clock resets on every prompt, since the
+// UserPromptSubmit hook reads the event feed.
 const DefaultWatchTTL = 12 * time.Hour
 
 // Dir returns the monitor's state directory (~/.cache/shuck/monitor), creating

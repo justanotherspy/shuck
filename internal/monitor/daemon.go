@@ -389,7 +389,8 @@ func (d *Daemon) updateWatch(id string, fn func(*Watch) []Event) {
 	d.publish(events)
 }
 
-// expire retires watches nobody has asked about, and says so.
+// expire retires watches that have gone the TTL without a client asking how
+// things stand, and says so.
 func (d *Daemon) expire(now time.Time) {
 	d.mu.Lock()
 	dropped := d.watches.Expire(d.opts.WatchTTL, now)

@@ -235,10 +235,11 @@ shuck --watch [flags] [target]  # poll until every check finishes, then report
 - `shuck monitor` (status) **auto-starts** the daemon; the other read commands do
   not, so they never report a false all-clear from a monitor that has seen
   nothing. `--no-start` suppresses the auto-start.
-- Watches expire after 12h with no client asking the monitor anything — any call
-  refreshes every watch, so one live session keeps them all alive — and a daemon
-  that was started on demand exits once its last watch is gone, so it never
-  keeps polling GitHub after your sessions end. `shuck monitor run --stay` keeps
+- Watches expire after 12h with no client asking the monitor how things stand —
+  a `status`, `events`, or `poke` call refreshes every watch, not just the one it
+  named, so one live session keeps them all alive — and a daemon that was started
+  on demand exits once its last watch is gone, so it never keeps polling GitHub
+  after your sessions end. `shuck monitor run --stay` keeps
   a hand-started one alive with nothing to watch.
 
 ### Flags

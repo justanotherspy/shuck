@@ -325,8 +325,8 @@ func TestRegistryTouchAndExpire(t *testing.T) {
 	r.Add(Watch{ID: "b", Kind: WatchTree, Path: "/b"})
 
 	// Age one watch past the TTL and leave the other as a live session would:
-	// every client call runs TouchAll, so a watch is only stale when nobody has
-	// talked to the monitor since.
+	// a status/events/poke call runs TouchAll, so a watch is only stale when
+	// nobody has asked the monitor how things stand since.
 	stale := time.Now().Add(-2 * time.Hour)
 	b, _ := r.Get("b")
 	b.LastSeen = stale

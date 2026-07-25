@@ -598,7 +598,7 @@ func monitorRun(args []string, stdout, stderr io.Writer) int {
 	fs.BoolVar(&detached, "detached", false, "run as a background daemon, logging to the monitor's log file")
 	fs.BoolVar(&stay, "stay", false, "keep running even with nothing left to watch")
 	fs.BoolVar(&noPins, "no-pins", false, "do not audit workflow files for stale action pins")
-	fs.DurationVar(&ttl, "watch-ttl", monitor.DefaultWatchTTL, "drop a watch nobody has asked about for this long (0 = never)")
+	fs.DurationVar(&ttl, "watch-ttl", monitor.DefaultWatchTTL, "drop every watch after this long with no client asking how things stand (0 = never)")
 	fs.StringVar(&token, "token", "", "GitHub token (overrides GITHUB_TOKEN/GH_TOKEN)")
 	if err := fs.Parse(args); err != nil {
 		return 2

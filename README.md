@@ -116,7 +116,9 @@ A target is a directory, or a pull request — `owner/repo#42`, a PR URL,
 shorthand. `shuck monitor events` takes `--follow` (keep printing as they
 arrive), `--all` (the whole retained journal), `--wait D` (block for up to `D`
 when nothing is pending), `--limit N`, and `--consumer NAME` — the identity
-whose cursor advances, so two consumers each see every event once.
+whose cursor advances, so two consumers each see every event once. `--follow`
+and `--wait` are mutually exclusive: a follow already blocks until you interrupt
+it, so the combination exits `2` rather than letting you believe it will stop.
 
 ### What it notices
 
@@ -159,10 +161,11 @@ that resolve to the same pull request are polled once between them. A branch
 with no open PR is not polled at all — the monitor just re-asks once a minute
 whether one has appeared.
 
-Watches expire after 12 hours with no client asking the monitor anything — any
-call refreshes every watch, so one live session keeps them all alive — and a
-daemon that was started on demand exits once its last watch goes, so nothing
-keeps polling GitHub after your sessions end. One you start yourself
+Watches expire after 12 hours with no client asking the monitor how things
+stand — a `status`, `events`, or `poke` call refreshes every watch, not just the
+one it named, so one live session keeps them all alive — and a daemon that was
+started on demand exits once its last watch goes, so nothing keeps polling
+GitHub after your sessions end. One you start yourself
 (`shuck monitor run`) stays up regardless.
 
 Clients are short-lived: one JSON line over a unix socket in a `0700`
