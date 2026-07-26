@@ -27,6 +27,12 @@ const (
 // scenarios shuck covers so the agent knows when to. It leads with the monitor,
 // because the loop that matters most is the one the agent does not have to
 // remember to start: push, then get told.
+//
+// It has to agree with the skill installed beside it, which is written for the
+// plugin — where a `shuck monitor stream` delivers and waiting in a shell is
+// forbidden. `shuck setup` installs no plugin, so the note is also the one place
+// that tells a session without one how to close the loop by hand. Both halves,
+// in that order, or the two files this one command writes contradict each other.
 const claudeNote = "## shuck — GitHub PR & CI triage (skill + CLI)\n" +
 	"\n" +
 	"`shuck` shucks the husk and keeps the kernel: it returns the **exact failing\n" +
@@ -40,12 +46,15 @@ const claudeNote = "## shuck — GitHub PR & CI triage (skill + CLI)\n" +
 	"\n" +
 	"Reach for shuck to:\n" +
 	"\n" +
-	"- **Find out when your PR breaks, without asking.** `shuck monitor watch`\n" +
-	"  registers this working tree with a local background daemon; it follows the\n" +
-	"  branch you are on, finds its open PR, and reports new CI failures, review\n" +
-	"  comments, and stale action pins as they happen. `shuck monitor status`\n" +
-	"  answers \"is it green?\"; `shuck monitor events --wait 10m` blocks until\n" +
-	"  there is something to know, instead of sleeping and re-checking.\n" +
+	"- **Find out when your PR breaks, without asking.** A local background daemon\n" +
+	"  follows the working tree you are in — the branch you are on, its open PR —\n" +
+	"  and reports new CI failures, review comments, and stale action pins as they\n" +
+	"  happen. With the shuck plugin installed they arrive on their own, and there\n" +
+	"  is nothing to poll for or wait on. Without it, nothing is streaming into\n" +
+	"  this session, so close the loop yourself: `shuck monitor watch` registers\n" +
+	"  this tree (or a PR you are not checked out on), and `shuck monitor events\n" +
+	"  --wait 30m` blocks until there is something to know, instead of sleeping and\n" +
+	"  re-checking. Either way `shuck monitor` answers \"is it green?\".\n" +
 	"- **Debug why CI is red.** `shuck logs <pr>` returns each failed step's\n" +
 	"  command and error excerpt — for a PR, a single run/job URL, or a specific\n" +
 	"  re-run attempt.\n" +

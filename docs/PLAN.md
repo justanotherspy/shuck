@@ -27,10 +27,11 @@ theoretical ones:
   news), but it means "is it green?" for a commit you did not watch is a
   question to ask (`shuck monitor status`), not something you will be told.
 - **No progress while something is in flight.** `shuck --watch` prints progress
-  to stderr as it polls; the monitor has no equivalent. Between "checks
-  running" and the next terminal event there is nothing to see, and
-  `shuck monitor events --follow` blocks silently. An agent that wants a
-  heartbeat has to poll `shuck monitor status`.
+  to stderr as it polls; the monitor has no equivalent. Between "checks running"
+  and the next terminal event there is nothing to see. That is accepted for an
+  agent — it is told outcomes, and a heartbeat it would have to poll for is the
+  thing the monitor exists to remove — but a human watching `shuck monitor
+  events --follow` sees a silent terminal.
 - **Pending non-Actions checks are invisible.** `gh.OtherChecks` returns only
   non-Actions check runs that have *completed* and failed, so a third-party
   check still in progress cannot hold a verdict back. The verdict is about the
@@ -44,24 +45,28 @@ theoretical ones:
   build must never delay a finish. Only `ci.failed`, `review.comment` and a
   `review.submitted` that is *not* an approval can hold a turn open;
   `watch.target`, `ci.started`, `pr.state`, `pins.stale` and `monitor.error`
-  never do. Every one of them still reaches the session — as a notification
-  where the plugin monitor runs, on the next prompt where it does not — but an
-  agent that finishes right before a failure lands hears about it only then.
-- **A stand-down lets the session's backlog grow.** While a stream serves the
-  tree, `UserPromptSubmit` delivers nothing and consumes nothing, so the
-  session's own cursor is not advanced between `SessionStart` and the first
-  `Stop`. Nothing is lost, but the `Stop` hook's peek can then hold a long
-  batch, and `capFeed` trims from the *end* at 3.5 KB — so a very long session
-  on a busy PR can have the newest event, the one that justified the block,
-  truncated out of the block reason. Giving that peek a `Limit` would fix it
-  (the journal keeps the newest on overflow and the seek target is unchanged);
-  it is left alone until someone actually hits it.
-- **A killed stream is silent for up to its staleness window.** The liveness
-  marker is removed on exit and on the signal path, but a SIGKILL leaves it
-  behind and it reads as live until the heartbeat ages out. During that window
-  the prompt hook stands down and the stream is not reading either. Again
-  nothing is lost — the stand-down consumes nothing — but delivery waits for the
-  first prompt after the marker expires.
+  never do. Every one of them still reaches the session as a notification from
+  the plugin monitor, but an agent that finishes right before a failure lands
+  hears about it only then.
+- **The session's backlog grows between `Stop`s.** Nothing but `Stop` consumes
+  the session's own cursor, so on a busy PR its peek can hold a long batch, and
+  `capFeed` trims from the *end* at 3.5 KB — the newest event, the one that
+  justified the block, is the one at risk of being truncated out of the block
+  reason. Giving that peek a `Limit` would fix it (the journal keeps the newest
+  on overflow and the seek target is unchanged); it is left alone until someone
+  actually hits it.
+- **A killed stream is silent until the next `Stop`.** The stream is the only
+  delivery route, so a SIGKILLed one notifies nothing further; the `Stop` hook
+  still reads the session's cursor and hands over anything actionable, so a
+  failure is delayed to the end of the turn rather than lost. A stale liveness
+  marker (removed on exit and on the signal path, but not on SIGKILL) costs
+  nothing in the shipped wiring — only an older installed `hooks.json` reads it.
+- **A daemon holding a dead token looks healthy.** `internal/monitor/poll.go`
+  treats a 401 as an ordinary poll error: it backs off to `MaxBackoff` and lands
+  in `TargetStatus.LastError`, which only `shuck monitor status` renders. A
+  session whose stream connected to a daemon started with a since-revoked token
+  therefore hears nothing at all and has no way to tell that apart from a quiet
+  PR. Surfacing a persistent per-target `LastError` in the stream would close it.
 - **Event delivery is at-most-once per consumer.** The cursor advances as
   events are handed over, so a caller that takes a batch and then dies has lost
   it. That is the deliberate trade (re-delivering a fixed CI

@@ -107,12 +107,13 @@ type ActionOptions struct {
 
 // Action resolves an action ref to its latest matching tag + commit SHA,
 // sharing the CLI's tag cache and selection. It is exported so embedders reuse
-// the pipeline. Auth is optional: an empty token falls back to
-// GITHUB_TOKEN/GH_TOKEN, then to unauthenticated access.
+// the pipeline. Auth is optional: an empty token falls back to the chain every
+// other command uses — GITHUB_TOKEN/GH_TOKEN, then the gh CLI — and then to
+// unauthenticated access, which costs the anonymous rate limit.
 func Action(ctx context.Context, ref action.Ref, opts ActionOptions) (action.Resolved, error) {
 	token := opts.Token
 	if token == "" {
-		token = tokenFromEnv()
+		token = discoveredToken()
 	}
 	return resolveAction(ctx, ref, token, opts.Refresh)
 }

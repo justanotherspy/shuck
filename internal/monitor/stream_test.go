@@ -360,6 +360,123 @@ func TestStreamIdentitySeparatesConcurrentStreams(t *testing.T) {
 	}
 }
 
+// linkedWorktree lays out the shape this repository actually uses: a git
+// worktree at <repo>/.claude/worktrees/<name>, inside the main checkout, on a
+// branch of its own. It returns the main checkout and the worktree.
+func linkedWorktree(t *testing.T, name string) (main, worktree string) {
+	t.Helper()
+	main = t.TempDir()
+	writeRepo(t, main, "ref: refs/heads/main\n", "refs/heads/main", "aaa\n", originConfig)
+
+	gitDir := filepath.Join(main, ".git", "worktrees", name)
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(gitDir, "HEAD"), "ref: refs/heads/"+name+"\n")
+	write(t, filepath.Join(gitDir, "commondir"), "../..\n")
+
+	worktree = filepath.Join(main, ".claude", "worktrees", name)
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(worktree, ".git"), "gitdir: "+gitDir+"\n")
+	return main, worktree
+}
+
+// TestSameTreeSeparatesANestedWorktree is the containment match's blind spot,
+// and it is this repository's own layout: a worktree lives inside the main
+// checkout, so "one path is under the other" is true of two trees that are a
+// different branch, a different PR and a different session. What tells them
+// apart is git identity — a subdirectory shares the enclosing tree's git
+// directory, a linked worktree has one of its own.
+func TestSameTreeSeparatesANestedWorktree(t *testing.T) {
+	main, worktree := linkedWorktree(t, "feature")
+	sub := filepath.Join(main, "internal", "monitor")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	deeper := filepath.Join(worktree, "internal")
+	if err := os.MkdirAll(deeper, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name string
+		a, b string
+		want bool
+	}{
+		{"the checkout and a worktree nested inside it", main, worktree, false},
+		{"and the other way round", worktree, main, false},
+		{"a subdirectory of the checkout is still the checkout", main, sub, true},
+		{"a subdirectory of the worktree is still the worktree", worktree, deeper, true},
+		{"the worktree is itself", worktree, worktree, true},
+		{
+			// The fallback: two nested paths git knows nothing about have
+			// only containment to go on, and it is right for them.
+			name: "outside a repository, containment is all there is",
+			a:    filepath.Dir(t.TempDir()),
+			b:    t.TempDir(),
+			want: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sameTree(tt.a, tt.b); got != tt.want {
+				t.Errorf("sameTree(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestStreamOriginDoesNotCrossIntoANestedWorktree is what that separation is
+// worth. A session's origin is where its stream started reading, and inheriting
+// a neighbour's — a session that opened yesterday, in the checkout this
+// worktree happens to sit inside — seeds this session's cursor arbitrarily far
+// in the past, replaying every CI failure that tree has already been told about
+// into its first Stop gate.
+func TestStreamOriginDoesNotCrossIntoANestedWorktree(t *testing.T) {
+	streamHome(t)
+	main, worktree := linkedWorktree(t, "feature")
+	sub := filepath.Join(main, "internal")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeStreamMarker(t, streamRecord{
+		Watch: TreeWatchID(main), Path: main, Consumer: StreamConsumer(TreeWatchID(main)),
+		PID: os.Getpid(), Heartbeat: time.Now(), Origin: 51,
+	})
+
+	tests := []struct {
+		name      string
+		dir       string
+		want      uint64
+		wantFound bool
+	}{
+		{"the tree the stream registered", main, 50, true},
+		{"a subdirectory of it", sub, 50, true},
+		{"a worktree nested inside it", worktree, 0, false},
+		{"somewhere else entirely", t.TempDir(), 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, found := StreamOrigin(tt.dir)
+			if got != tt.want || found != tt.wantFound {
+				t.Errorf("StreamOrigin(%q) = (%d, %v), want (%d, %v)", tt.dir, got, found, tt.want, tt.wantFound)
+			}
+		})
+	}
+
+	// The same separation on the delivery side: the nested worktree's prompt
+	// hook must not stand down for a stream that is not serving it.
+	if StreamServes(worktree) {
+		t.Error("the main checkout's stream claims the nested worktree; that session would be handed nothing at all")
+	}
+	if !StreamServes(main) {
+		t.Error("the stream stopped serving the tree it registered")
+	}
+}
+
 func TestSameTree(t *testing.T) {
 	root := t.TempDir()
 	nested := filepath.Join(root, "internal", "monitor")

@@ -97,35 +97,43 @@ func FuzzJournalRecovery(f *testing.F) {
 
 // FuzzMonitorDrain fuzzes the read the delivery contract rests on against
 // arbitrary client requests. The fields arrive over the socket from a client
-// that may be any build of shuck, so every combination of consumer, floor, cap
-// and peek has to hold the two invariants: a peek consumes nothing, and a read
-// that hands events to a named consumer always leaves that consumer's cursor
-// covering them — a cursor left behind what was delivered is a CI failure
-// repeated into a session that already acted on it.
+// that may be any build of shuck, so every combination of consumer, floor, cap,
+// peek and scope has to hold the two invariants: a peek consumes nothing, and a
+// read that hands events to a named consumer always leaves that consumer's
+// cursor covering them — a cursor left behind what was delivered is a CI
+// failure repeated into a session that already acted on it.
+//
+// Scope is in here because filtering is the one thing that can break the second
+// invariant quietly: a filter applied before the read would leave the cursor
+// short of what it skipped and redeliver it forever.
 func FuzzMonitorDrain(f *testing.F) {
-	f.Add("sess", 0, uint64(0), false, uint64(0))
-	f.Add("sess", 2, uint64(1), true, uint64(1))
-	f.Add("", 0, uint64(2), false, uint64(0))
+	f.Add("sess", 0, uint64(0), false, uint64(0), "")
+	f.Add("sess", 2, uint64(1), true, uint64(1), "")
+	f.Add("", 0, uint64(2), false, uint64(0), "/tree")
 	// An anonymous read with no floor is the one that goes through
 	// journal.Drain rather than journal.Since — the path that has a cursor to
 	// write and must not.
-	f.Add("", 0, uint64(0), false, uint64(0))
-	f.Add("sess", -1, uint64(0), false, uint64(3))
-	f.Add("sess", 1, ^uint64(0), false, uint64(0))
-	f.Add("\x00", 1000000, uint64(4), true, ^uint64(0))
+	f.Add("", 0, uint64(0), false, uint64(0), "")
+	f.Add("sess", -1, uint64(0), false, uint64(3), "/tree")
+	f.Add("sess", 1, ^uint64(0), false, uint64(0), "")
+	f.Add("\x00", 1000000, uint64(4), true, ^uint64(0), "\x00")
 
-	f.Fuzz(func(t *testing.T, consumer string, limit int, since uint64, peek bool, cursor uint64) {
+	f.Fuzz(func(t *testing.T, consumer string, limit int, since uint64, peek bool, cursor uint64, scope string) {
 		d, _ := newTestDaemon(t, newFakeClient())
+		tree := t.TempDir()
+		d.watches.Add(Watch{ID: TreeWatchID(tree), Kind: WatchTree, Path: tree,
+			Owner: "o", Repo: "r", Number: 1, Scopes: []string{tree}})
 		d.publish([]Event{
-			{Kind: KindCIFailed, Title: "one"},
-			{Kind: KindCIPassed, Title: "two"},
-			{Kind: KindReviewComment, Title: "three"},
-			{Kind: KindPinsStale, Title: "four"},
+			{Kind: KindCIFailed, Target: "o/r#1", Title: "one"},
+			{Kind: KindCIPassed, Target: "o/r#2", Title: "two"},
+			{Kind: KindReviewComment, Target: "o/r#1", Title: "three"},
+			{Kind: KindPinsStale, Target: tree, Title: "four"},
 		})
 		d.journal.Seek(consumer, cursor)
 		before := d.journal.Cursor(consumer, 0)
 
-		events := d.drain(Request{Consumer: consumer, Limit: limit, Since: since, Peek: peek})
+		req := Request{Consumer: consumer, Limit: limit, Since: since, Peek: peek, Scope: scope}
+		events := d.drain(req)
 
 		// Whatever comes back is a window on the journal: ascending, distinct,
 		// and never more than was asked for.
@@ -147,7 +155,7 @@ func FuzzMonitorDrain(f *testing.F) {
 		// identically — which is the observable form of "no cursor moved",
 		// rather than a look at a cursor an anonymous caller does not have.
 		if peek || consumer == "" {
-			again := d.drain(Request{Consumer: consumer, Limit: limit, Since: since, Peek: peek})
+			again := d.drain(req)
 			if len(again) != len(events) {
 				t.Fatalf("a read that consumes nothing returned %d events and then %d", len(events), len(again))
 			}

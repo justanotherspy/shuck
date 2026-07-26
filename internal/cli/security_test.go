@@ -160,8 +160,9 @@ func TestRunSecurityForbiddenAndError(t *testing.T) {
 	if !strings.Contains(got, "Dependabot: error — boom") {
 		t.Errorf("error note missing:\n%s", got)
 	}
-	// No token set and nothing OK -> the hint is printed on stderr.
-	if !strings.Contains(errb.String(), "no GitHub token set") {
+	// No token found and nothing OK -> the hint is printed on stderr, naming
+	// every way to supply one (gh included, since that is now a source).
+	if !strings.Contains(errb.String(), "no GitHub token found") || !strings.Contains(errb.String(), "gh auth login") {
 		t.Errorf("expected no-token hint, got %q", errb.String())
 	}
 }

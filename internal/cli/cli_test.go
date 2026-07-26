@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/justanotherspy/shuck/internal/action"
 	"github.com/justanotherspy/shuck/internal/cache"
 	"github.com/justanotherspy/shuck/internal/jsonout"
 	"github.com/justanotherspy/shuck/internal/logs"
@@ -63,18 +65,152 @@ func TestBuildFailedStepsWiresOptions(t *testing.T) {
 	}
 }
 
+// TestResolveToken pins the order the sources are consulted in. The gh fallback
+// sits last because it is the least deliberate of the three, and it exists at
+// all because an environment variable only reaches a process that was started
+// with it: a long-running session can never pick up a token exported after it
+// began, and neither can the monitor it starts.
 func TestResolveToken(t *testing.T) {
-	t.Setenv("GITHUB_TOKEN", "")
-	t.Setenv("GH_TOKEN", "")
-	if _, err := resolveToken(""); err == nil {
-		t.Errorf("expected error when no token is set")
+	tests := []struct {
+		name   string
+		flag   string
+		env    map[string]string
+		gh     string
+		want   string
+		wantNo bool // no token could be found at all
+	}{
+		{name: "the flag wins over everything", flag: "flagtok", env: map[string]string{"GITHUB_TOKEN": "envtok"}, gh: "ghtok", want: "flagtok"},
+		{name: "GITHUB_TOKEN comes before GH_TOKEN", env: map[string]string{"GITHUB_TOKEN": "envtok", "GH_TOKEN": "other"}, gh: "ghtok", want: "envtok"},
+		{name: "GH_TOKEN comes before gh", env: map[string]string{"GH_TOKEN": "envtok"}, gh: "ghtok", want: "envtok"},
+		{name: "gh is consulted when nothing was exported", gh: "ghtok", want: "ghtok"},
+		{name: "a gh that has nothing to say is not a token", gh: "", wantNo: true},
 	}
-	if got, _ := resolveToken("flagtok"); got != "flagtok" {
-		t.Errorf("flag token should win, got %q", got)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("GITHUB_TOKEN", "")
+			t.Setenv("GH_TOKEN", "")
+			for k, v := range tt.env {
+				t.Setenv(k, v)
+			}
+			stubGhAuthToken(t, tt.gh)
+
+			got, err := resolveToken(tt.flag)
+			if tt.wantNo {
+				if err == nil {
+					t.Fatalf("resolveToken = %q, want an error when there is no token anywhere", got)
+				}
+				// The message has to name every way out, or a session on a
+				// machine where gh is logged in is told to export a variable
+				// it does not need.
+				for _, want := range []string{"GITHUB_TOKEN", "GH_TOKEN", "gh auth login", "--token"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("error %q does not mention %q", err, want)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveToken: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("resolveToken = %q, want %q", got, tt.want)
+			}
+		})
 	}
-	t.Setenv("GH_TOKEN", "envtok")
-	if got, _ := resolveToken(""); got != "envtok" {
-		t.Errorf("GH_TOKEN fallback failed, got %q", got)
+}
+
+// TestGhTokenFrom is the half of the fallback that decides what counts as a
+// token. Anything that is not unmistakably one has to come back empty: a line
+// of prose sent as a bearer token is a 401 that reads like a revoked
+// credential, which is far harder to diagnose than "no GitHub token found".
+func TestGhTokenFrom(t *testing.T) {
+	tests := []struct {
+		name string
+		out  string
+		err  error
+		want string
+	}{
+		{name: "a token, newline and all", out: "gho_abc123\n", want: "gho_abc123"},
+		{name: "surrounding whitespace is not part of it", out: "  gho_abc123  ", want: "gho_abc123"},
+		{name: "gh is not installed or not logged in", err: errors.New("exit status 1"), want: ""},
+		{name: "an error wins over anything printed", out: "gho_abc123", err: errors.New("exit status 1"), want: ""},
+		{name: "nothing was printed", out: "", want: ""},
+		{name: "only whitespace was printed", out: "  \n\n", want: ""},
+		{name: "a wrapper printed prose on stdout", out: "warning: gh is out of date\ngho_abc123\n", want: ""},
+		{name: "a sentence is not a token", out: "you are not logged in\n", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ghTokenFrom([]byte(tt.out), tt.err); got != tt.want {
+				t.Errorf("ghTokenFrom = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestGhAuthTokenCommandNamesTheHost is the other half of "not unmistakably a
+// token": one that is unmistakably a token, but for the wrong GitHub.
+//
+// `gh auth token` with no --hostname answers for gh's own default host — GH_HOST
+// when it is exported, otherwise whatever single host gh is logged in to — so on
+// a machine set up against a GitHub Enterprise instance it hands back an
+// enterprise credential. shuck talks to api.github.com and nothing else, so that
+// token would be sent as a bearer to a host it was never issued for, on every
+// poll of a long-lived monitor. ghTokenFrom cannot catch it: a GHES token is a
+// single whitespace-free word on exit 0.
+func TestGhAuthTokenCommandNamesTheHost(t *testing.T) {
+	args := ghAuthTokenCommand(context.Background()).Args
+	joined := strings.Join(args, " ")
+	for _, want := range []string{"auth token", "--hostname github.com"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("gh invocation %q is missing %q", joined, want)
+		}
+	}
+}
+
+// TestSecurityUsesTheSameTokenChain is the rule that keeps one invocation from
+// producing an authenticated CI half and an anonymous security half. `shuck
+// <pr>` resolves a token once and runs both; a security half that fell back to
+// the environment alone would report code scanning, secret scanning and
+// Dependabot as skipped-forbidden on the very machine the gh fallback exists
+// for — the credential a call away, and nothing saying so.
+func TestSecurityUsesTheSameTokenChain(t *testing.T) {
+	s := okStub()
+	withStubSecurity(t, s)
+	stubGhAuthToken(t, "gho_from_gh")
+
+	var seen string
+	newSecurityLister = func(token string) securityLister { seen = token; return s }
+
+	if _, err := Security(context.Background(), "o", "r", SecurityOptions{}); err != nil {
+		t.Fatalf("Security: %v", err)
+	}
+	if seen != "gho_from_gh" {
+		t.Errorf("security fetched with token %q, want the one gh is logged in with", seen)
+	}
+}
+
+// TestActionUsesTheSameTokenChain is the same rule for `shuck action`, where the
+// cost of missing the token is the 60 req/hr anonymous tag-listing budget.
+func TestActionUsesTheSameTokenChain(t *testing.T) {
+	s := &stubLister{tags: []model.ActionTag{{Name: "v4.2.2", SHA: "sha422"}}}
+	withStubLister(t, s)
+	stubGhAuthToken(t, "gho_from_gh")
+
+	var seen string
+	NewTagLister = func(token string) TagLister { seen = token; return s }
+
+	ref, err := action.ParseRef("actions/checkout@v4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Action(context.Background(), ref, ActionOptions{}); err != nil {
+		t.Fatalf("Action: %v", err)
+	}
+	if seen != "gho_from_gh" {
+		t.Errorf("tags listed with token %q, want the one gh is logged in with", seen)
 	}
 }
 

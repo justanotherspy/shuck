@@ -42,6 +42,15 @@ type combinedDocument struct {
 // the repo's security alerts. A failure of the inspection itself is fatal; the
 // security half degrades independently (see withSecurity).
 func inspectAll(ctx context.Context, tgt target.Target, o options) (*combinedResult, error) {
+	// Resolve once and hand both halves the same credential. Each would
+	// otherwise resolve for itself, which means paying twice for the gh CLI
+	// lookup — and the security half falling back on its own is how one command
+	// came to fetch CI authenticated and security anonymously.
+	if !o.offline {
+		if token, err := resolveToken(o.token); err == nil {
+			o.token = token
+		}
+	}
 	report, err := inspectWith(ctx, tgt, o)
 	if err != nil {
 		return nil, err

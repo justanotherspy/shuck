@@ -103,7 +103,7 @@ func runSecurity(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if token == "" {
-		token = tokenFromEnv()
+		token = discoveredToken()
 	}
 
 	report, err := Security(context.Background(), owner, repo, SecurityOptions{State: state, Token: token, Refresh: refresh})
@@ -113,7 +113,7 @@ func runSecurity(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if token == "" && !anySourceOK(report) {
-		fmt.Fprintln(stderr, "shuck: no GitHub token set (GITHUB_TOKEN/GH_TOKEN); security data and private repos usually require one.")
+		fmt.Fprintln(stderr, "shuck: no GitHub token found (set GITHUB_TOKEN/GH_TOKEN, or run `gh auth login`); security data and private repos usually require one.")
 	}
 
 	if jsonOut {
@@ -153,7 +153,7 @@ func Security(ctx context.Context, owner, repo string, opts SecurityOptions) (*m
 
 	token := opts.Token
 	if token == "" {
-		token = tokenFromEnv()
+		token = discoveredToken()
 	}
 	lister := newSecurityLister(token)
 

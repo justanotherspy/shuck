@@ -51,6 +51,12 @@ type Request struct {
 	// a Claude Code session ID, typically. Empty means "peek without
 	// consuming".
 	Consumer string `json:"consumer,omitempty"`
+	// Scope narrows OpEvents to the events belonging to one working tree's
+	// watches, so a session in one worktree is not handed another worktree's
+	// CI. Empty means no filtering at all, which is what keeps `shuck monitor
+	// events` a view of the whole journal for anyone debugging the monitor
+	// itself.
+	Scope string `json:"scope,omitempty"`
 	// Limit caps how many events OpEvents returns (0 = no cap).
 	Limit int `json:"limit,omitempty"`
 	// Wait blocks OpEvents for up to this long when nothing is pending, so an
@@ -64,6 +70,12 @@ type Request struct {
 	// discarding what it was down for. Without it a restarted reader would seek
 	// past everything published while it was away.
 	IfNew bool `json:"if_new,omitempty"`
+	// Exact takes OpSeek's Since literally, a zero included. Zero otherwise
+	// means "the present", which is what a caller with no position in mind
+	// wants; a caller seeding a session to where its delivery channel started
+	// has a position in mind, and on a journal that was empty then, that
+	// position is zero.
+	Exact bool `json:"exact,omitempty"`
 	// All asks OpEvents for the whole retained journal rather than what is
 	// pending.
 	All bool `json:"all,omitempty"`

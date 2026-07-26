@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -43,6 +44,24 @@ type Watch struct {
 	// Note explains why a watch is not currently resolving to a PR — a
 	// detached HEAD, no open PR for the branch, an unreadable working tree.
 	Note string `json:"note,omitempty"`
+	// Scopes are the working trees whose sessions this watch belongs to: its
+	// own path, for a tree watch, plus the directory each process that
+	// registered it was working in. The event feed is filtered by them, which
+	// is what stops a session in one worktree being handed another worktree's
+	// CI — and what makes a PR an agent added by hand ("shuck monitor watch
+	// owner/repo#42") belong to the session that added it.
+	//
+	// It is a set rather than one path because a watch id names what is
+	// watched, not who asked: two trees can register the same PR, and a single
+	// field would have the second registrant either steal the watch from the
+	// first or be ignored by it — one of the two sessions silently getting
+	// nothing either way.
+	//
+	// Empty means "belongs to everyone", which is what a watch persisted by a
+	// daemon that predates this field decodes to. Delivering one watch's
+	// events too widely costs noise; dropping them costs the failure nobody
+	// then hears about, so the empty set fails toward delivery.
+	Scopes []string `json:"scopes,omitempty"`
 
 	Added time.Time `json:"added"`
 	// Resolved is when the branch was last looked up against the repository's
@@ -79,6 +98,63 @@ func (w Watch) Target() string {
 		return w.Owner + "/" + w.Repo
 	}
 	return fmt.Sprintf("%s/%s#%d", w.Owner, w.Repo, w.Number)
+}
+
+// maxWatchScopes bounds how many sessions one watch remembers. The set is
+// persisted and a watch id is stable, so without a cap a long-lived PR watch
+// would accumulate an entry per directory anyone ever registered it from. Eight
+// is far past the number of working trees that share one watch in practice, and
+// the least recently registered is what a ninth displaces.
+//
+// Least recently *registered* rather than first seen, because nothing
+// re-registers a PR watch on its own: the hooks and the stream both register
+// the session's tree, so a PR an agent added by hand is only ever re-registered
+// by hand. Evicting in arrival order would drop the scope of a session that has
+// kept asking for the watch since the day it was added, and it would then be
+// filtered out of the feed for a PR it explicitly asked to follow, with nothing
+// in `shuck monitor status` to say so.
+const maxWatchScopes = 8
+
+// addScope records that the session working in scope registered this watch,
+// moving a scope that is already there to the back of the eviction queue.
+func (w *Watch) addScope(scope string) {
+	if scope == "" {
+		return
+	}
+	if i := slices.Index(w.Scopes, scope); i >= 0 {
+		w.Scopes = slices.Delete(w.Scopes, i, i+1)
+	}
+	w.Scopes = append(w.Scopes, scope)
+	if len(w.Scopes) > maxWatchScopes {
+		w.Scopes = w.Scopes[len(w.Scopes)-maxWatchScopes:]
+	}
+}
+
+// InScope reports whether this watch belongs to the session working in scope.
+func (w Watch) InScope(scope string) bool { return w.inScope(resolveTree(scope)) }
+
+// inScope is InScope against an already-resolved path, so a filter over the
+// whole registry resolves the asking session's directory once rather than once
+// per watch.
+//
+// Matching is exact — equal after symlinks are resolved — and deliberately not
+// the containment match StreamServes uses. A git worktree in this repository
+// lives at <repo>/.claude/worktrees/<name>, inside the main checkout, so
+// containment would make the worktree's session and the main checkout's session
+// each other's scope and reintroduce exactly the cross-talk this exists to stop.
+func (w Watch) inScope(resolved string) bool {
+	if len(w.Scopes) == 0 {
+		return true
+	}
+	if resolved == "" {
+		return false
+	}
+	for _, s := range w.Scopes {
+		if resolveTree(s) == resolved {
+			return true
+		}
+	}
+	return false
 }
 
 // Describe renders the watch for `shuck monitor status`: what it follows, what
@@ -118,26 +194,37 @@ func (w Watch) Describe() string {
 // #42 — a watch pointed somewhere other than where the person said, with
 // nothing in the output to give it away. Nothing is lost by the ordering: no
 // path is a spelling parsePRSpec accepts, so it fails on one cleanly.
+// cwd is also what scopes the watch to the session registering it: a PR watch
+// belongs to whoever asked for it, and a tree watch belongs both to the tree it
+// follows and to the directory it was asked for from. A cwd that cannot be
+// resolved simply leaves the watch unscoped, which is the pre-scoping behavior
+// and costs noise rather than delivery.
 func ParseWatchSpec(args []string, cwd string) (Watch, error) {
 	now := time.Now()
+	scope := ""
+	if cwd != "" {
+		if abs, err := filepath.Abs(cwd); err == nil {
+			scope = abs
+		}
+	}
 	if len(args) == 0 {
 		abs, err := filepath.Abs(cwd)
 		if err != nil {
 			return Watch{}, fmt.Errorf("resolve working directory: %w", err)
 		}
-		return treeWatch(abs, now), nil
+		return treeWatch(abs, now, abs), nil
 	}
 
 	owner, repo, number, err := parsePRSpec(args)
 	if err != nil {
-		if w, ok := treeWatchArg(args, now); ok {
+		if w, ok := treeWatchArg(args, now, scope); ok {
 			return w, nil
 		}
 		// The PR failure is the one worth reporting: it already names every
 		// spelling that would have worked, the directory included.
 		return Watch{}, err
 	}
-	return Watch{
+	w := Watch{
 		ID:       PRWatchID(owner, repo, number),
 		Kind:     WatchPR,
 		Owner:    owner,
@@ -145,14 +232,27 @@ func ParseWatchSpec(args []string, cwd string) (Watch, error) {
 		Number:   number,
 		Added:    now,
 		LastSeen: now,
-	}, nil
+	}
+	w.addScope(scope)
+	// And the checkout that directory sits in. Scopes are matched exactly, and
+	// the only directory a session ever asks with is the one it opened in — so
+	// a PR watch added from a subdirectory ("cd internal/cli && shuck monitor
+	// watch owner/repo#42") would otherwise be scoped to a path no stream or
+	// hook ever sends, and every failure on the PR the agent explicitly asked
+	// to follow would be claimed by a watch nobody owns and delivered nowhere.
+	if scope != "" {
+		if root, ok := WorkTreeRoot(scope); ok {
+			w.addScope(root)
+		}
+	}
+	return w, nil
 }
 
 // treeWatchArg reads a single argument as a working tree to follow, reporting
 // whether it is one. Only a directory that exists qualifies: a typo'd PR
 // spelling must come back as the parse error the person can act on, not as a
 // watch on a path that is not there.
-func treeWatchArg(args []string, now time.Time) (Watch, bool) {
+func treeWatchArg(args []string, now time.Time, scope string) (Watch, bool) {
 	if len(args) != 1 {
 		return Watch{}, false
 	}
@@ -166,12 +266,17 @@ func treeWatchArg(args []string, now time.Time) (Watch, bool) {
 	if err != nil {
 		return Watch{}, false
 	}
-	return treeWatch(abs, now), true
+	return treeWatch(abs, now, scope), true
 }
 
-// treeWatch builds a watch on the working tree at an absolute path.
-func treeWatch(path string, now time.Time) Watch {
-	return Watch{ID: TreeWatchID(path), Kind: WatchTree, Path: path, Added: now, LastSeen: now}
+// treeWatch builds a watch on the working tree at an absolute path. It is
+// scoped to that tree and to the tree it was asked for from, so `shuck monitor
+// watch /some/other/checkout` still reaches the session that typed it.
+func treeWatch(path string, now time.Time, scope string) Watch {
+	w := Watch{ID: TreeWatchID(path), Kind: WatchTree, Path: path, Added: now, LastSeen: now}
+	w.addScope(path)
+	w.addScope(scope)
+	return w
 }
 
 // parsePRSpec pulls owner, repo, and PR number out of the accepted spellings.
@@ -240,8 +345,17 @@ func loadRegistry(p paths) *registry {
 // Add inserts or refreshes a watch and returns the stored copy. Re-adding an
 // existing watch keeps whatever the poller has already resolved about it and
 // just marks it as seen, so a session restarting does not reset its state.
+//
+// The registrant's scopes are the one thing merged in rather than discarded. A
+// watch id says what is watched, so a second session in a second worktree — or
+// the same session against a watch a daemon of an older build persisted without
+// any scope at all — arrives here as an existing watch, and keeping the stored
+// copy verbatim would leave that session filtered out of its own feed forever.
 func (r *registry) Add(w Watch) *Watch {
 	if existing, ok := r.watches[w.ID]; ok {
+		for _, scope := range w.Scopes {
+			existing.addScope(scope)
+		}
 		existing.LastSeen = time.Now()
 		r.save()
 		return existing

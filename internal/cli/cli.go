@@ -10,6 +10,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"os/exec"
 	"os/signal"
 	"regexp"
 	"runtime/debug"
@@ -73,7 +74,8 @@ Subcommands (single-letter shorthands in parentheses):
   shuck upgrade               download and install the latest release in place
 
 Auth:
-  Set GITHUB_TOKEN (or GH_TOKEN), or pass --token.
+  Set GITHUB_TOKEN (or GH_TOKEN), or pass --token. Failing both, shuck asks the
+  gh CLI for the token it is logged in with.
 
 Exit codes:
   0 a report was produced (even one showing failures); 2 an operational error.
@@ -867,6 +869,64 @@ func buildExtractOptions(o options) (logs.Options, error) {
 	return opts, nil
 }
 
+// ghAuthToken asks the `gh` CLI for the token it is logged in with. It is a
+// package var so tests never depend on whether the machine running them happens
+// to have gh installed and authenticated — a fallback that fires on a CI runner
+// would quietly turn "no token" tests into "some token" tests.
+var ghAuthToken = func() string {
+	// gh is a local binary, but it can talk to a keyring, and nothing that
+	// resolves a token has long to spare — bound it rather than let a wedged
+	// keyring agent hold up a session.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := ghAuthTokenCommand(ctx).Output()
+	return ghTokenFrom(out, err)
+}
+
+// ghAuthTokenCommand builds the `gh auth token` call.
+//
+// The hostname is not optional. Without it gh answers for *its* default host —
+// GH_HOST when it is exported, otherwise whatever single host it is logged in
+// to — so on a machine set up against a GitHub Enterprise instance this would
+// hand back an enterprise credential, and shuck talks to api.github.com and
+// nothing else. That token would then be sent as a bearer to a host it was
+// never issued for, on every poll of a long-lived monitor, producing the 401
+// loop that reads like a revoked credential. Naming the host degrades cleanly
+// instead: no github.com login means exit 1, an empty token, and the ordinary
+// "no GitHub token found".
+func ghAuthTokenCommand(ctx context.Context) *exec.Cmd {
+	return exec.CommandContext(ctx, "gh", "auth", "token", "--hostname", "github.com")
+}
+
+// ghTokenFrom turns what `gh auth token` said into a token, or into nothing.
+//
+// Nothing is the safe answer for everything that is not unmistakably a token.
+// gh keeps its diagnostics on stderr, but a wrapper, a shell function or an
+// extension can put a line of its own on stdout, and prose sent as a bearer
+// token is a 401 that reads like a revoked credential — a far harder thing to
+// diagnose than the "no GitHub token found" this returns instead.
+func ghTokenFrom(out []byte, err error) string {
+	if err != nil {
+		return ""
+	}
+	token := strings.TrimSpace(string(out))
+	if strings.ContainsAny(token, " \t\r\n") {
+		return ""
+	}
+	return token
+}
+
+// resolveToken finds the GitHub token to work with, in order of how
+// deliberately it was chosen: an explicit --token, then the environment, then
+// whatever `gh` is already logged in as.
+//
+// The gh fallback is last on purpose, and it is what makes shuck work on a
+// machine where the token was never exported. An environment variable only
+// reaches a process that was *started* with it: a long-running Claude Code
+// session inherits the environment it was launched in and can never pick up a
+// token exported afterwards — by direnv, by a shell profile, by anything — and
+// neither can the monitor it starts. `gh auth token` is read at the moment it
+// is needed, so it does not care when the session began.
 func resolveToken(flagVal string) (string, error) {
 	if flagVal != "" {
 		return flagVal, nil
@@ -876,7 +936,23 @@ func resolveToken(flagVal string) (string, error) {
 			return v, nil
 		}
 	}
-	return "", fmt.Errorf("no GitHub token found: set GITHUB_TOKEN (or GH_TOKEN), or pass --token")
+	if v := ghAuthToken(); v != "" {
+		return v, nil
+	}
+	return "", fmt.Errorf("no GitHub token found: set GITHUB_TOKEN (or GH_TOKEN), run `gh auth login`, or pass --token")
+}
+
+// discoveredToken is resolveToken for the commands where auth is optional —
+// security and action, which produce something (a degraded report, a public
+// repo's tags) with no token at all and so have no error to return.
+//
+// They go through the same chain as everything else on purpose. One `shuck
+// <pr>` runs both halves, and a CI half fetched with the gh CLI's token beside
+// a security half fetched anonymously is one command quietly reporting
+// "skipped — forbidden" with a usable credential a call away.
+func discoveredToken() string {
+	token, _ := resolveToken("")
+	return token
 }
 
 // exitFor maps a report to a process exit code. Producing a report is success

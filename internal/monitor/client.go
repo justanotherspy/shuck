@@ -247,6 +247,21 @@ func (c *Client) SeekNew(ctx context.Context, consumer string) (uint64, error) {
 	return resp.Cursor, nil
 }
 
+// SeekNewAt is SeekNew at a position the caller knows rather than at the
+// present: it starts a consumer the daemon has never seen at `at`, and leaves
+// one it has alone.
+//
+// The position is taken literally, zero included — a session seeded to where
+// its stream started on a journal that was empty then must hear about
+// everything published since, not about nothing.
+func (c *Client) SeekNewAt(ctx context.Context, consumer string, at uint64) (uint64, error) {
+	resp, err := c.Do(ctx, Request{Op: OpSeek, Consumer: consumer, IfNew: true, Since: at, Exact: true})
+	if err != nil {
+		return 0, err
+	}
+	return resp.Cursor, nil
+}
+
 // Poke brings the next poll forward, for the moment right after a push.
 func (c *Client) Poke(ctx context.Context, id string) (string, error) {
 	resp, err := c.Do(ctx, Request{Op: OpPoke, ID: id})

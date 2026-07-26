@@ -37,15 +37,16 @@ one file, `plugins/shuck/skills/shuck/SKILL.md`, is the skill, the plugin's
 skill, and the file `go:embed`-ed into the binary for `shuck setup`. In dev
 environments the `shuck` binary is on PATH too.
 
-**The loop here is that the monitor watches and you get told.** The plugin
-registers this working tree at `SessionStart`, so after you push you do not
-poll: the next CI failure arrives on its own, with the failing step's logs
-already in it — as a notification where the plugin's monitor (`shuck monitor
-stream`) is running, and as a `<shuck-monitor>` block in the conversation
-through the `UserPromptSubmit` hook everywhere else. Either way it is monitor
-output, not a message from the user. To wait for a verdict deliberately, run
-`shuck monitor events --wait 30m` rather than sleeping and re-checking.
-`shuck monitor` answers "is my PR green?" without spending a fetch.
+**The loop here is that the monitor watches and you get told.** The plugin's own
+monitor (`shuck monitor stream`) registers this working tree for the lifetime of
+the session, so after you push you do not poll: the next CI failure arrives as a
+notification, with the failing step's logs already in it. It is monitor output,
+not a message from the user. **Never wait for CI in a shell** — no background
+`shuck --watch`, no `--wait`, no sleep-and-recheck; the stream is already going
+to tell you, and the `Stop` hook will not let you finish on a red build anyway.
+A PR this tree cannot imply goes on the list with `shuck monitor watch <target>`
+and comes off it with `unwatch`. `shuck monitor` answers "is my PR green?"
+without spending a fetch.
 
 **When you do want to pull something yourself — here or in any repo — reach for
 shuck before raw GitHub API calls or the Actions UI:**
@@ -115,7 +116,7 @@ what changed as events.
 | --- | --- |
 | `main.go` | Thin entry: dispatches `setup`, else `cli.Run`. Holds the `go:embed` of the plugin's `SKILL.md`. |
 | `internal/cli` | Flag parsing + orchestration. Subcommands: `logs`, `reviews`, `all` (the bare-`shuck` default), `monitor`, `pins`, `action`, `security`, `version`, `upgrade`; single-letter aliases via `subcommandAliases` (`m` = monitor, `p` = pins, `s` = security). The pipeline cores (`Security`, `Action`, `Pins`) are front-end-agnostic: flag parsing and rendering sit outside them. `monitor.go` is a thin client over the daemon; `pins.go` also builds the cache-backed `pins.Resolver` the daemon is handed. |
-| `internal/monitor` | The background monitor (`shuck monitor`): a local daemon that follows working trees, resolves each to its open PR, polls GitHub on an adaptive cadence, and publishes events. `git.go` reads a tree's repo + branch (worktrees included, no git library); `watch.go` the watch set; `poll.go` one target's round; `event.go` the event model + agent-facing rendering; `journal.go` the durable JSONL log + per-consumer cursors; `protocol.go`/`server.go`/`client.go` the one-line-JSON local IPC; `hook.go` the Claude Code hook entry points; `stream.go` the liveness marker a running `shuck monitor stream` leaves behind (with `stream_unix.go`/`stream_other.go` for the pid check), which is how the hooks know not to deliver twice; `pins.go` the per-tree workflow pin audit. |
+| `internal/monitor` | The background monitor (`shuck monitor`): a local daemon that follows working trees, resolves each to its open PR, polls GitHub on an adaptive cadence, and publishes events. `git.go` reads a tree's repo + branch (worktrees included, no git library); `watch.go` the watch set; `poll.go` one target's round; `event.go` the event model + agent-facing rendering; `journal.go` the durable JSONL log + per-consumer cursors; `protocol.go`/`server.go`/`client.go` the one-line-JSON local IPC; `hook.go` the Claude Code hook entry points; `stream.go` the liveness marker a running `shuck monitor stream` leaves behind (with `stream_unix.go`/`stream_other.go` for the pid check), which gives a second stream on one tree its own identity and keeps an older installed `hooks.json` from delivering what a notification already carried; `pins.go` the per-tree workflow pin audit. |
 | `internal/pins` | `shuck pins`: find the `uses:` references in a checkout's workflow and action files (`WorkflowFiles` → `Scan`, a schema-free `yaml.Node` walk keyed on any mapping key spelled `uses`) and classify each against its action's latest release (`Audit`, via a caller-supplied `Resolver`) into pinned / stale / unpinned / skipped, each finding carrying the corrected line. `Render` + `Document` are the text and stable-JSON views. Pure and offline-testable. |
 | `internal/jsonout` | The stable, versioned `--json` schema. Its view types are deliberately separate from `model` so internal refactors don't break consumers. |
 | `internal/action` | `shuck action`: pick the latest semver tag matching an `owner/action[@version]` ref (stable preferred, prerelease fallback; `Select`) → SHA-pin line / JSON (`action.Document`). |
@@ -185,36 +186,57 @@ what changed as events.
   a session that already acted on it is worse than missing the tail of a batch
   nobody read. `Peek` (the Stop hook) reads without advancing. A session and a
   stream over the same tree are two consumers with two cursors, which is what
-  lets the Stop gate keep working while a stream is the one delivering. A
-  consumer with a *derived* identity — a stream's `stream:<watch id>` — seeds its
-  cursor with `SeekNew` (`OpSeek` + `IfNew`) on start-up: an identity nobody has
-  used starts at the present rather than at the head of the retained journal,
-  while one that already exists is left where it is so a restart still resumes.
-- **A plugin monitor is the primary channel; the hooks are the fallback**:
-  `shuck monitor stream` is what `plugins/shuck/monitors/monitors.json` runs, and
-  every line it writes to stdout becomes a notification, so it renders whole
-  batches with `monitor.FormatFeed` in one write and never puts a diagnostic
-  there. While it runs it holds a marker under
-  `~/.cache/shuck/monitor/streams/`, refreshed on a heartbeat and removed on the
-  signal path as well as on a clean exit; `monitor.StreamServes` counts it live
-  only on a fresh heartbeat *and* a pid that still exists, because a stale marker
-  that reads as live means CI failures reach nobody. `hookUserPrompt` stands down
-  while one serves its tree — and deliberately consumes nothing when it does, so
-  standing down can never lose an event. Two sessions in one directory are
-  ordinary, so the marker is one file per process (`<hash>-<pid>.json`, matched on
-  the recorded path, never by name) and the second stream takes an identity of its
-  own (`monitor.StreamIdentity`) — otherwise one session's exit would revoke the
-  other's claim, and one shared cursor would notify each failure to exactly one of
-  the two. Everything else stays: plugin monitors
-  are experimental, interactive-CLI-only, and skipped where the Monitor tool is
-  unavailable, so the hook path has to remain a complete delivery route on its
-  own.
+  lets the Stop gate keep working while a stream is the one delivering. **Any
+  consumer whose identity is derived rather than announced seeds its cursor with
+  `SeekNew` (`OpSeek` + `IfNew`)**: a stream's `stream:<watch id>` on start-up,
+  and a Claude Code session's id on the first hook of the session that carries
+  one. An identity nobody has used starts at the present rather than at the head
+  of the retained journal — otherwise a first `Stop` would block on another
+  branch's finished business — while one that already exists is left where it is,
+  so a restart resumes and a second seed is a no-op.
+- **A session only hears about its own sources**: one journal, but a read
+  carries a `Scope` (the reader's working tree) and `Daemon.scopeFilter` keeps
+  only what that scope owns. A watch records the trees that registered it
+  (`Watch.Scopes`, bounded, most-recent-kept), so `shuck monitor watch <pr>`
+  subscribes the session that ran it rather than everyone on the machine. The
+  filter runs **after** `Drain`, which is what keeps the cursor honest: it
+  advances over everything scanned, so a filtered-out event is behind the cursor
+  the instant it is skipped and can never loop. Matching is on the resolved
+  absolute path, never containment — this repo keeps worktrees *inside* the main
+  checkout (`.claude/worktrees/<name>`), so containment would call every worktree
+  its parent. The rule is fail-toward-delivery: an event no watch claims reaches
+  everyone, because an event reaching nobody is worse than one reaching too many.
+  The single exception is an event stamped with another watch's id — that is
+  somebody's news, and a note about a tree this session has never heard of is
+  exactly the cross-talk scoping exists to end. A pin finding is the one event
+  whose subject is a *repository* (that is what deduplicating it per repository
+  made it), so it is targeted `owner/repo` and every tree watch on that repo
+  claims that key; nothing else may, and `TestWatchNotesNameTheTreeTheyAreAbout`
+  holds the producers to it.
+- **The plugin monitor is the delivery channel; the two hooks do what it
+  cannot**: `shuck monitor stream` is what `plugins/shuck/monitors/monitors.json`
+  runs, and every line it writes to stdout becomes a notification, so it renders
+  whole batches with `monitor.FormatFeed` in one write and never puts a
+  diagnostic there. `PostToolUse` stays because a separate process cannot see the
+  session's tool calls — it pokes after a push, and seeds the session cursor on
+  the first Bash call, which closes the window in which a mid-turn `ci.failed`
+  would land before the cursor existed. `Stop` stays because a notification tells
+  an agent while only a hook can stop it finishing on a red build. Everything
+  else was unwired: registering the tree, seeding, and delivering are all the
+  stream's now. `hookSessionStart` / `hookUserPrompt` / `hookSessionEnd` remain in
+  the binary regardless, because an installed copy of an older `hooks.json` still
+  calls them and every path already exits 0. The stream marker under
+  `~/.cache/shuck/monitor/streams/` (`monitor.StreamServes`, one file per process
+  as `<hash>-<pid>.json`, matched on the recorded path) and the per-process
+  `monitor.StreamIdentity` are what keep two sessions in one directory from
+  revoking each other's claim or sharing one cursor; the stand-down half of it
+  now only serves those older installs.
 - **Hooks may never cost a session anything**: every path in `monitor.RunHook`
   exits 0 and writes nothing that changes what the session does — no daemon, no
   token, an unusable cache directory (`NewClient` → `monitor.Dir`), a malformed
-  payload, an unknown event. The one exception is deliberate and is context
-  rather than a decision: when no daemon can be started, `hookSessionStart` says
-  so once as plain prose, so nobody waits for a feed that is never coming. The
+  payload, an unknown event. Saying that a feed is never coming is the stream's
+  job, not a hook's: `monitor stream` stands down in one plain sentence, which is
+  the only voice the plugin has left now that nothing runs at `SessionStart`. The
   Stop hook stands down the instant `stop_hook_active` is set (that is what
   keeps it from looping), blocks only on `SeverityAction` events, and seeks past
   what it hands over — it reads the session's own cursor, which no stream ever
@@ -291,8 +313,9 @@ what changed as events.
   `zizmor.yml` (workflow security), `labeler.yml`, `release-drafter.yml`, and
   Dependabot.
 - The Claude Code plugin source lives under `plugins/shuck/` (manifest,
-  `monitors/monitors.json` + its `scripts/monitor-stream.sh` shim, hooks, prereq
-  script, skill); `.claude/settings.json` enables it from the
+  `monitors/monitors.json` + its `scripts/monitor-stream.sh` shim, the `Stop` and
+  `PostToolUse` hooks and their shim, skill); `.claude/settings.json` enables it
+  from the
   `justanotherspy/claude-plugins` marketplace — *not* from this repo's own
   `.claude-plugin/marketplace.json`, so a plugin change here does not take
   effect in this repo's sessions until it lands there too. `monitors.json` must

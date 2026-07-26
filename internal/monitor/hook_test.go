@@ -93,7 +93,7 @@ func TestHookSessionStartRegistersTheTree(t *testing.T) {
 		t.Errorf("hookEventName = %q", out.Specific.HookEventName)
 	}
 	ctx := out.Specific.AdditionalContext
-	for _, want := range []string{"background monitor is running", "retargets itself", "shuck monitor events"} {
+	for _, want := range []string{"background monitor is running", "retargets itself", "shuck monitor status"} {
 		if !strings.Contains(ctx, want) {
 			t.Errorf("context is missing %q:\n%s", want, ctx)
 		}
@@ -155,6 +155,22 @@ func liveStream(t *testing.T, tree string) {
 		Consumer:  StreamConsumer(TreeWatchID(tree)),
 		PID:       os.Getpid(),
 		Heartbeat: time.Now(),
+	})
+}
+
+// liveStreamFrom is liveStream for a stream that has recorded where it started
+// reading — which is what the plugin's stream does, and what stands in for the
+// SessionStart hook the plugin no longer wires: it is the only durable record
+// of the moment the session opened.
+func liveStreamFrom(t *testing.T, tree string, origin uint64) {
+	t.Helper()
+	writeStreamMarker(t, streamRecord{
+		Watch:     TreeWatchID(tree),
+		Path:      tree,
+		Consumer:  StreamConsumer(TreeWatchID(tree)),
+		PID:       os.Getpid(),
+		Heartbeat: time.Now(),
+		Origin:    origin + 1,
 	})
 }
 
@@ -245,7 +261,7 @@ func TestHookUserPromptDeliversWhenNoStreamIsLive(t *testing.T) {
 func TestHookStopStillGatesWhileAStreamIsLive(t *testing.T) {
 	d, home := hookDaemon(t, newFakeClient())
 	tree := treeAt(t, "feature")
-	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": tree, "source": "startup"}, home)
+	seedSession(t, home, "sess-1")
 	liveStream(t, tree)
 
 	d.publish([]Event{{Kind: KindCIFailed, Target: "o/r#7", Title: "test failed", Body: "the error"}})
@@ -385,9 +401,173 @@ func TestHookPostToolUseIgnoresEverythingElse(t *testing.T) {
 	}
 }
 
+// seedSession is how a session's cursor comes into existence now that
+// SessionStart is not wired: the first Stop of the session seeds it. Tests that
+// are about what Stop does with an event use this rather than SessionStart, so
+// they exercise the wiring the plugin actually ships.
+func seedSession(t *testing.T, home, session string) {
+	t.Helper()
+	if out := runHook(t, HookStop, map[string]any{"session_id": session}, home); out != nil {
+		t.Fatalf("seeding a session must not block it: %+v", out)
+	}
+}
+
+// TestHookStopSeedsACursorlessSession is the guard on the delivery model the
+// plugin now ships: with SessionStart unwired, Stop is the first hook to see a
+// session id, and a consumer with no cursor is served from the head of the
+// retained journal. Without seeding, the first Stop of every session blocks on
+// hours of history — most of it another branch's, none of it this session's
+// doing.
+func TestHookStopSeedsACursorlessSession(t *testing.T) {
+	d, home := hookDaemon(t, newFakeClient())
+	d.publish([]Event{{Kind: KindCIFailed, Target: "o/r#9", Title: "another branch's old failure"}})
+
+	if out := runHook(t, HookStop, map[string]any{"session_id": "sess-new"}, home); out != nil {
+		t.Fatalf("a session that never saw this failure must not be held open by it: %+v", out)
+	}
+	if got := d.journal.Pending("sess-new"); got != 0 {
+		t.Errorf("pending = %d, want the cursor seeded at the present", got)
+	}
+}
+
+// TestHookStopBlocksOnWhatArrivedAfterItSeeded is the converse: seeding must
+// start a session at the present, not switch the gate off for the rest of it.
+func TestHookStopBlocksOnWhatArrivedAfterItSeeded(t *testing.T) {
+	d, home := hookDaemon(t, newFakeClient())
+	d.publish([]Event{{Kind: KindCIFailed, Title: "another branch's old failure"}})
+	seedSession(t, home, "sess-1")
+
+	d.publish([]Event{{Kind: KindCIFailed, Title: "the build this session broke"}})
+
+	out := runHook(t, HookStop, map[string]any{"session_id": "sess-1"}, home)
+	if out == nil {
+		t.Fatal("the agent should not finish quietly on a build it just broke")
+	}
+	if strings.Contains(out.Reason, "another branch's old failure") {
+		t.Errorf("history from before the session should not have been handed over:\n%s", out.Reason)
+	}
+	if !strings.Contains(out.Reason, "the build this session broke") {
+		t.Errorf("reason should carry the new failure:\n%s", out.Reason)
+	}
+}
+
+// TestHookStopSeedIsIdempotent covers the IfNew half. A session's cursor moves
+// only where Stop deliberately seeks it past what it handed over; the seed on
+// every later Stop must leave it exactly where it was, or the second failure of
+// a session would be seeded past instead of blocked on.
+func TestHookStopSeedIsIdempotent(t *testing.T) {
+	d, home := hookDaemon(t, newFakeClient())
+	seedSession(t, home, "sess-1")
+
+	d.publish([]Event{{Kind: KindCIFailed, Title: "first failure"}})
+	if out := runHook(t, HookStop, map[string]any{"session_id": "sess-1"}, home); out == nil {
+		t.Fatal("expected a block on the first failure")
+	}
+
+	d.publish([]Event{{Kind: KindCIFailed, Title: "second failure"}})
+	out := runHook(t, HookStop, map[string]any{"session_id": "sess-1"}, home)
+	if out == nil {
+		t.Fatal("expected a block on the second failure")
+	}
+	if strings.Contains(out.Reason, "first failure") {
+		t.Errorf("the first failure was already handed over and seeked past:\n%s", out.Reason)
+	}
+}
+
+// TestHookStopBlocksOnWhatArrivedBeforeAnyHookRan is the window every other
+// seeding test leaves untested: between the session opening and the first hook
+// of that session running.
+//
+// With SessionStart unwired, a first turn that uses no Bash tool reaches Stop
+// with no cursor at all — and Stop seeds before it peeks. Seeding at *that*
+// moment steps straight over the failure that landed mid-turn, and the agent
+// finishes on a red build that can never block this session again. That is the
+// longest turn of the session and the one most likely to be catching up on a
+// push made by the previous one, and it is exactly what the skill promises is
+// covered: seeing a ci.failed is delivery, not acknowledgement.
+//
+// The stream is what makes the moment knowable: it starts when the session does
+// and records the journal position it started from.
+func TestHookStopBlocksOnWhatArrivedBeforeAnyHookRan(t *testing.T) {
+	d, home := hookDaemon(t, newFakeClient())
+	tree := treeAt(t, "feature")
+	d.publish([]Event{{Kind: KindCIFailed, Title: "another branch's old failure"}})
+
+	// 09:00 — the session opens. Its stream registers the tree and starts
+	// reading from here; no hook has seen the session id yet.
+	liveStreamFrom(t, tree, d.journal.Latest())
+
+	// 09:01 — CI goes red. The agent is handed the notification, judges it
+	// unrelated, and works the turn with no Bash tool at all.
+	d.publish([]Event{{Kind: KindCIFailed, Title: "the failure this session must not walk away from"}})
+
+	// 09:02 — the turn ends.
+	out := runHook(t, HookStop, map[string]any{"session_id": "sess-1", "cwd": tree}, home)
+	if out == nil {
+		t.Fatal("a failure that arrived during the first turn must hold the turn open")
+	}
+	if !strings.Contains(out.Reason, "the failure this session must not walk away from") {
+		t.Errorf("reason should carry the failure that landed during the turn:\n%s", out.Reason)
+	}
+	if strings.Contains(out.Reason, "another branch's old failure") {
+		t.Errorf("history from before the session should not have been handed over:\n%s", out.Reason)
+	}
+}
+
+// TestHookStopBlocksOnTheFirstEventOfAnEmptyJournal is the same window on a
+// journal that was empty when the session opened — a new machine, or a swept
+// journal. The recorded position is then zero, which every other part of the
+// protocol reads as "the present"; taken that way it would seed the session
+// past the first event ever published and lose exactly the failure it was meant
+// to gate on.
+func TestHookStopBlocksOnTheFirstEventOfAnEmptyJournal(t *testing.T) {
+	d, home := hookDaemon(t, newFakeClient())
+	tree := treeAt(t, "feature")
+	if got := d.journal.Latest(); got != 0 {
+		t.Fatalf("journal starts at %d, want an empty one for this case", got)
+	}
+	liveStreamFrom(t, tree, 0)
+
+	d.publish([]Event{{Kind: KindCIFailed, Title: "the first failure this machine ever saw"}})
+
+	out := runHook(t, HookStop, map[string]any{"session_id": "sess-1", "cwd": tree}, home)
+	if out == nil {
+		t.Fatal("the first event of an empty journal must still hold the turn open")
+	}
+	if !strings.Contains(out.Reason, "the first failure this machine ever saw") {
+		t.Errorf("reason should carry the failure:\n%s", out.Reason)
+	}
+}
+
+// TestHookPostToolUseSeedsTheSession covers the window the Stop seed alone
+// leaves open. A turn that pushes and then keeps working is exactly when a
+// failure lands mid-turn, and seeding for the first time at the end of that
+// turn would seed straight past it. PostToolUse fires on the push itself, so
+// seeding there puts the cursor before anything the push can cause.
+func TestHookPostToolUseSeedsTheSession(t *testing.T) {
+	d, home := hookDaemon(t, newFakeClient())
+	d.publish([]Event{{Kind: KindCIFailed, Title: "another branch's old failure"}})
+
+	runHook(t, HookPostToolUse, map[string]any{
+		"session_id": "sess-1",
+		"tool_name":  "Bash",
+		"tool_input": map[string]any{"command": "git push"},
+	}, home)
+
+	d.publish([]Event{{Kind: KindCIFailed, Title: "the run that push started"}})
+
+	out := runHook(t, HookStop, map[string]any{"session_id": "sess-1"}, home)
+	if out == nil {
+		t.Fatal("a failure that landed during the turn must hold the turn open")
+	}
+	if strings.Contains(out.Reason, "another branch's old failure") {
+		t.Errorf("history from before the session should not have been handed over:\n%s", out.Reason)
+	}
+}
+
 func TestHookStopBlocksOnActionableEvents(t *testing.T) {
 	d, home := hookDaemon(t, newFakeClient())
-	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature"), "source": "startup"}, home)
+	seedSession(t, home, "sess-1")
 
 	d.publish([]Event{{Kind: KindCIFailed, Target: "o/r#7", Title: "test failed", Body: "the error"}})
 
@@ -417,7 +597,7 @@ func TestHookStopBlocksOnActionableEvents(t *testing.T) {
 // the agent acting on news the monitor already knew was out of date.
 func TestHookStopHandsOverTheWholeBatch(t *testing.T) {
 	d, home := hookDaemon(t, newFakeClient())
-	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature"), "source": "startup"}, home)
+	seedSession(t, home, "sess-1")
 
 	d.publish([]Event{
 		{Kind: KindCIFailed, Title: "test failed"},
@@ -437,7 +617,7 @@ func TestHookStopHandsOverTheWholeBatch(t *testing.T) {
 // finished turn open: it is the monitor's problem, not the agent's.
 func TestHookStopIgnoresAMonitorError(t *testing.T) {
 	d, home := hookDaemon(t, newFakeClient())
-	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature"), "source": "startup"}, home)
+	seedSession(t, home, "sess-1")
 
 	d.publish([]Event{{Kind: KindError, Title: "could not check o/r#7", Body: "dial tcp: timeout"}})
 
@@ -485,7 +665,7 @@ func TestHooksIgnoreAnUnidentifiedSession(t *testing.T) {
 // hook that keeps finding something to say never lets the agent finish.
 func TestHookStopStandsDownWhenAlreadyActive(t *testing.T) {
 	d, home := hookDaemon(t, newFakeClient())
-	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature"), "source": "startup"}, home)
+	seedSession(t, home, "sess-1")
 	d.publish([]Event{{Kind: KindCIFailed, Title: "test failed"}})
 
 	if out := runHook(t, HookStop, map[string]any{"session_id": "sess-1", "stop_hook_active": true}, home); out != nil {
@@ -495,7 +675,7 @@ func TestHookStopStandsDownWhenAlreadyActive(t *testing.T) {
 
 func TestHookStopIgnoresInformationalEvents(t *testing.T) {
 	d, home := hookDaemon(t, newFakeClient())
-	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature"), "source": "startup"}, home)
+	seedSession(t, home, "sess-1")
 
 	d.publish([]Event{{Kind: KindCIPassed, Title: "all checks passed"}})
 
@@ -515,7 +695,7 @@ func TestHookStopIgnoresInformationalEvents(t *testing.T) {
 // approval under the words "address this as part of the current task".
 func TestHookStopIgnoresAnApprovingReview(t *testing.T) {
 	d, home := hookDaemon(t, newFakeClient())
-	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature"), "source": "startup"}, home)
+	seedSession(t, home, "sess-1")
 
 	d.publish([]Event{reviewEvent("octocat", "approved", "o/r#7")})
 
@@ -534,7 +714,7 @@ func TestHookStopIgnoresAnApprovingReview(t *testing.T) {
 // for something still has to stop the agent walking away from it.
 func TestHookStopBlocksOnRequestedChanges(t *testing.T) {
 	d, home := hookDaemon(t, newFakeClient())
-	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature"), "source": "startup"}, home)
+	seedSession(t, home, "sess-1")
 
 	d.publish([]Event{reviewEvent("octocat", "changes_requested", "o/r#7")})
 
@@ -550,7 +730,7 @@ func TestHookStopBlocksOnRequestedChanges(t *testing.T) {
 // hijacking the session for its own errand.
 func TestHookStopIgnoresStalePins(t *testing.T) {
 	d, home := hookDaemon(t, newFakeClient())
-	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature"), "source": "startup"}, home)
+	seedSession(t, home, "sess-1")
 
 	d.publish([]Event{{
 		Kind:   KindPinsStale,
@@ -575,7 +755,7 @@ func TestHookStopIgnoresStalePins(t *testing.T) {
 
 func TestHookStopDoesNotRepeatWhatItHandedOver(t *testing.T) {
 	d, home := hookDaemon(t, newFakeClient())
-	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature"), "source": "startup"}, home)
+	seedSession(t, home, "sess-1")
 	d.publish([]Event{{Kind: KindCIFailed, Title: "test failed"}})
 
 	if out := runHook(t, HookStop, map[string]any{"session_id": "sess-1"}, home); out == nil {
@@ -588,7 +768,7 @@ func TestHookStopDoesNotRepeatWhatItHandedOver(t *testing.T) {
 
 func TestHookStopRespectsItsOptOut(t *testing.T) {
 	d, home := hookDaemon(t, newFakeClient())
-	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature"), "source": "startup"}, home)
+	seedSession(t, home, "sess-1")
 	d.publish([]Event{{Kind: KindCIFailed, Title: "test failed"}})
 
 	t.Setenv("SHUCK_MONITOR_NO_STOP", "1")
@@ -850,5 +1030,72 @@ func TestHookTimeoutIsShort(t *testing.T) {
 	// think. A wedged monitor must cost that moment a fraction of a second.
 	if hookTimeout > 5*time.Second {
 		t.Errorf("hookTimeout = %s, too long to sit in front of a prompt", hookTimeout)
+	}
+}
+
+// TestHookStopIsScopedToTheSessionsTree covers the finish gate under scoping.
+// A session must be held back by its own red build and by nothing else: two
+// agents in two worktrees would otherwise each be blocked from finishing by the
+// other's CI, which is a stall over work they cannot even see.
+func TestHookStopIsScopedToTheSessionsTree(t *testing.T) {
+	d, home := hookDaemon(t, newFakeClient())
+	mine, theirs := t.TempDir(), t.TempDir()
+	d.watches.Add(Watch{
+		ID: TreeWatchID(mine), Kind: WatchTree, Path: mine,
+		Owner: "o", Repo: "r", Number: 1, Scopes: []string{mine},
+	})
+	d.watches.Add(Watch{
+		ID: TreeWatchID(theirs), Kind: WatchTree, Path: theirs,
+		Owner: "o", Repo: "r", Number: 2, Scopes: []string{theirs},
+	})
+	seedSession(t, home, "sess-1")
+
+	d.publish([]Event{{Kind: KindCIFailed, Target: "o/r#2", Title: "their test failed"}})
+	if out := runHook(t, HookStop, map[string]any{"session_id": "sess-1", "cwd": mine}, home); out != nil {
+		t.Fatalf("another worktree's failure held this session open: %+v", out)
+	}
+
+	// Its own failure still gates, and the peek left the other tree's event
+	// pending rather than seeking past it.
+	d.publish([]Event{{Kind: KindCIFailed, Target: "o/r#1", Title: "my test failed"}})
+	out := runHook(t, HookStop, map[string]any{"session_id": "sess-1", "cwd": mine}, home)
+	if out == nil || out.Decision != "block" {
+		t.Fatalf("this session's own red build should gate the finish, got %+v", out)
+	}
+	if strings.Contains(out.Reason, "their test failed") {
+		t.Errorf("the other worktree's failure was handed over:\n%s", out.Reason)
+	}
+}
+
+// TestHookUserPromptIsScopedToTheSessionsTree is the same rule on the fallback
+// channel: the prompt hook delivers wherever no stream can run, and it must not
+// hand a session another worktree's CI either.
+func TestHookUserPromptIsScopedToTheSessionsTree(t *testing.T) {
+	d, home := hookDaemon(t, newFakeClient())
+	mine, theirs := t.TempDir(), t.TempDir()
+	d.watches.Add(Watch{
+		ID: TreeWatchID(mine), Kind: WatchTree, Path: mine,
+		Owner: "o", Repo: "r", Number: 1, Scopes: []string{mine},
+	})
+	d.watches.Add(Watch{
+		ID: TreeWatchID(theirs), Kind: WatchTree, Path: theirs,
+		Owner: "o", Repo: "r", Number: 2, Scopes: []string{theirs},
+	})
+
+	d.publish([]Event{
+		{Kind: KindCIFailed, Target: "o/r#2", Title: "their test failed"},
+		{Kind: KindCIFailed, Target: "o/r#1", Title: "my test failed"},
+	})
+
+	out := runHook(t, HookUserPromptSubmit, map[string]any{"session_id": "sess-1", "cwd": mine}, home)
+	if out == nil || out.Specific == nil {
+		t.Fatal("the prompt hook should have delivered this session's failure")
+	}
+	got := out.Specific.AdditionalContext
+	if !strings.Contains(got, "my test failed") {
+		t.Errorf("this session's own failure was not delivered:\n%s", got)
+	}
+	if strings.Contains(got, "their test failed") {
+		t.Errorf("another worktree's failure was delivered:\n%s", got)
 	}
 }
