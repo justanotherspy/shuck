@@ -9,15 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
-
-	"github.com/justanotherspy/shuck/internal/distil"
 )
-
-// feedLimit bounds the text one hook injects into a session. Claude Code
-// truncates a large additionalContext silently, so shuck does the cut itself
-// and says where the rest is — a summary that ends mid-sentence is worse than
-// one that ends with a command you can run.
-const feedLimit = 3500
 
 // hookTimeout bounds a hook's whole interaction with the daemon. Hooks run
 // between the user pressing enter and the agent starting to think; a monitor
@@ -27,22 +19,29 @@ const hookTimeout = 3 * time.Second
 // HookEvent names the Claude Code hook a shuck invocation is serving.
 type HookEvent string
 
-// The hooks shuck knows. Delivering events is not among their jobs any more —
-// `shuck monitor stream` is the one channel, and what is left here is the work
-// a separate process cannot do: see the session's current directory, notice its
-// tool calls, and stand in the way of it finishing on a red build.
+// The hooks shuck knows. Neither delivering events nor gating a finish is among
+// their jobs any more — `shuck monitor stream` is the one channel and the only
+// voice. What is left is the single thing a separate process cannot do: see the
+// session's current directory and its tool calls, so that entering a worktree
+// retargets the monitor and a push is picked up at once rather than at the next
+// interval.
+//
+// Only HookPostToolUse is installed. The rest are entry points kept alive for
+// installed copies of an older hooks.json, and each is now either a no-op or a
+// registration; none of them speaks.
 const (
 	// HookSessionStart registers the session's working tree and reports what
-	// the monitor is already watching.
+	// the monitor is already watching. No longer installed — the stream
+	// registers the directory it is spawned in.
 	HookSessionStart HookEvent = "session-start"
 	// HookUserPromptSubmit re-registers the session's working tree. It is no
 	// longer installed and no longer delivers; see hookUserPrompt.
 	HookUserPromptSubmit HookEvent = "user-prompt-submit"
-	// HookPostToolUse notices a push and asks the monitor to re-check now,
-	// instead of at the next interval.
+	// HookPostToolUse re-registers the session's working tree on every tool
+	// call — which is what follows an agent into a worktree — and notices a
+	// push, asking the monitor to re-check now instead of at the next interval.
 	HookPostToolUse HookEvent = "post-tool-use"
-	// HookStop refuses to let the agent finish quietly on a red build or an
-	// unanswered review comment.
+	// HookStop is retired and does nothing; see hookStop.
 	HookStop HookEvent = "stop"
 	// HookSessionEnd drops the session's cursor.
 	HookSessionEnd HookEvent = "session-end"
@@ -421,58 +420,30 @@ func seedSessionCursor(ctx context.Context, c *Client, in hookInput) {
 	_, _ = c.SeekNew(ctx, in.SessionID)
 }
 
-// hookStop is the hook that closes the loop. When the agent is about to finish
-// and the monitor is holding something that wants doing — a red build, a
-// reviewer's comment — it hands that over and asks for another turn.
+// hookStop does nothing, deliberately, and that is the whole of its
+// implementation.
 //
-// Three things keep it from becoming a trap. It stands down the moment
-// stop_hook_active is set, so it can never loop. It only blocks on events that
-// actually ask for something, so a passing build never delays a finish. And it
-// peeks rather than drains, so events it decides not to act on are still there
-// for the next prompt.
+// It used to be the finish gate: it peeked at the session's cursor and, if the
+// monitor was holding a red build or an unanswered review comment, blocked the
+// turn and handed the batch over. The gate is gone. What it protected against —
+// an agent reading a `ci.failed` notification and finishing anyway — is real,
+// but it was never what the gate actually did in practice. Because it blocked
+// on the last *known* actionable event, with no notion of whether a newer head
+// had superseded it, its everyday behavior was to re-hand a session the
+// failure it had already fixed and pushed, one poll interval before the pass
+// arrived. That cost a turn every time, and the case it existed for cost
+// nothing in any session where the agent simply acted on the notification.
 //
-// It is also, for a session that has run no Bash tool at all, the first hook to
-// see the session id — so it seeds the cursor before reading, or the peek below
-// would be served from the head of the retained journal. The seed lands where
-// the session began (see seedSessionCursor), not here, or the first turn of
-// every session would end by seeding past whatever it was about to be gated on.
-func hookStop(ctx context.Context, c *Client, in hookInput) *hookOutput {
-	if in.StopHookActive || in.SessionID == "" || os.Getenv("SHUCK_MONITOR_NO_STOP") != "" {
-		return nil
-	}
-	c.AutoStart = false
-	seedSessionCursor(ctx, c, in)
-
-	// Scoped, so a session is never held back from finishing by a build it has
-	// nothing to do with. The peek moves no cursor, so the events another
-	// worktree owns simply stay pending rather than being seeked past here.
-	dir, _ := hookTree(in)
-	events, _, err := c.Events(ctx, Request{Consumer: in.SessionID, Peek: true, Scope: dir, Session: in.SessionID})
-	if err != nil || len(events) == 0 {
-		return nil
-	}
-	if countActionable(events) == 0 {
-		// Nothing here wants doing. Leave every event pending — the peek did
-		// not consume them — and let the turn end.
-		return nil
-	}
-
-	// Hand over the whole batch, not just the actionable part. The
-	// informational events are the context that makes the actionable ones
-	// make sense: a failure followed by a passing re-run reads very
-	// differently from the failure alone, and consuming the pass while
-	// delivering only the failure would be worse than saying nothing.
-	if _, err := c.Do(ctx, Request{Op: OpSeek, Consumer: in.SessionID, Since: events[len(events)-1].ID}); err != nil {
-		return nil
-	}
-
-	// The instruction goes first: capFeed trims from the end, and the thing
-	// that must survive truncation is what the agent is being asked to do.
-	reason := "Before finishing: act on what the monitor reports below — fix what is broken " +
-		"and push, or reply to the reviewer. If it is genuinely not yours to fix, say so and stop.\n\n" +
-		FormatFeed(events)
-	return &hookOutput{Decision: "block", Reason: capFeed(reason)}
-}
+// So the stream is now the only thing that speaks, on purpose. Delivery without
+// enforcement is the trade: `shuck monitor stream` says what happened, and what
+// the agent does about it is the agent's business.
+//
+// The entry point stays because removing it is not how you remove a hook. An
+// installed copy of an older hooks.json still execs `shuck monitor hook stop`,
+// and the binary — not the manifest — is what has to be authoritative, or
+// upgrading shuck would leave the gate standing for everyone who had not also
+// re-installed the plugin. Returning nil here is what actually retires it.
+func hookStop(context.Context, *Client, hookInput) *hookOutput { return nil }
 
 // hookSessionEnd retires the session's cursor. It is a courtesy — cursors are
 // pruned as they age out of the journal anyway — but it keeps the state file
@@ -497,12 +468,4 @@ func context_(event HookEvent, text string) *hookOutput {
 		HookEventName:     hookEventNames[event],
 		AdditionalContext: text,
 	}}
-}
-
-// capFeed trims injected context to what a hook may deliver, pointing at the
-// command that has the rest.
-func capFeed(text string) string {
-	capped, _ := distil.CapSummary(text, feedLimit,
-		"… truncated — run `shuck monitor events --all` for the full detail.\n</shuck-monitor>")
-	return capped
 }

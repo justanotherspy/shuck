@@ -43,7 +43,9 @@ the session, so after you push you do not poll: the next CI failure arrives as a
 notification, with the failing step's logs already in it. It is monitor output,
 not a message from the user. **Never wait for CI in a shell** — no background
 `shuck --watch`, no `--wait`, no sleep-and-recheck; the stream is already going
-to tell you, and the `Stop` hook will not let you finish on a red build anyway.
+to tell you. Nothing gates a finish any more, though, so **closing the loop is
+yours**: a `ci.failed` notification is the only warning you get, and a task that
+ends in a pull request is done when CI is green or you have said why it is not.
 A PR this tree cannot imply goes on the list with `shuck monitor watch <target>`
 and comes off it with `unwatch`. `shuck monitor` answers "is my PR green?"
 without spending a fetch.
@@ -217,16 +219,17 @@ what changed as events.
   failure. `Drain` advances the cursor as it hands events over, which makes
   delivery **at-most-once per consumer** on purpose: repeating a CI failure into
   a session that already acted on it is worse than missing the tail of a batch
-  nobody read. `Peek` (the Stop hook) reads without advancing. A session and a
-  stream over the same tree are two consumers with two cursors, which is what
-  lets the Stop gate keep working while a stream is the one delivering. **Any
-  consumer whose identity is derived rather than announced seeds its cursor with
-  `SeekNew` (`OpSeek` + `IfNew`)**: a stream's `stream:<watch id>` on start-up,
-  and a Claude Code session's id on the first hook of the session that carries
-  one. An identity nobody has used starts at the present rather than at the head
-  of the retained journal — otherwise a first `Stop` would block on another
-  branch's finished business — while one that already exists is left where it is,
-  so a restart resumes and a second seed is a no-op.
+  nobody read. `Peek` reads without advancing — nothing in the plugin uses it
+  now that the Stop gate is gone, but it stays on the wire for a caller that
+  wants to see what is waiting without spending it. A session and a stream over
+  the same tree are still two consumers with two cursors. **Any consumer whose
+  identity is derived rather than announced seeds its cursor with `SeekNew`
+  (`OpSeek` + `IfNew`)**: a stream's `stream:<watch id>` on start-up, and a
+  Claude Code session's id on the first `PostToolUse` of the session that
+  carries one. An identity nobody has used starts at the present rather than at
+  the head of the retained journal — otherwise a first read would be served
+  another branch's finished business — while one that already exists is left
+  where it is, so a restart resumes and a second seed is a no-op.
 - **A session only hears about its own sources**: one journal, but a read
   carries a `Scope` (the reader's working tree) and `Daemon.scopeFilter` keeps
   only what that scope owns. A watch records the trees that registered it
@@ -246,20 +249,33 @@ what changed as events.
   made it), so it is targeted `owner/repo` and every tree watch on that repo
   claims that key; nothing else may, and `TestWatchNotesNameTheTreeTheyAreAbout`
   holds the producers to it.
-- **The plugin monitor is the delivery channel; the two hooks do what it
-  cannot**: `shuck monitor stream` is what `plugins/shuck/monitors/monitors.json`
-  runs, and every line it writes to stdout becomes a notification, so it renders
-  whole batches with `monitor.FormatFeed` in one write and never puts a
-  diagnostic there. `PostToolUse` stays because a separate process cannot see the
-  session's tool calls — it pokes after a push, and seeds the session cursor on
-  the first Bash call, which closes the window in which a mid-turn `ci.failed`
-  would land before the cursor existed. `Stop` stays because a notification tells
-  an agent while only a hook can stop it finishing on a red build. **No hook
-  reads the journal to deliver any more** — that is the stream's alone, and the
-  binary enforces it rather than the manifest, so an older installed `hooks.json`
-  cannot reintroduce a second channel. `hookUserPrompt` now only registers;
-  `hookSessionStart` / `hookSessionEnd` remain for the same reason, and every
-  path still exits 0.
+- **The plugin monitor is the only channel and the only voice; one hook does the
+  one thing it cannot**: `shuck monitor stream` is what
+  `plugins/shuck/monitors/monitors.json` runs, and every line it writes to stdout
+  becomes a notification, so it renders whole batches with `monitor.FormatFeed`
+  in one write and never puts a diagnostic there. `PostToolUse` is the only hook
+  still installed, because a separate process is spawned once in the directory
+  the session opened in and can see neither a later `cd` nor a tool call: it
+  re-registers the session's tree on every call (this is what follows an agent
+  into a worktree — `.claude/worktrees/<name>` sessions in this repo depend on
+  it entirely), pokes after a push, and seeds the session cursor on the first
+  Bash call. **No hook reads the journal, and no hook gates a finish** — the
+  binary enforces both rather than the manifest, so an older installed
+  `hooks.json` cannot reintroduce either. `hookUserPrompt` only registers,
+  `hookStop` is a bare `return nil`, and `hookSessionStart` / `hookSessionEnd`
+  remain unwired-but-alive for the same reason; every path still exits 0.
+
+  **The Stop gate is retired, and why it went is the useful part.** It blocked a
+  turn while the monitor held a `SeverityAction` event, which is a sound idea
+  implemented against the wrong state: it decided on the last *known* actionable
+  event with no notion of whether a newer head had superseded it. Its everyday
+  behavior was therefore to re-hand a session the failure it had already fixed
+  and pushed, one poll interval before the pass arrived — a turn spent, every
+  time — while the case it existed for cost nothing in any session that simply
+  acted on the notification. **A gate whose false-positive rate is structural
+  and whose true positives are unobservable is not paying for itself.** Delivery
+  without enforcement is the accepted trade: the stream says what happened, and
+  what the agent does about it is the agent's business.
 
   The stand-down this replaced is worth remembering, because it was correct when
   written and became wrong underneath itself: `hookUserPrompt` delivered unless
@@ -276,23 +292,21 @@ what changed as events.
   (`monitor.StreamServes`, one file per process as `<hash>-<pid>.json`, matched
   on the recorded path) and the per-process `monitor.StreamIdentity` still keep
   two sessions in one directory from revoking each other's claim or sharing one
-  cursor. `StreamServes` no longer gates delivery; it only softens the sentence
-  `SessionStart` uses to say where events will arrive.
+  cursor. `StreamServes` no longer gates anything the plugin installs; it
+  survives only for the unwired `SessionStart` entry point an older install may
+  still call.
 - **Hooks may never cost a session anything**: every path in `monitor.RunHook`
   exits 0 and writes nothing that changes what the session does — no daemon, no
   token, an unusable cache directory (`NewClient` → `monitor.Dir`), a malformed
   payload, an unknown event. Saying that a feed is never coming is the stream's
   job, not a hook's: `monitor stream` stands down in one plain sentence, which is
-  the only voice the plugin has left now that nothing runs at `SessionStart`. The
-  Stop hook stands down the instant `stop_hook_active` is set (that is what
-  keeps it from looping), blocks only on `SeverityAction` events, and seeks past
-  what it hands over — it reads the session's own cursor, which no stream ever
-  touches, so the finish gate is unaffected by whether a stream is running.
-  `monitor stream` holds itself to the same bar: one prose line on stdout and
-  exit 0 for every start-up failure — or, under `--json`, one more line of
-  line-delimited JSON, since the mode a consumer opted into has to stay parseable
-  through the line that says the feed ended. `SHUCK_MONITOR_DISABLE` /
-  `SHUCK_MONITOR_NO_STOP` opt out; the stream reads the former once, at startup.
+  the only voice the plugin has left now that nothing runs at `SessionStart` and
+  nothing runs at `Stop`. `monitor stream` holds itself to the same bar: one
+  prose line on stdout and exit 0 for every start-up failure — or, under
+  `--json`, one more line of line-delimited JSON, since the mode a consumer
+  opted into has to stay parseable through the line that says the feed ended.
+  `SHUCK_MONITOR_DISABLE` opts out; the stream reads it once, at startup.
+  `SHUCK_MONITOR_NO_STOP` is gone with the gate it disabled.
 - **Pin audit is repo-driven and ref-driven**: the checkout's own files are the
   source of truth (`.github/workflows/*.y{a,}ml`, the root `action.y{a,}ml`,
   `.github/actions/*/action.y{a,}ml`), walked as `yaml.Node` so line numbers and
@@ -361,8 +375,8 @@ what changed as events.
   Dependabot.
 - The Claude Code plugin source lives under `plugins/shuck/` (manifest,
   `monitors/monitors.json` — which execs `shuck monitor stream` directly, with no
-  shim — the `SessionStart`, `PostToolUse` and `Stop` hooks
-  and their `scripts/monitor.sh` shim, skill); `.claude/settings.json` enables it
+  shim — the `PostToolUse` hook, the only one still installed, and its
+  `scripts/monitor.sh` shim, skill); `.claude/settings.json` enables it
   from the
   `justanotherspy/claude-plugins` marketplace — *not* from this repo's own
   `.claude-plugin/marketplace.json`, so a plugin change here does not take

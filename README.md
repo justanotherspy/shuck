@@ -426,23 +426,30 @@ notification. There is no polling and no tool call. A source the working tree
 cannot imply is added from the session with `shuck monitor watch <target>` and
 retired with `shuck monitor unwatch`, and its events arrive on the same stream.
 
-Two hooks sit beside the stream, and neither of them delivers — each does
-something a monitor process structurally cannot:
+One hook sits beside the stream, and it does not deliver. It exists only for
+what a monitor process structurally cannot do:
 
 | Hook | What it does | Why a monitor cannot |
 | --- | --- | --- |
-| `PostToolUse` (Bash) | After a `git push` (or `gh pr create` / `gh run rerun` / …) asks the monitor to re-check now instead of at the next interval. | A separate process cannot see the session's tool calls; without this the push waits out an interval. |
-| `Stop` | Hands the batch over and asks for one more turn when something in it is actionable: red CI, or a reviewer's comment or change request. An approval, a stale pin, and a failed poll are informational — they still reach the session, but never hold a turn open. | A notification tells an agent; only a hook can stop it finishing on a red build. It reads the session's own cursor, which the stream never touches, so the gate holds whether the stream is running, dead, or never started. |
+| `PostToolUse` (Bash) | Re-registers the session's working directory on every tool call, so entering a worktree retargets the monitor; and after a `git push` (or `gh pr create` / `gh run rerun` / …) asks it to re-check now instead of at the next interval. | A separate process is spawned once, in the directory the session opened in — it can see neither a later `cd` nor the session's tool calls. |
+
+**No hook gates a finish.** There was a `Stop` hook that blocked a turn while
+the monitor held a red build. It is retired: it decided on the last *known*
+actionable event with no notion of a superseded head, so in practice it re-handed
+sessions the failure they had just fixed and pushed, one poll interval before the
+pass landed. Delivery without enforcement is the trade — the stream says what
+happened, and what you do about it is yours. The entry point still returns
+success and does nothing, so an installed copy of an older `hooks.json` cannot
+resurrect the gate.
 
 All the logic lives in the binary (`shuck monitor stream` and
 `shuck monitor hook <event>`); the shell shims only exist so a session without
 shuck installed degrades to one line saying so. Every path exits 0 — a
 background convenience must never be why a prompt is rejected, and a stack trace
 in a notification is worse than no notification. Opt out with
-`SHUCK_MONITOR_DISABLE=1`, or just the `Stop` hook with
-`SHUCK_MONITOR_NO_STOP=1`. The stream reads `SHUCK_MONITOR_DISABLE` once, when
-it starts, so exporting it mid-session stops the hooks but not a stream that is
-already running.
+`SHUCK_MONITOR_DISABLE=1`. The stream reads it once, when it starts, so
+exporting it mid-session stops the hook but not a stream that is already
+running.
 
 Prefer not to use the marketplace? `shuck setup` installs the same skill into
 `~/.claude/skills/shuck` and adds a managed note to your `~/.claude/CLAUDE.md`.

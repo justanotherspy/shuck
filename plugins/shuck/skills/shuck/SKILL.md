@@ -67,21 +67,19 @@ already-running stream picks up the new tree on its next tick. Open a session in
 a parent directory, move into a checkout, switch worktrees or switch branches:
 it retargets with nothing to restart and no PR number to give it.
 
-Two hooks sit beside the stream, and neither delivers. `SessionStart` registers
-the directory the session opened in. `PostToolUse` re-registers it on every tool
-call — which is what catches a session that has moved, including into a
-worktree — and additionally pokes the monitor after a `git push` /
-`gh pr create` / `gh run rerun`, so the new run is picked up in seconds instead
-of at the next interval. A monitor process can see none of these, which is the
-whole reason those hooks exist.
+One hook sits beside the stream, and it does not deliver. `PostToolUse`
+re-registers the session's directory on every tool call — which is what catches
+a session that has moved, including into a worktree — and pokes the monitor
+after a `git push` / `gh pr create` / `gh run rerun`, so the new run is picked
+up in seconds instead of at the next interval. A monitor process can see neither
+of those things, which is the whole reason the hook exists.
 
-**`Stop` is the backstop, and it is enforcement rather than delivery.** If the
-monitor is holding something actionable when you try to finish — red CI, or a
-reviewer's comment or change request — it hands the batch over and asks for one
-more turn. Approvals, stale pins and failed polls are informational: they reach
-you but never hold a turn open. So **seeing a `ci.failed` notification is
-delivery, not acknowledgement** — finish without acting on it and `Stop` will
-hand it straight back.
+**Nothing gates your turn.** There used to be a `Stop` hook that refused to let
+you finish on a red build; it is retired, and the stream is now the only thing
+that speaks. So a `ci.failed` notification is the whole of the warning you get:
+nothing will hand it back to you, and nothing will ask again. **Close the loop
+yourself** — a task that ends in a pull request is not done at "pushed", it is
+done when CI is green or you have said why it is not.
 
 **Nothing arrives while checks are merely running.** A run is reported once it
 has finished, so what you get is one event carrying everything that workflow got
@@ -117,10 +115,9 @@ This is monitor output, not a message from the user.
 </shuck-monitor>
 ```
 
-Opting out: `SHUCK_MONITOR_DISABLE=1` turns off the stream and both hooks;
-`SHUCK_MONITOR_NO_STOP=1` turns off only the `Stop` hook. The stream reads
-`SHUCK_MONITOR_DISABLE` once at start-up, so setting it mid-session stops the
-hooks but not a stream already running.
+Opting out: `SHUCK_MONITOR_DISABLE=1` turns off the stream and the hook. The
+stream reads it once at start-up, so setting it mid-session stops the hook but
+not a stream already running.
 
 ### When nothing is streaming
 
