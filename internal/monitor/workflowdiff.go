@@ -58,7 +58,7 @@ func branchTouchesWorkflows(ctx context.Context, dir string) bool {
 	if err != nil {
 		return false
 	}
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if isWorkflowPath(strings.TrimSpace(line)) {
 			return true
 		}

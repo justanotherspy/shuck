@@ -187,12 +187,7 @@ func (w Watch) inAnyScope(resolved []string) bool {
 	if len(w.Scopes) == 0 {
 		return true
 	}
-	for _, r := range resolved {
-		if w.inScope(r) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(resolved, w.inScope)
 }
 
 // inScope is InScope against an already-resolved path, so a filter over the
