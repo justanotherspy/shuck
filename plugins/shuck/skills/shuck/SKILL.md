@@ -68,13 +68,13 @@ already-running stream picks up the new tree on its next tick. Open a session in
 a parent directory, move into a checkout, switch worktrees or switch branches:
 it retargets with nothing to restart and no PR number to give it.
 
-Three hooks sit beside the stream, and none of them delivers. `SessionStart` and
-`UserPromptSubmit` register the directory the session is in — the second is what
-catches a session that has moved. `PostToolUse` does the same on every tool call
-and additionally pokes the monitor after a `git push` / `gh pr create` /
-`gh run rerun`, so the new run is picked up in seconds instead of at the next
-interval — a monitor process can see none of these, which is the whole reason
-those hooks exist.
+Two hooks sit beside the stream, and neither delivers. `SessionStart` registers
+the directory the session opened in. `PostToolUse` re-registers it on every tool
+call — which is what catches a session that has moved, including into a
+worktree — and additionally pokes the monitor after a `git push` /
+`gh pr create` / `gh run rerun`, so the new run is picked up in seconds instead
+of at the next interval. A monitor process can see none of these, which is the
+whole reason those hooks exist.
 
 **`Stop` is the backstop, and it is enforcement rather than delivery.** If the
 monitor is holding something actionable when you try to finish — red CI, or a

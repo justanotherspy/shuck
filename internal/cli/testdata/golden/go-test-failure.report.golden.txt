@@ -17,8 +17,7 @@ Steps:
         ```
     error logs:
       ```
-      ok   example.com/hello/pkg/a  0.012s
-      ok   example.com/hello/pkg/b  0.020s
+      … (2 passing/progress lines omitted) …
       --- FAIL: TestThing (0.00s)
           thing_test.go:42: expected 1 got 2
       FAIL

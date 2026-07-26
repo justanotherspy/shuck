@@ -18,7 +18,6 @@ Steps:
         ```
     logs before cancellation:
       ```
-      ok   example.com/hello/pkg/a  4.512s
-      ok   example.com/hello/pkg/b  12.303s
+      … (2 passing/progress lines omitted) …
       ##[error]The operation was canceled.
       ```

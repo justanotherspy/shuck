@@ -134,6 +134,18 @@ what changed as events.
 
 ## Key design notes
 
+- **An excerpt earns its lines**: `logs.Extract` collapses runs of
+  success/progress output — go's per-package `ok`, jest's ticks, pytest's
+  `PASSED`, cargo's `Compiling` (`logs.DefaultNoisePattern`) — into one
+  `… (N passing/progress lines omitted) …` marker. It applies *before* the
+  `ShortThreshold` check, because a 25-line `go test ./...` failure is under any
+  sane threshold and still nineteen-twentieths noise; "short" is a budget for
+  what an agent has to read, not a licence to spend it on packages that passed.
+  Two rules keep it safe: nothing is collapsed unless the log has failure signal
+  to show instead (an unrecognized log is never thinned on a guess), and a line
+  matching the failure pattern is kept however much it looks like noise — so
+  extending the pattern for a new runner cannot cost a finding. `--full` clears
+  it, because full has to mean untouched.
 - **Step commands come from the logs**, not workflow YAML
   (`logs.Section.Command` / `Kind`).
 - **Step↔section matching** (`distil.CIFailure`; `cli.buildFailedSteps` is a
@@ -221,16 +233,30 @@ what changed as events.
   session's tool calls — it pokes after a push, and seeds the session cursor on
   the first Bash call, which closes the window in which a mid-turn `ci.failed`
   would land before the cursor existed. `Stop` stays because a notification tells
-  an agent while only a hook can stop it finishing on a red build. Everything
-  else was unwired: registering the tree, seeding, and delivering are all the
-  stream's now. `hookSessionStart` / `hookUserPrompt` / `hookSessionEnd` remain in
-  the binary regardless, because an installed copy of an older `hooks.json` still
-  calls them and every path already exits 0. The stream marker under
-  `~/.cache/shuck/monitor/streams/` (`monitor.StreamServes`, one file per process
-  as `<hash>-<pid>.json`, matched on the recorded path) and the per-process
-  `monitor.StreamIdentity` are what keep two sessions in one directory from
-  revoking each other's claim or sharing one cursor; the stand-down half of it
-  now only serves those older installs.
+  an agent while only a hook can stop it finishing on a red build. **No hook
+  reads the journal to deliver any more** — that is the stream's alone, and the
+  binary enforces it rather than the manifest, so an older installed `hooks.json`
+  cannot reintroduce a second channel. `hookUserPrompt` now only registers;
+  `hookSessionStart` / `hookSessionEnd` remain for the same reason, and every
+  path still exits 0.
+
+  The stand-down this replaced is worth remembering, because it was correct when
+  written and became wrong underneath itself: `hookUserPrompt` delivered unless
+  `StreamServes` said a stream was following *this directory*, but once a stream
+  followed the *session* the two predicates disagreed the moment an agent entered
+  a worktree — the stream kept delivering under the session's scope while the
+  hook, seeing a directory no marker named, decided nobody was serving it and
+  delivered everything a second time. The lesson is not that the predicate needed
+  fixing: **two channels arbitrating who speaks is the bug, and one channel is the
+  fix.** `TestHookUserPromptStaysSilentWhateverTheStreamIsDoing` holds every
+  stream state to the same answer so the arbitration cannot come back.
+
+  The stream marker under `~/.cache/shuck/monitor/streams/`
+  (`monitor.StreamServes`, one file per process as `<hash>-<pid>.json`, matched
+  on the recorded path) and the per-process `monitor.StreamIdentity` still keep
+  two sessions in one directory from revoking each other's claim or sharing one
+  cursor. `StreamServes` no longer gates delivery; it only softens the sentence
+  `SessionStart` uses to say where events will arrive.
 - **Hooks may never cost a session anything**: every path in `monitor.RunHook`
   exits 0 and writes nothing that changes what the session does — no daemon, no
   token, an unusable cache directory (`NewClient` → `monitor.Dir`), a malformed
@@ -314,7 +340,7 @@ what changed as events.
   Dependabot.
 - The Claude Code plugin source lives under `plugins/shuck/` (manifest,
   `monitors/monitors.json` — which execs `shuck monitor stream` directly, with no
-  shim — the `SessionStart`, `UserPromptSubmit`, `PostToolUse` and `Stop` hooks
+  shim — the `SessionStart`, `PostToolUse` and `Stop` hooks
   and their `scripts/monitor.sh` shim, skill); `.claude/settings.json` enables it
   from the
   `justanotherspy/claude-plugins` marketplace — *not* from this repo's own

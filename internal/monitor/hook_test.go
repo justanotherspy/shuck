@@ -119,28 +119,32 @@ func TestHookSessionStartDoesNotReplayHistory(t *testing.T) {
 	}
 }
 
-func TestHookUserPromptDeliversNewEvents(t *testing.T) {
+// TestHookUserPromptNeverDelivers is the rule that replaced the stand-down.
+//
+// The prompt hook used to deliver whenever it believed no stream was serving
+// this directory, and that belief was wrong the moment a session moved: a
+// stream follows the session, so it kept delivering under the session's scope
+// while the hook, seeing an unfamiliar directory, delivered the same events
+// again. Predicting the other channel is the part that cannot be made correct,
+// so there is no longer a prediction — the hook does not read at all.
+//
+// Registering is still its job, and leaving the cursor untouched is what keeps
+// the Stop gate armed.
+func TestHookUserPromptNeverDelivers(t *testing.T) {
 	d, home := hookDaemon(t, newFakeClient())
-	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature"), "source": "startup"}, home)
+	tree := treeAt(t, "feature")
+	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": tree, "source": "startup"}, home)
 
 	d.publish([]Event{{Kind: KindCIFailed, Target: "o/r#7", Title: "test failed", Body: "the error"}})
 
-	out := runHook(t, HookUserPromptSubmit, map[string]any{"session_id": "sess-1"}, home)
-	if out == nil || out.Specific == nil {
-		t.Fatal("a new event should be delivered on the next prompt")
+	if out := runHook(t, HookUserPromptSubmit, map[string]any{"session_id": "sess-1", "cwd": tree}, home); out != nil {
+		t.Errorf("the prompt hook delivered events; the stream is the only channel:\n%+v", out)
 	}
-	if out.Specific.HookEventName != "UserPromptSubmit" {
-		t.Errorf("hookEventName = %q", out.Specific.HookEventName)
+	if got := d.journal.Pending("sess-1"); got != 1 {
+		t.Errorf("Pending = %d, want the failure still on this session's cursor for the Stop hook", got)
 	}
-	for _, want := range []string{"<shuck-monitor>", "test failed", "the error"} {
-		if !strings.Contains(out.Specific.AdditionalContext, want) {
-			t.Errorf("delivered context is missing %q:\n%s", want, out.Specific.AdditionalContext)
-		}
-	}
-
-	// Delivered once: the second prompt says nothing.
-	if out := runHook(t, HookUserPromptSubmit, map[string]any{"session_id": "sess-1"}, home); out != nil {
-		t.Errorf("the same event was delivered twice:\n%s", out.Specific.AdditionalContext)
+	if _, ok := d.watches.Get(TreeWatchID(tree)); !ok {
+		t.Error("the prompt hook stopped registering the session's working tree")
 	}
 }
 
@@ -174,50 +178,22 @@ func liveStreamFrom(t *testing.T, tree string, origin uint64) {
 	})
 }
 
-// TestHookUserPromptStandsDownForALiveStream is the rule that keeps two
-// delivery channels from becoming two copies. The stream is already turning
-// these events into notifications; injecting them here as well hands the agent
-// the same CI failure twice.
+// TestHookUserPromptStaysSilentWhateverTheStreamIsDoing pins the property that
+// made the duplicate possible in the first place: the answer must not depend on
+// what the hook believes about the other channel.
 //
-// The second half is the more important one: standing down must not consume
-// anything. The stream keeps its own cursor, so this session's has to stay
-// exactly where it was — that backlog is what the Stop hook gates on if the
-// stream dies or nobody reads it.
-func TestHookUserPromptStandsDownForALiveStream(t *testing.T) {
-	d, home := hookDaemon(t, newFakeClient())
-	tree := treeAt(t, "feature")
-	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": tree, "source": "startup"}, home)
-	d.publish([]Event{{Kind: KindCIFailed, Target: "o/r#7", Title: "test failed", Body: "the error"}})
-
-	liveStream(t, tree)
-
-	if out := runHook(t, HookUserPromptSubmit, map[string]any{"session_id": "sess-1", "cwd": tree}, home); out != nil {
-		t.Errorf("the prompt hook delivered what the stream is already sending:\n%s", out.Specific.AdditionalContext)
-	}
-	if got := d.journal.Pending("sess-1"); got != 1 {
-		t.Errorf("Pending = %d, want the failure still on this session's cursor for the Stop hook", got)
-	}
-	// A session in a subdirectory of the tree the stream registered is the same
-	// work, and would otherwise be handed everything a second time.
-	sub := filepath.Join(tree, "internal")
-	if err := os.MkdirAll(sub, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if out := runHook(t, HookUserPromptSubmit, map[string]any{"session_id": "sess-1", "cwd": sub}, home); out != nil {
-		t.Errorf("a session below the streamed tree was delivered to as well:\n%s", out.Specific.AdditionalContext)
-	}
-}
-
-// TestHookUserPromptDeliversWhenNoStreamIsLive is the other half, and the one
-// that decides whether a crashed stream costs a session its monitor entirely.
-// A marker outlives the process that wrote it, so anything but a fresh
-// heartbeat from a process that still exists has to count as gone.
-func TestHookUserPromptDeliversWhenNoStreamIsLive(t *testing.T) {
+// Every row here is a state the old stand-down read differently — no marker, a
+// dead one, one naming somebody else's tree, one naming this tree, and the case
+// that actually bit, a session that has moved below the directory the stream
+// registered. All five now behave identically, because none of them is
+// consulted.
+func TestHookUserPromptStaysSilentWhateverTheStreamIsDoing(t *testing.T) {
 	tests := []struct {
 		name   string
 		marker func(t *testing.T, tree string)
+		cwd    func(t *testing.T, tree string) string
 	}{
-		{"no stream has ever run here", func(*testing.T, string) {}},
+		{name: "no stream has ever run here"},
 		{
 			name: "a stream whose heartbeat stopped",
 			marker: func(t *testing.T, tree string) {
@@ -233,6 +209,18 @@ func TestHookUserPromptDeliversWhenNoStreamIsLive(t *testing.T) {
 					Heartbeat: time.Now()})
 			},
 		},
+		{name: "a live stream on this tree", marker: liveStream},
+		{
+			name:   "a session that moved below the streamed tree",
+			marker: liveStream,
+			cwd: func(t *testing.T, tree string) string {
+				sub := filepath.Join(tree, "internal")
+				if err := os.MkdirAll(sub, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				return sub
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -242,14 +230,19 @@ func TestHookUserPromptDeliversWhenNoStreamIsLive(t *testing.T) {
 			runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": tree, "source": "startup"}, home)
 			d.publish([]Event{{Kind: KindCIFailed, Target: "o/r#7", Title: "test failed", Body: "the error"}})
 
-			tt.marker(t, tree)
-
-			out := runHook(t, HookUserPromptSubmit, map[string]any{"session_id": "sess-1", "cwd": tree}, home)
-			if out == nil || out.Specific == nil {
-				t.Fatal("with nothing streaming, the prompt hook is the only channel there is")
+			if tt.marker != nil {
+				tt.marker(t, tree)
 			}
-			if !strings.Contains(out.Specific.AdditionalContext, "test failed") {
-				t.Errorf("delivered context is missing the failure:\n%s", out.Specific.AdditionalContext)
+			cwd := tree
+			if tt.cwd != nil {
+				cwd = tt.cwd(t, tree)
+			}
+
+			if out := runHook(t, HookUserPromptSubmit, map[string]any{"session_id": "sess-1", "cwd": cwd}, home); out != nil {
+				t.Errorf("the prompt hook delivered:\n%+v", out)
+			}
+			if got := d.journal.Pending("sess-1"); got != 1 {
+				t.Errorf("Pending = %d, want the failure untouched for the Stop hook", got)
 			}
 		})
 	}
@@ -277,9 +270,11 @@ func TestHookStopStillGatesWhileAStreamIsLive(t *testing.T) {
 }
 
 // TestHookSessionStartSaysWhereEventsWillArrive covers the one sentence a
-// session is told this by. Both channels are automatic, so the promise is the
-// same either way; naming the wrong shape leaves an agent waiting for a block
-// that is never coming.
+// session is told this by. There is a single channel now, so the sentence must
+// never promise the conversation-block delivery that no longer exists — an
+// agent that believes it is coming waits for something nothing will send.
+// Without a stream marker the honest answer is not a second channel but a
+// command, so `shuck monitor events` is what the sentence has to end at.
 func TestHookSessionStartSaysWhereEventsWillArrive(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -287,7 +282,7 @@ func TestHookSessionStartSaysWhereEventsWillArrive(t *testing.T) {
 		want, avoid string
 	}{
 		{"with a stream running", true, "notifications", "<shuck-monitor> blocks"},
-		{"with only the hooks", false, "<shuck-monitor> blocks", "notifications"},
+		{"with no stream yet", false, "shuck monitor events", "<shuck-monitor> blocks"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -323,11 +318,14 @@ func TestHookUserPromptIsSilentWhenNothingHappened(t *testing.T) {
 	}
 }
 
-func TestHookUserPromptCapsWhatItInjects(t *testing.T) {
+// TestHookStopCapsWhatItInjects follows the cap to the only hook that still
+// injects anything. Stop is now the sole path by which monitor text reaches a
+// session through a hook, so it is the one that has to do its own truncation.
+func TestHookStopCapsWhatItInjects(t *testing.T) {
 	d, home := hookDaemon(t, newFakeClient())
-	runHook(t, HookSessionStart, map[string]any{"session_id": "sess-1", "cwd": treeAt(t, "feature"), "source": "startup"}, home)
+	seedSession(t, home, "sess-1")
 
-	// Claude Code truncates a large additionalContext silently, so shuck has
+	// Claude Code truncates a large injected string silently, so shuck has
 	// to do the cut itself and say where the rest is.
 	d.publish([]Event{{
 		Kind:  KindCIFailed,
@@ -335,11 +333,11 @@ func TestHookUserPromptCapsWhatItInjects(t *testing.T) {
 		Body:  strings.Repeat("a very long line of log output\n", 500),
 	}})
 
-	out := runHook(t, HookUserPromptSubmit, map[string]any{"session_id": "sess-1"}, home)
-	if out == nil {
-		t.Fatal("expected a delivery")
+	out := runHook(t, HookStop, map[string]any{"session_id": "sess-1"}, home)
+	if out == nil || out.Decision != "block" {
+		t.Fatalf("expected a block carrying the failure, got %+v", out)
 	}
-	got := out.Specific.AdditionalContext
+	got := out.Reason
 	if len(got) > feedLimit {
 		t.Errorf("injected %d bytes, want at most %d", len(got), feedLimit)
 	}
@@ -642,8 +640,8 @@ func TestHookSessionStartKeepsPendingEventsOnResume(t *testing.T) {
 			t.Fatalf("source %q left %d pending, want the failure still waiting", source, got)
 		}
 	}
-	if out := runHook(t, HookUserPromptSubmit, map[string]any{"session_id": "sess-1"}, home); out == nil {
-		t.Error("the pending failure should still be delivered after a resume")
+	if got := d.journal.Pending("sess-1"); got != 1 {
+		t.Errorf("Pending = %d, want the failure still deliverable after a resume", got)
 	}
 }
 
@@ -682,10 +680,10 @@ func TestHookStopIgnoresInformationalEvents(t *testing.T) {
 	if out := runHook(t, HookStop, map[string]any{"session_id": "sess-1"}, home); out != nil {
 		t.Fatalf("a passing build must not delay a finish, got %+v", out)
 	}
-	// And because Stop peeks rather than drains, the news is still waiting for
-	// the next prompt.
-	if out := runHook(t, HookUserPromptSubmit, map[string]any{"session_id": "sess-1"}, home); out == nil {
-		t.Error("the event Stop declined to act on should still be delivered later")
+	// And because Stop peeks rather than drains, the news is still waiting on
+	// this session's cursor for the stream to carry.
+	if got := d.journal.Pending("sess-1"); got != 1 {
+		t.Errorf("Pending = %d, want the event Stop declined to act on still undelivered", got)
 	}
 }
 
@@ -702,10 +700,10 @@ func TestHookStopIgnoresAnApprovingReview(t *testing.T) {
 	if out := runHook(t, HookStop, map[string]any{"session_id": "sess-1"}, home); out != nil {
 		t.Fatalf("an approval must not delay a finish, got %+v", out)
 	}
-	// And because Stop peeked rather than drained, the good news is still there
-	// for the next prompt — declining to block is not declining to deliver.
-	if out := runHook(t, HookUserPromptSubmit, map[string]any{"session_id": "sess-1"}, home); out == nil {
-		t.Error("the approval should still be delivered on the next prompt")
+	// And because Stop peeked rather than drained, the good news is still
+	// pending — declining to block is not declining to deliver.
+	if got := d.journal.Pending("sess-1"); got != 1 {
+		t.Errorf("Pending = %d, want the approval still waiting to be delivered", got)
 	}
 }
 
@@ -742,14 +740,10 @@ func TestHookStopIgnoresStalePins(t *testing.T) {
 	if out := runHook(t, HookStop, map[string]any{"session_id": "sess-1"}, home); out != nil {
 		t.Fatalf("stale pins must not delay a finish, got %+v", out)
 	}
-	// Demoting the severity must not silence the finding — the prompt hook
-	// delivers every event whatever its severity.
-	out := runHook(t, HookUserPromptSubmit, map[string]any{"session_id": "sess-1"}, home)
-	if out == nil || out.Specific == nil {
-		t.Fatal("pin drift should still be delivered on the next prompt")
-	}
-	if !strings.Contains(out.Specific.AdditionalContext, "actions/checkout@v4") {
-		t.Errorf("the pin finding lost its detail:\n%s", out.Specific.AdditionalContext)
+	// Demoting the severity must not silence the finding — it stays pending for
+	// the stream, which delivers every event whatever its severity.
+	if got := d.journal.Pending("sess-1"); got != 1 {
+		t.Errorf("Pending = %d, want the pin finding still waiting to be delivered", got)
 	}
 }
 
@@ -1064,38 +1058,5 @@ func TestHookStopIsScopedToTheSessionsTree(t *testing.T) {
 	}
 	if strings.Contains(out.Reason, "their test failed") {
 		t.Errorf("the other worktree's failure was handed over:\n%s", out.Reason)
-	}
-}
-
-// TestHookUserPromptIsScopedToTheSessionsTree is the same rule on the fallback
-// channel: the prompt hook delivers wherever no stream can run, and it must not
-// hand a session another worktree's CI either.
-func TestHookUserPromptIsScopedToTheSessionsTree(t *testing.T) {
-	d, home := hookDaemon(t, newFakeClient())
-	mine, theirs := t.TempDir(), t.TempDir()
-	d.watches.Add(Watch{
-		ID: TreeWatchID(mine), Kind: WatchTree, Path: mine,
-		Owner: "o", Repo: "r", Number: 1, Scopes: []string{mine},
-	})
-	d.watches.Add(Watch{
-		ID: TreeWatchID(theirs), Kind: WatchTree, Path: theirs,
-		Owner: "o", Repo: "r", Number: 2, Scopes: []string{theirs},
-	})
-
-	d.publish([]Event{
-		{Kind: KindCIFailed, Target: "o/r#2", Title: "their test failed"},
-		{Kind: KindCIFailed, Target: "o/r#1", Title: "my test failed"},
-	})
-
-	out := runHook(t, HookUserPromptSubmit, map[string]any{"session_id": "sess-1", "cwd": mine}, home)
-	if out == nil || out.Specific == nil {
-		t.Fatal("the prompt hook should have delivered this session's failure")
-	}
-	got := out.Specific.AdditionalContext
-	if !strings.Contains(got, "my test failed") {
-		t.Errorf("this session's own failure was not delivered:\n%s", got)
-	}
-	if strings.Contains(got, "their test failed") {
-		t.Errorf("another worktree's failure was delivered:\n%s", got)
 	}
 }
