@@ -36,7 +36,7 @@ const streamStaleAfter = 3 * time.Minute
 // StreamConsumer is the journal identity a stream over watchID reads under. The
 // prefix is not decoration: cursors are keyed by a bare string, Claude Code
 // identifies a session by its own id, and a stream that collided with one would
-// consume the very events the Stop hook exists to gate on.
+// consume events under an identity somebody else is reading.
 func StreamConsumer(watchID string) string { return "stream:" + watchID }
 
 // StreamIdentity is the identity a stream about to serve w should read under:
@@ -297,7 +297,7 @@ func streamFile(watchID string, pid int) string {
 // the two each other's stream: the worktree's session would stand its prompt
 // hook down for a stream that is not delivering its events, and seed its cursor
 // from an origin belonging to a session that opened yesterday, replaying that
-// tree's whole retained history into its first Stop gate.
+// tree's whole retained history into the newer session's feed.
 //
 // What separates them is git identity, which is what a checkout actually is: a
 // subdirectory shares the enclosing tree's git directory, and a linked worktree

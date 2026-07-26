@@ -92,9 +92,11 @@ type Request struct {
 	// pending.
 	All bool `json:"all,omitempty"`
 	// Peek returns the consumer's pending events without advancing its
-	// cursor. The Stop hook needs it: it has to look at what is waiting to
-	// decide whether to act on it, and events it decides not to act on must
-	// still be there for the next prompt.
+	// cursor — for a caller that wants to know what is waiting without
+	// spending it. Nothing in the plugin peeks any more (the Stop gate that
+	// did is retired); it stays because a read that does not consume is a
+	// reasonable thing to ask the daemon for, and dropping it would break the
+	// wire contract for anyone driving the socket directly.
 	Peek bool `json:"peek,omitempty"`
 }
 
