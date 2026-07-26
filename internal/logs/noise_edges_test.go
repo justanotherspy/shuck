@@ -13,7 +13,7 @@ func TestExtractCollapsesASingleLineWithSingularWording(t *testing.T) {
 		"--- FAIL: TestWidget (0.00s)",
 	}, DefaultOptions())
 
-	want := "… (1 passing/progress lines omitted) …\n--- FAIL: TestWidget (0.00s)"
+	want := "… (1 passing/progress line omitted) …\n--- FAIL: TestWidget (0.00s)"
 	if got != want {
 		t.Fatalf("Extract() =\n%s\n\nwant:\n%s", got, want)
 	}
