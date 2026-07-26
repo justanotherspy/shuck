@@ -608,11 +608,27 @@ func monitorStream(args []string, stdout, stderr io.Writer) int {
 		stream.SetOrigin(cursor)
 	}
 
-	// Scope the feed to this session's own working tree. Without it every
-	// stream on the machine is handed every watch's events, so two sessions in
-	// two worktrees each get the other's CI and pin findings — observed, and
-	// the reason the scope exists.
-	req := monitor.Request{Consumer: consumer, Limit: streamBatchLimit, Scope: spec.Path}
+	// Scope the feed to this session. Without any scope every stream on the
+	// machine is handed every watch's events, so two sessions in two worktrees
+	// each get the other's CI and pin findings — observed, and the reason the
+	// scope exists at all.
+	//
+	// The session id is preferred over the working tree because a stream's
+	// directory is fixed at the moment Claude Code spawns it and the session's
+	// is not. A session opened in a parent directory and then moved into a
+	// checkout — the agent-fleet pattern — leaves a stream scoped to a path that
+	// resolves to no repository, and every watch the hooks register afterwards
+	// carries the new directory, which this stream would never ask with. Scoped
+	// to the session instead, the retarget costs nothing: the hook registers the
+	// new tree under the same session id, and this already-running read picks it
+	// up on the next tick. The tree remains the scope when there is no session
+	// id to use, which is every host that is not Claude Code.
+	req := monitor.Request{
+		Consumer: consumer,
+		Limit:    streamBatchLimit,
+		Scope:    spec.Path,
+		Session:  sessionID(),
+	}
 	err = followEvents(ctx, client, req, func(events []monitor.Event) error {
 		stream.Beat()
 		return emitStream(stdout, events, jsonOut)
@@ -623,8 +639,18 @@ func monitorStream(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// sessionID is the Claude Code session this process belongs to, or "" when it
+// is not running under one. Claude Code exports it to hooks and to plugin
+// monitors alike, which is what lets a stream and the hooks that outlive its
+// directory agree on who they are working for.
+func sessionID() string { return os.Getenv("CLAUDE_CODE_SESSION_ID") }
+
 // streamRegister resolves the working directory to a watch and registers it,
 // starting the daemon if this is the first thing to ask for one.
+//
+// The watch is tagged with the session as well as the directory. The directory
+// is what the watch *is*; the session is who it is for, and only the second
+// survives the session moving somewhere else.
 func streamRegister(ctx context.Context) (monitor.Watch, *monitor.Client, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -634,6 +660,7 @@ func streamRegister(ctx context.Context) (monitor.Watch, *monitor.Client, error)
 	if err != nil {
 		return monitor.Watch{}, nil, err
 	}
+	spec.AddSessionScope(sessionID())
 	client, err := newMonitorClient()
 	if err != nil {
 		return monitor.Watch{}, nil, err

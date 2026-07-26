@@ -313,8 +313,9 @@ what changed as events.
   `zizmor.yml` (workflow security), `labeler.yml`, `release-drafter.yml`, and
   Dependabot.
 - The Claude Code plugin source lives under `plugins/shuck/` (manifest,
-  `monitors/monitors.json` + its `scripts/monitor-stream.sh` shim, the `Stop` and
-  `PostToolUse` hooks and their shim, skill); `.claude/settings.json` enables it
+  `monitors/monitors.json` — which execs `shuck monitor stream` directly, with no
+  shim — the `SessionStart`, `UserPromptSubmit`, `PostToolUse` and `Stop` hooks
+  and their `scripts/monitor.sh` shim, skill); `.claude/settings.json` enables it
   from the
   `justanotherspy/claude-plugins` marketplace — *not* from this repo's own
   `.claude-plugin/marketplace.json`, so a plugin change here does not take

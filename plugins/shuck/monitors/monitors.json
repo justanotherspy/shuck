@@ -1,7 +1,7 @@
 [
   {
     "name": "shuck-monitor",
-    "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/monitor-stream.sh",
-    "description": "shuck monitor — new CI failures (with the exact failing step logs), review comments, and stale action pins on this working tree's pull request, as they happen"
+    "command": "shuck monitor stream",
+    "description": "shuck monitor — new CI failures (with the exact failing step logs), review comments, and stale action pins on the pull request this session is working on, as they happen"
   }
 ]

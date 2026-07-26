@@ -1,8 +1,29 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/monitor.sh session-start",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/monitor.sh user-prompt-submit",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
-        "matcher": "Bash",
         "hooks": [
           {
             "type": "command",

@@ -115,6 +115,14 @@ func (w Watch) Target() string {
 // in `shuck monitor status` to say so.
 const maxWatchScopes = 8
 
+// AddSessionScope records that a Claude Code session owns this watch, so the
+// stream serving that session is handed its events wherever the session has
+// since moved. It is a no-op for an empty id, which is every caller that is not
+// running under Claude Code.
+func (w *Watch) AddSessionScope(id string) {
+	w.addScope(SessionScope(id))
+}
+
 // addScope records that the session working in scope registered this watch,
 // moving a scope that is already there to the back of the eviction queue.
 func (w *Watch) addScope(scope string) {
@@ -131,7 +139,61 @@ func (w *Watch) addScope(scope string) {
 }
 
 // InScope reports whether this watch belongs to the session working in scope.
-func (w Watch) InScope(scope string) bool { return w.inScope(resolveTree(scope)) }
+func (w Watch) InScope(scope string) bool { return w.inScope(resolveScope(scope)) }
+
+// resolveScope canonicalizes a scope for comparison: a session scope is already
+// canonical and must be left alone, and anything else is a path.
+func resolveScope(scope string) string {
+	if isSessionScope(scope) {
+		return scope
+	}
+	return resolveTree(scope)
+}
+
+// sessionScopePrefix marks a scope that names a Claude Code session rather than
+// a directory. The two cannot share a namespace: every path scope is compared
+// after resolveTree, which makes a bare session id relative to whichever process
+// asked, and the daemon's working directory is never the session's.
+const sessionScopePrefix = "session:"
+
+// SessionScope is the scope value standing for a Claude Code session id.
+//
+// It is what lets a watch belong to a *session* instead of to the directory that
+// session happened to open in. A path scope is fixed at the moment it is
+// recorded, so a session that starts outside a repository — the Claude Code
+// agent-fleet pattern, opened in a parent directory and then moved into a
+// checkout — can never be reached by one: the stream registered a directory that
+// resolves to no repository, and every watch added afterwards carries a path the
+// stream does not ask with. Tagging both the watch and the stream with the
+// session id instead means the retarget needs nothing to restart. The hook that
+// sees the new directory registers it under the same session, and the stream
+// already blocked on a read is delivering it on the next tick.
+func SessionScope(id string) string {
+	if id == "" {
+		return ""
+	}
+	return sessionScopePrefix + id
+}
+
+// isSessionScope reports whether a scope names a session rather than a path.
+func isSessionScope(scope string) bool {
+	return strings.HasPrefix(scope, sessionScopePrefix)
+}
+
+// inAnyScope reports whether this watch belongs to any of several already-
+// resolved identities — a caller's directory and the session it belongs to.
+// A watch with no scopes at all belongs to everyone, exactly as in inScope.
+func (w Watch) inAnyScope(resolved []string) bool {
+	if len(w.Scopes) == 0 {
+		return true
+	}
+	for _, r := range resolved {
+		if w.inScope(r) {
+			return true
+		}
+	}
+	return false
+}
 
 // inScope is InScope against an already-resolved path, so a filter over the
 // whole registry resolves the asking session's directory once rather than once
@@ -142,6 +204,11 @@ func (w Watch) InScope(scope string) bool { return w.inScope(resolveTree(scope))
 // lives at <repo>/.claude/worktrees/<name>, inside the main checkout, so
 // containment would make the worktree's session and the main checkout's session
 // each other's scope and reintroduce exactly the cross-talk this exists to stop.
+//
+// Session scopes bypass the path comparison entirely and match as opaque
+// strings. Running them through resolveTree would turn "session:<uuid>" into a
+// path under whichever process asked, so the daemon and the stream would derive
+// two different absolute paths from one id and never match.
 func (w Watch) inScope(resolved string) bool {
 	if len(w.Scopes) == 0 {
 		return true
@@ -150,6 +217,12 @@ func (w Watch) inScope(resolved string) bool {
 		return false
 	}
 	for _, s := range w.Scopes {
+		if isSessionScope(s) || isSessionScope(resolved) {
+			if s == resolved {
+				return true
+			}
+			continue
+		}
 		if resolveTree(s) == resolved {
 			return true
 		}

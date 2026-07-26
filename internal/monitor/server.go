@@ -287,7 +287,7 @@ func (d *Daemon) handleEvents(ctx context.Context, req Request) Response {
 	d.mu.Unlock()
 
 	if req.All {
-		match := d.scopeFilter(req.Scope)
+		match := d.scopeFilter(req.Scope, req.Session)
 		scan := req.Limit
 		if match != nil {
 			scan = 0
@@ -347,7 +347,7 @@ func (d *Daemon) handleEvents(ctx context.Context, req Request) Response {
 // while its own failure sat one position further back. Widening the scan costs
 // no delivery, because the cursor follows the scan either way.
 func (d *Daemon) drain(req Request) []Event {
-	match := d.scopeFilter(req.Scope)
+	match := d.scopeFilter(req.Scope, req.Session)
 	scan := req.Limit
 	if match != nil {
 		scan = 0
@@ -405,11 +405,19 @@ func scoped(events []Event, match func(Event) bool, limit int) []Event {
 // following a second ago, say. What excludes an event is another scope claiming
 // it, never this scope failing to recognize it, because a watch that has just
 // moved must not take its session's last failure with it.
-func (d *Daemon) scopeFilter(scope string) func(Event) bool {
-	if scope == "" {
+func (d *Daemon) scopeFilter(scope, session string) func(Event) bool {
+	sessionScope := SessionScope(session)
+	if scope == "" && sessionScope == "" {
 		return nil
 	}
-	resolved := resolveTree(scope)
+	// Either identity claiming a watch is enough. See Request.Session.
+	var resolved []string
+	if scope != "" {
+		resolved = append(resolved, resolveScope(scope))
+	}
+	if sessionScope != "" {
+		resolved = append(resolved, sessionScope)
+	}
 
 	d.mu.Lock()
 	watches := d.watches.List()
@@ -420,7 +428,7 @@ func (d *Daemon) scopeFilter(scope string) func(Event) bool {
 	known := map[string]bool{}
 	claimed := map[string]bool{}
 	for _, w := range watches {
-		inScope := w.inScope(resolved)
+		inScope := w.inAnyScope(resolved)
 		known[w.ID] = true
 		if inScope {
 			ids[w.ID] = true

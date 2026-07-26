@@ -64,6 +64,13 @@ type Options struct {
 	// NoPins turns off the workflow pin audit, for anyone who would rather
 	// the monitor stayed out of their .github directory.
 	NoPins bool
+	// PinSubscribed reports whether a working tree's branch has touched a
+	// workflow file, and so whether its session asked to hear about that
+	// checkout's action pins at all. Nil means branchTouchesWorkflows, which is
+	// what every caller outside this package's tests wants; the seam exists
+	// because the real one shells out to git against a real checkout, and the
+	// pin tests are about the audit and the dedupe rather than about git.
+	PinSubscribed func(ctx context.Context, dir string) bool
 	// PinResolver resolves an action reference to its latest release for the
 	// pin audit. The caller supplies it — the CLI hands over the same
 	// cache-backed resolver `shuck action` and `shuck pins` use — so this
