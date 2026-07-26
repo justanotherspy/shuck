@@ -285,68 +285,264 @@ func (p *poller) ciEvents(ctx context.Context, st *prState, pr model.PR, now tim
 		p.logf("other checks for %s: %v", st.Target, err)
 	}
 
-	var events []Event
-	if e, ok := p.startedEvent(st, pr, failed, cancelled, running, now); ok {
-		events = append(events, e)
+	if len(running) > 0 {
+		// Checks are in flight for this commit. Recording that is what makes a
+		// later round's silence mean something: "green" is inferred from having
+		// watched jobs run and then stop, so a commit whose checks were already
+		// over when the watch began stays silent rather than announcing a fact.
+		st.Announced = true
 	}
-	events = append(events, p.failureEvents(ctx, st, pr, append(failed, cancelled...), now)...)
+
+	var events []Event
+	events = append(events, p.failureEvents(ctx, st, pr, failed, cancelled, running, now)...)
 	if e, ok := p.verdictEvent(st, pr, failed, cancelled, running, other, now); ok {
 		events = append(events, e)
 	}
 	return events
 }
 
-// startedEvent fires the first time checks are seen for a head commit, so an
-// agent that just pushed learns its push registered rather than wondering.
-func (p *poller) startedEvent(st *prState, pr model.PR, failed, cancelled []model.JobResult, running []model.RunningJob, now time.Time) (Event, bool) {
-	if st.Announced || len(failed)+len(cancelled)+len(running) == 0 {
-		return Event{}, false
-	}
-	st.Announced = true
-	if len(running) == 0 {
-		// Everything was already terminal by the time we first looked; the
-		// verdict says it all and a "checks started" would just be noise.
-		return Event{}, false
-	}
-	return Event{
-		Time:   now,
-		Kind:   KindCIStarted,
-		Target: st.Target,
-		Title: fmt.Sprintf("checks running on %s (%s)",
-			shortSHA(pr.HeadSHA), jobNames(running)),
-		URL: prChecksURL(st.Owner, st.Repo, st.Number),
-	}, true
+// fastFailWindow is how far into a run a job may go red and still be worth
+// interrupting for rather than batching.
+//
+// The batching rule below exists because a run reported piecemeal is a run an
+// agent fixes piecemeal. The exception exists because the rule's cost is
+// latency, and latency is exactly what shuck is for: a lint job that fails
+// forty seconds in should not wait out a six-minute CodeQL run in the same
+// workflow. Sixty seconds is chosen to catch the failures that are cheap to
+// produce — compile errors, lint, formatting — and nothing that had to build
+// first.
+const fastFailWindow = 60 * time.Second
+
+// runStallAfter is the escape hatch on "wait for the run to finish".
+//
+// A required job that hangs, or one queued behind a busy runner pool, would
+// otherwise hold its run's failures forever — strictly worse than reporting
+// them late, because it reports them never. Past this, a run's known failures
+// go out and the event says what is still pending.
+const runStallAfter = 30 * time.Minute
+
+// runGroup is one workflow run's jobs on the current head commit, as a single
+// round saw them. Grouping is by run *attempt*, not by run: a re-run is a fresh
+// verdict on the same run id, and folding the two together would let an old
+// attempt's failures suppress a new attempt's.
+type runGroup struct {
+	RunID     int64
+	Attempt   int
+	Workflow  string
+	StartedAt time.Time
+	Failed    []model.JobResult
+	Cancelled []model.JobResult
+	Running   []model.RunningJob
 }
 
-// failureEvents drills the jobs that have newly gone red and turns each into an
-// event carrying its distilled failing steps. Only new failures are drilled:
-// downloading a log is the one genuinely expensive call in a round, and a job
-// that failed three polls ago has not changed its mind.
-func (p *poller) failureEvents(ctx context.Context, st *prState, pr model.PR, jobs []model.JobResult, now time.Time) []Event {
+// inFlight reports whether this run still has jobs to finish.
+func (g runGroup) inFlight() bool { return len(g.Running) > 0 }
+
+// stalled reports whether the run has been going long enough that waiting for
+// it is no longer the same as waiting a while.
+func (g runGroup) stalled(now time.Time) bool {
+	if g.StartedAt.IsZero() {
+		return false
+	}
+	return now.Sub(g.StartedAt) > runStallAfter
+}
+
+// groupRuns buckets a round's jobs by run attempt, in a stable order so two
+// runs finishing in the same round always produce their events in the same
+// sequence.
+func groupRuns(failed, cancelled []model.JobResult, running []model.RunningJob) []runGroup {
+	type key struct {
+		id      int64
+		attempt int
+	}
+	groups := map[key]*runGroup{}
+	at := func(k key, workflow string, started time.Time) *runGroup {
+		g, ok := groups[k]
+		if !ok {
+			g = &runGroup{RunID: k.id, Attempt: k.attempt, Workflow: workflow, StartedAt: started}
+			groups[k] = g
+		}
+		// Any member of the run can supply the details the others left blank.
+		if g.Workflow == "" {
+			g.Workflow = workflow
+		}
+		if g.StartedAt.IsZero() {
+			g.StartedAt = started
+		}
+		return g
+	}
+	for _, j := range failed {
+		g := at(key{j.RunID, j.RunAttempt}, j.WorkflowName, j.RunStartedAt)
+		g.Failed = append(g.Failed, j)
+	}
+	for _, j := range cancelled {
+		g := at(key{j.RunID, j.RunAttempt}, j.WorkflowName, j.RunStartedAt)
+		g.Cancelled = append(g.Cancelled, j)
+	}
+	for _, j := range running {
+		g := at(key{j.RunID, j.RunAttempt}, j.WorkflowName, j.RunStartedAt)
+		g.Running = append(g.Running, j)
+	}
+
+	out := make([]runGroup, 0, len(groups))
+	for _, g := range groups {
+		out = append(out, *g)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].RunID != out[j].RunID {
+			return out[i].RunID < out[j].RunID
+		}
+		return out[i].Attempt < out[j].Attempt
+	})
+	return out
+}
+
+// earlyFailure reports whether a job went red soon enough after its run started
+// to be worth reporting without waiting for the rest of the run.
+//
+// Unknown timings read as "not early", which costs promptness rather than
+// correctness: the failure still goes out when the run finishes.
+func earlyFailure(job model.JobResult) bool {
+	if job.RunStartedAt.IsZero() || job.CompletedAt.IsZero() {
+		return false
+	}
+	d := job.CompletedAt.Sub(job.RunStartedAt)
+	return d >= 0 && d <= fastFailWindow
+}
+
+// failureEvents turns a round's red jobs into events, one per workflow run
+// rather than one per job.
+//
+// A run is reported when it has finished, so an agent is handed everything that
+// went wrong in it at once instead of being pulled back three times for three
+// jobs of the same run. Two things override that wait: a job that failed inside
+// fastFailWindow goes out immediately, because the whole point of the monitor
+// is to be early, and a run past runStallAfter goes out because waiting for it
+// has stopped being a wait.
+//
+// Cancelled jobs never produce an event of their own. A cancellation is not a
+// verdict — most of them are fail-fast tearing down siblings of a job that
+// already failed, and reporting each one as its own red job (which is what
+// happened before) turned one failure into four events saying nothing. They are
+// carried as a note on the run's event instead, which is where they are actually
+// useful: knowing what got torn down tells you what has not been checked yet.
+//
+// Only new failures are drilled: downloading a log is the one genuinely
+// expensive call in a round, and a job that failed three polls ago has not
+// changed its mind.
+func (p *poller) failureEvents(ctx context.Context, st *prState, pr model.PR, failed, cancelled []model.JobResult, running []model.RunningJob, now time.Time) []Event {
 	reported := newStringSet(st.ReportedJobs, byJobKey)
 	var events []Event
 
-	for _, job := range jobs {
-		key := fmt.Sprintf("%d/%d", job.ID, job.RunAttempt)
-		if reported.has(key) {
+	for _, g := range groupRuns(failed, cancelled, running) {
+		hold := g.inFlight() && !g.stalled(now)
+
+		var fresh []model.JobResult
+		for _, job := range g.Failed {
+			key := fmt.Sprintf("%d/%d", job.ID, job.RunAttempt)
+			if reported.has(key) {
+				continue
+			}
+			if hold && !earlyFailure(job) {
+				continue
+			}
+			reported.add(key)
+			fresh = append(fresh, job)
+		}
+		if len(fresh) == 0 {
 			continue
 		}
-		reported.add(key)
 		st.ReportedJobs = reported.slice()
 		st.Verdict = "failed"
-
-		body := p.failureBody(ctx, st, job)
-		events = append(events, Event{
-			Time:   now,
-			Kind:   KindCIFailed,
-			Target: st.Target,
-			Title: fmt.Sprintf("%s %s on %s — %s",
-				job.Name, conclusionVerb(job.Conclusion), shortSHA(pr.HeadSHA), pr.Title),
-			Body: body,
-			URL:  jobURL(st.Owner, st.Repo, job),
-		})
+		events = append(events, p.runFailureEvent(ctx, st, pr, g, fresh, now))
 	}
 	return events
+}
+
+// runFailureEvent renders one run's newly-red jobs as a single event.
+func (p *poller) runFailureEvent(ctx context.Context, st *prState, pr model.PR, g runGroup, jobs []model.JobResult, now time.Time) Event {
+	var b strings.Builder
+	for i, job := range jobs {
+		if len(jobs) > 1 {
+			if i > 0 {
+				b.WriteString("\n")
+			}
+			fmt.Fprintf(&b, "▸ %s\n", job.Name)
+		}
+		b.WriteString(p.failureBody(ctx, st, job))
+		b.WriteString("\n")
+	}
+	if note := g.pendingNote(); note != "" {
+		fmt.Fprintf(&b, "\n%s\n", note)
+	}
+
+	return Event{
+		Time:   now,
+		Kind:   KindCIFailed,
+		Target: st.Target,
+		Title:  runFailureTitle(g, jobs, pr),
+		Body:   b.String(),
+		URL:    runFailureURL(st, g, jobs),
+	}
+}
+
+// runFailureTitle words the headline: which workflow, what went wrong in it,
+// and on which commit.
+func runFailureTitle(g runGroup, jobs []model.JobResult, pr model.PR) string {
+	what := fmt.Sprintf("%s failed", count(len(jobs), "job"))
+	if len(jobs) == 1 {
+		what = fmt.Sprintf("%s %s", jobs[0].Name, conclusionVerb(jobs[0].Conclusion))
+	}
+	prefix := ""
+	if g.Workflow != "" {
+		prefix = g.Workflow + " — "
+	}
+	return fmt.Sprintf("%s%s on %s — %s", prefix, what, shortSHA(pr.HeadSHA), pr.Title)
+}
+
+// runFailureURL points at the one job when there is only one, and at the run
+// when the event covers several.
+func runFailureURL(st *prState, g runGroup, jobs []model.JobResult) string {
+	if len(jobs) == 1 {
+		return jobURL(st.Owner, st.Repo, jobs[0])
+	}
+	if g.RunID != 0 {
+		return fmt.Sprintf("https://github.com/%s/%s/actions/runs/%d", st.Owner, st.Repo, g.RunID)
+	}
+	return prChecksURL(st.Owner, st.Repo, st.Number)
+}
+
+// pendingNote says what else the run did that the failures above do not cover:
+// what was cancelled, and what is still going. Both matter to an agent deciding
+// whether it has the whole picture — a cancelled job is a check that did not
+// happen, not one that passed.
+func (g runGroup) pendingNote() string {
+	var parts []string
+	if n := len(g.Cancelled); n > 0 {
+		parts = append(parts, fmt.Sprintf("%s cancelled (%s)", count(n, "job"), resultNames(g.Cancelled)))
+	}
+	if g.inFlight() {
+		parts = append(parts, fmt.Sprintf("%s still running (%s)",
+			count(len(g.Running), "job"), jobNames(g.Running)))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "Also in this run: " + strings.Join(parts, "; ") + "."
+}
+
+// resultNames lists job names for a note, capped the way jobNames caps them.
+func resultNames(jobs []model.JobResult) string {
+	const most = 3
+	names := make([]string, 0, len(jobs))
+	for _, j := range jobs {
+		names = append(names, j.Name)
+	}
+	sort.Strings(names)
+	if len(names) <= most {
+		return strings.Join(names, ", ")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(names[:most], ", "), len(names)-most)
 }
 
 // failureBody builds the text an agent is handed for a failed job.
@@ -455,18 +651,31 @@ func (p *poller) verdictEvent(st *prState, pr model.PR, failed, cancelled []mode
 			URL:  prChecksURL(st.Owner, st.Repo, st.Number),
 		}, true
 	}
-	if len(failed)+len(cancelled) > 0 || !st.Announced {
+	if len(failed) > 0 || !st.Announced {
 		// Either a failure was just reported (which set the verdict, so this
 		// is unreachable in practice) or we never saw checks for this commit.
 		return Event{}, false
 	}
 
+	// Cancellations do not make a commit red, and they do not make it green
+	// either: a cancelled job is a check that never ran. Saying "all checks
+	// passed" over the top of one would be the single most misleading thing the
+	// monitor could tell an agent about to merge, so the headline says what
+	// actually happened and names what to look at.
 	st.Verdict = "passed"
+	title := fmt.Sprintf("all checks passed on %s — %s", shortSHA(pr.HeadSHA), pr.Title)
+	body := ""
+	if n := len(cancelled); n > 0 {
+		title = fmt.Sprintf("checks finished on %s — nothing failed, %s cancelled — %s",
+			shortSHA(pr.HeadSHA), count(n, "job"), pr.Title)
+		body = fmt.Sprintf("Cancelled, so not verified: %s.\n", resultNames(cancelled))
+	}
 	return Event{
 		Time:   now,
 		Kind:   KindCIPassed,
 		Target: st.Target,
-		Title:  fmt.Sprintf("all checks passed on %s — %s", shortSHA(pr.HeadSHA), pr.Title),
+		Title:  title,
+		Body:   body,
 		URL:    prChecksURL(st.Owner, st.Repo, st.Number),
 	}, true
 }

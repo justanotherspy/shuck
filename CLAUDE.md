@@ -190,6 +190,27 @@ what changed as events.
   `gh.ReviewsFingerprint`; while it is unchanged the REST listings are never
   issued. A first sighting records high-water marks and reports nothing — a PR's
   existing history is not news.
+- **A run is reported when it is finished, not as it fails**: failures are
+  grouped by run *attempt* (`groupRuns`) and held until that run has no jobs
+  left in flight, so an agent is handed everything one workflow got wrong at
+  once instead of being pulled back three times for three jobs of the same run.
+  Batching is scoped to the run and not to the commit deliberately — a
+  six-minute CodeQL run is not a reason to sit on `ci.yml`'s failures for six
+  minutes. Two things override the wait: a job that went red inside
+  `fastFailWindow` (60s) reports immediately, because being early is the whole
+  point of the monitor and a lint failure should not queue behind a build; and a
+  run past `runStallAfter` (30m) reports what it has, because a wedged job that
+  holds its run's failures forever reports them never. Unknown timings read as
+  "not early" — that costs promptness, never accuracy. `ci.started` is retired:
+  a notification an agent can do nothing with is one it learns to ignore.
+- **Cancelled is neither failed nor passed**: a cancelled job never produces an
+  event of its own (it used to produce a `ci.failed` each, which turned one
+  fail-fast failure into four events saying nothing). It is carried as a note on
+  its run's failure event, and on the terminal verdict — where the headline stops
+  saying "all checks passed" and says what was cancelled instead. A cancelled
+  job is a check that did not run, and a false all-clear before a merge is the
+  worst thing the monitor could say. Cancellations on a superseded head need no
+  rule: a new head SHA resets the CI half of `prState` and they are never seen.
 - **The journal is the delivery contract**: events are appended to
   `~/.cache/shuck/monitor/events.jsonl` with per-consumer cursors in
   `cursors.json`, so a daemon restart neither replays history nor loses a

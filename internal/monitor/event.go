@@ -12,15 +12,21 @@ import (
 type Kind string
 
 const (
-	// KindCIFailed is one job that went red. Its body is the distilled
-	// failing-step output — the same excerpt `shuck logs` would print.
+	// KindCIFailed is one workflow run's red jobs. Its body is the distilled
+	// failing-step output — the same excerpt `shuck logs` would print — for
+	// every job of that run that went red, plus a note of what the run
+	// cancelled or is still running.
 	KindCIFailed Kind = "ci.failed"
-	// KindCIPassed is every check on a head commit reaching a green terminal
-	// state. It fires once per commit, and it is the event that closes the
-	// push-watch-fix loop.
+	// KindCIPassed is every check on a head commit reaching a terminal state
+	// with nothing red. It fires once per commit, and it is the event that
+	// closes the push-watch-fix loop. A commit whose checks finished with
+	// cancellations arrives here too, saying so — cancelled is not failed, but
+	// it is not verified either.
 	KindCIPassed Kind = "ci.passed"
-	// KindCIStarted is the first sighting of checks for a new head commit.
-	// It exists so an agent that just pushed knows its push registered.
+	// KindCIStarted is retired: the monitor no longer announces that checks
+	// began, because a notification an agent can do nothing with is a
+	// notification it learns to ignore. The constant remains so a journal
+	// written by an older daemon still names what it holds.
 	KindCIStarted Kind = "ci.started"
 	// KindReviewComment is a new inline review comment, distilled with its
 	// diff hunk and the surrounding lines of the file at the PR head.

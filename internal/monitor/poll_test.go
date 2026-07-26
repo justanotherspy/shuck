@@ -95,10 +95,14 @@ func TestPollNewCommitResetsCIState(t *testing.T) {
 
 	st, events := testPoller(c).Poll(context.Background(), before, now)
 
-	if e := hasKind(events, KindCIStarted); e == nil {
-		t.Fatalf("a new head commit with running jobs should announce itself, got %v", kinds(events))
-	} else if !strings.Contains(e.Title, "newsha0") {
-		t.Errorf("title %q should name the new head commit", e.Title)
+	// Checks in flight are not news — nothing an agent can act on has happened
+	// yet — but the round must record that it saw them, or the pass that follows
+	// can never be inferred.
+	if len(events) != 0 {
+		t.Errorf("a commit with checks merely running produced events: %v", kinds(events))
+	}
+	if !st.Announced {
+		t.Error("the round did not record that checks were seen in flight")
 	}
 	if st.Verdict != "" {
 		t.Errorf("Verdict = %q, want it cleared by the new commit", st.Verdict)
@@ -111,22 +115,24 @@ func TestPollNewCommitResetsCIState(t *testing.T) {
 	}
 }
 
-// TestPollCIStartedIsAnnouncedOnce guards the noise budget: a run that takes
-// ten polls to finish must say "checks running" once, not ten times.
-func TestPollCIStartedIsAnnouncedOnce(t *testing.T) {
+// TestPollSaysNothingWhileChecksRun is the noise budget. A run that takes ten
+// polls to finish must produce nothing at all until it has something to say:
+// "checks running" was a notification an agent could do nothing with, and the
+// reliable effect of those is that the ones that matter stop being read.
+func TestPollSaysNothingWhileChecksRun(t *testing.T) {
 	c := newFakeClient()
 	c.pr = openPR("newsha0000")
 	c.fingerprint = "fp-1"
 	c.running = []model.RunningJob{{Name: "test"}}
 	p := testPoller(c)
 
-	st, events := p.Poll(context.Background(), baseState(), now)
-	if hasKind(events, KindCIStarted) == nil {
-		t.Fatal("first sighting should announce")
-	}
-	_, events = p.Poll(context.Background(), st, now.Add(time.Minute))
-	if hasKind(events, KindCIStarted) != nil {
-		t.Errorf("second poll announced again: %v", kinds(events))
+	st := baseState()
+	for i := range 10 {
+		var events []Event
+		st, events = p.Poll(context.Background(), st, now.Add(time.Duration(i)*time.Minute))
+		if len(events) != 0 {
+			t.Fatalf("poll %d spoke while checks were still running: %v", i, kinds(events))
+		}
 	}
 }
 
@@ -322,10 +328,10 @@ func TestPollGreenVerdictClosesTheLoop(t *testing.T) {
 	c.running = []model.RunningJob{{Name: "test"}}
 	p := testPoller(c)
 
-	// The push registers: checks are in flight.
+	// The push registers: checks are in flight, silently.
 	st, events := p.Poll(context.Background(), baseState(), now)
-	if hasKind(events, KindCIStarted) == nil {
-		t.Fatalf("expected the run to announce itself, got %v", kinds(events))
+	if len(events) != 0 {
+		t.Fatalf("checks starting is not news, got %v", kinds(events))
 	}
 
 	// They finish, and none of them failed.

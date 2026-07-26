@@ -41,9 +41,8 @@ It emits **events**, each with a one-line title and an agent-ready body:
 
 | Kind | What happened | Body |
 | --- | --- | --- |
-| `ci.failed` | a job went red | the log itself: whole when it is under 8 KiB, the distilled failing steps when it is longer — plus where the raw log was cached |
-| `ci.passed` | every check on the head commit finished green (once per commit) | — |
-| `ci.started` | checks registered for a new head commit | — |
+| `ci.failed` | a workflow run finished with red jobs | every failed job's log: whole when it is under 8 KiB, the distilled failing steps when it is longer — plus where the raw log was cached, and a note of what that run cancelled or is still running |
+| `ci.passed` | every check on the head commit reached a terminal state with nothing red (once per commit) | the jobs that were cancelled, if any — they were not verified |
 | `review.comment` | a new inline review comment | the diff hunk, ±10 lines of the file at the PR head, and earlier thread comments when it is a reply |
 | `review.submitted` | a review was submitted: approved, changes requested, or commented | the review and its inline comments |
 | `pr.state` | the PR was opened, merged, closed, or marked ready for review | — |
@@ -83,6 +82,21 @@ more turn. Approvals, stale pins and failed polls are informational: they reach
 you but never hold a turn open. So **seeing a `ci.failed` notification is
 delivery, not acknowledgement** — finish without acting on it and `Stop` will
 hand it straight back.
+
+**Nothing arrives while checks are merely running.** A run is reported once it
+has finished, so what you get is one event carrying everything that workflow got
+wrong, not one event per job. Two exceptions: a job that goes red within the
+first minute of its run is sent straight away (with a note that the run is
+unfinished), because a lint failure should not queue behind a build; and a run
+still going after thirty minutes reports what is known rather than nothing.
+Batching is per workflow run, so a slow unrelated workflow never sits on
+another's failures.
+
+**Cancelled is not failed, and not passed either.** Cancelled jobs never arrive
+as their own event — they are a note on the run's failure, and on the final
+verdict, where the headline says what was cancelled instead of "all checks
+passed". Treat them as checks that did not run: a cancelled job has told you
+nothing about whether that work is sound.
 
 Recognise the wrapper on what you are handed: it is monitor output, not a
 message from the user — act on it as part of the task in hand.
