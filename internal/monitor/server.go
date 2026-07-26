@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"slices"
 	"sort"
 	"time"
 )
@@ -276,6 +277,7 @@ func (d *Daemon) handleUnwatch(req Request) Response {
 		return errResponse(fmt.Errorf("no watch %q", req.ID))
 	}
 	d.pruneTargets(time.Now())
+	d.prunePins()
 	return Response{OK: true, Message: "stopped watching " + req.ID}
 }
 
@@ -285,7 +287,13 @@ func (d *Daemon) handleEvents(ctx context.Context, req Request) Response {
 	d.mu.Unlock()
 
 	if req.All {
-		return Response{OK: true, Events: d.journal.Since(0, req.Limit), Cursor: d.journal.Latest()}
+		match := d.scopeFilter(req.Scope)
+		scan := req.Limit
+		if match != nil {
+			scan = 0
+		}
+		events := scoped(d.journal.Since(0, scan), match, req.Limit)
+		return Response{OK: true, Events: events, Cursor: d.journal.Latest()}
 	}
 
 	// Take the wake channel BEFORE looking for events. The other order loses
@@ -320,24 +328,172 @@ func (d *Daemon) handleEvents(ctx context.Context, req Request) Response {
 }
 
 // drain reads a consumer's pending events, honoring an explicit Since that
-// overrides the stored cursor and a Peek that leaves the cursor alone.
+// overrides the stored cursor, a Peek that leaves the cursor alone, and a Scope
+// that narrows the batch to the asking session's own watches.
+//
+// Scoping is applied strictly after the journal has been read, and never
+// before, because the read is what moves the cursor: journal.Drain assigns the
+// mark from the last event of the batch it produced, under its own lock, before
+// it returns, and the Since branch seeks to the last of the raw batch. Either
+// way the cursor lands past everything *scanned* rather than everything
+// *returned*, so a filtered-out event is behind the cursor and can never come
+// round again — which is what keeps a narrow scope from becoming an infinite
+// redelivery loop.
+//
+// A scoped read also scans without the caller's cap and applies that cap to
+// what survives the filter. The journal keeps the *newest* of what it scans
+// when a read overflows, so cap-then-filter would let three quiet worktrees
+// spend a stream's whole twenty-event batch and hand this session "nothing new"
+// while its own failure sat one position further back. Widening the scan costs
+// no delivery, because the cursor follows the scan either way.
 func (d *Daemon) drain(req Request) []Event {
+	match := d.scopeFilter(req.Scope)
+	scan := req.Limit
+	if match != nil {
+		scan = 0
+	}
+
 	if req.Peek {
-		return d.journal.Since(d.journal.Cursor(req.Consumer, req.Since), req.Limit)
+		return scoped(d.journal.Since(d.journal.Cursor(req.Consumer, req.Since), scan), match, req.Limit)
 	}
 	if req.Since > 0 {
-		events := d.journal.Since(req.Since, req.Limit)
+		events := d.journal.Since(req.Since, scan)
 		if req.Consumer != "" && len(events) > 0 {
 			d.journal.Seek(req.Consumer, events[len(events)-1].ID)
 		}
+		return scoped(events, match, req.Limit)
+	}
+	return scoped(d.journal.Drain(req.Consumer, scan), match, req.Limit)
+}
+
+// scoped drops the events a scoped reader does not own and then applies its
+// limit, keeping the newest — the same choice the journal makes when a read
+// overflows, and for the same reason: a consumer that has fallen behind wants
+// the current state of the world, not the start of a backlog. A nil predicate
+// is the unscoped case, where the journal has already applied the limit and
+// this is a pass-through.
+func scoped(events []Event, match func(Event) bool, limit int) []Event {
+	if match == nil {
 		return events
 	}
-	return d.journal.Drain(req.Consumer, req.Limit)
+	var out []Event
+	for _, e := range events {
+		if match(e) {
+			out = append(out, e)
+		}
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[len(out)-limit:]
+	}
+	return out
+}
+
+// scopeFilter builds the predicate that decides whether an event belongs to the
+// session working in scope, or returns nil when there is no scope to filter by.
+//
+// An event names its subject in one of four shapes — "owner/repo#42" for
+// everything the poller produces, "owner/repo" for a pin finding, the working
+// tree's own path for a note about a tree that will not resolve, and "" when
+// even that is unknown — so the accept set holds a watch's pull request, its
+// repository and its path. Two of the eleven producers also stamp the watch id,
+// which both survives a target the watch has since moved off and settles
+// ownership outright: an event stamped with a watch this scope does not own
+// belongs to the scope that does, whatever its target says.
+//
+// The unrecognized cases fail toward delivery: an event with no target and no
+// watch, and an event whose target no watch claims — a PR a tree watch was
+// following a second ago, say. What excludes an event is another scope claiming
+// it, never this scope failing to recognize it, because a watch that has just
+// moved must not take its session's last failure with it.
+func (d *Daemon) scopeFilter(scope string) func(Event) bool {
+	if scope == "" {
+		return nil
+	}
+	resolved := resolveTree(scope)
+
+	d.mu.Lock()
+	watches := d.watches.List()
+	d.mu.Unlock()
+
+	mine := map[string]bool{}
+	ids := map[string]bool{}
+	known := map[string]bool{}
+	claimed := map[string]bool{}
+	for _, w := range watches {
+		inScope := w.inScope(resolved)
+		known[w.ID] = true
+		if inScope {
+			ids[w.ID] = true
+		}
+		for _, key := range watchKeys(w) {
+			claimed[key] = true
+			if inScope {
+				mine[key] = true
+			}
+		}
+	}
+	return func(e Event) bool {
+		switch {
+		case e.Watch != "" && ids[e.Watch]:
+			return true
+		case e.Watch != "" && known[e.Watch]:
+			// Stamped with a watch that exists and is somebody else's. The id
+			// is the most specific thing an event can carry, so it settles the
+			// question here rather than falling through to a target that may be
+			// empty or shared — which is how a note about another session's
+			// unreadable tree used to reach every session on the machine.
+			return false
+		case e.Target == "":
+			return true
+		case mine[e.Target]:
+			return true
+		default:
+			return !claimed[e.Target]
+		}
+	}
+}
+
+// watchKeys are the strings an event's Target can carry for one watch: the pull
+// request it currently resolves to, the repository a pin finding belongs to,
+// and the working tree itself, which is what the notes about a tree that cannot
+// be read name.
+//
+// The repository key is what carries a pin finding to every worktree of a
+// checkout. Pin findings are deduplicated per repository — the second worktree
+// of a checkout has nothing new to say about the same file and line — so the
+// one event has to belong to all of them, or the worktree that did not scan
+// first would never hear it.
+//
+// That key is broad by construction: every worktree of one checkout answers to
+// it. What keeps it from fanning anything *else* out that widely is a rule the
+// producers hold to rather than a test made here — a repository is the subject
+// of a pin finding and of nothing else. Everything the poller reports names the
+// pull request; the notes about a watch that will not resolve name the working
+// tree and stamp the watch id (see setNote and noteTarget), precisely so that
+// "no open PR for main" is not addressed to every worktree of the repository it
+// happens to be in. TestWatchNotesNameTheTreeTheyAreAbout is where that rule is
+// held to; a new event kind that names a repository has to mean it.
+func watchKeys(w Watch) []string {
+	var keys []string
+	if t := w.Target(); t != "" {
+		keys = append(keys, t)
+	}
+	if w.Kind != WatchTree {
+		return keys
+	}
+	// A pin finding is a property of a checkout, and only a tree watch has one,
+	// so only a tree watch claims the repository-wide key.
+	for _, key := range []string{pinRepoKey(w), w.Path} {
+		if key != "" && !slices.Contains(keys, key) {
+			keys = append(keys, key)
+		}
+	}
+	return keys
 }
 
 func (d *Daemon) handleSeek(req Request) Response {
 	to := req.Since
-	if to == 0 {
+	if to == 0 && !req.Exact {
 		to = d.journal.Latest()
 	}
 	if req.IfNew {

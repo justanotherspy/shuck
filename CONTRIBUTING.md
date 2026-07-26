@@ -99,13 +99,14 @@ GoReleaser create the release itself, which loses the curated notes.
 needs means updating, in the same PR:
 
 - `plugins/shuck/.claude-plugin/plugin.json` — the plugin's own `version`.
-- `plugins/shuck/scripts/check-prereqs.sh` — `MIN_VERSION`, the oldest `shuck`
+- `plugins/shuck/scripts/monitor-stream.sh` — `MIN_VERSION`, the oldest `shuck`
   binary whose features the plugin relies on: its hooks (`shuck monitor hook`)
-  and its monitor (`shuck monitor stream`). The `SessionStart` hook compares the
-  installed binary against it and says so when it falls short. An older binary
-  fails the monitor's command silently — a monitor only speaks through stdout,
-  and a usage error goes to stderr — so this warning is the only thing that
-  tells a user why their notifications never arrived.
+  and its monitor (`shuck monitor stream`). The plugin's monitor shim compares
+  the installed binary against it before starting the stream, and says so on
+  stdout when it falls short. An older binary fails the monitor's command
+  silently — a monitor only speaks through stdout, and a usage error goes to
+  stderr — so this warning is the only thing that tells a user why their
+  notifications never arrived.
 
 The marketplace serves plugin content from the default branch while users
 install the binary from a release, so those two can drift apart in a way nothing

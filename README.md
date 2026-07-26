@@ -35,12 +35,13 @@ shuck monitor watch    # follow this working tree (starts the daemon if needed)
 shuck monitor events   # hand over what has happened since you last looked
 ```
 
-In [Claude Code](#claude-code-plugin) you do not run any of that. The plugin
-registers the session's working tree on start and delivers each new CI failure,
-review comment, and stale action pin as it happens — as a notification where the
-plugin's monitor can run, and into the conversation through its hooks everywhere
-else — with the failing step's logs, or the comment's diff hunk, already in the
-event. See [Background monitor](#background-monitor).
+In [Claude Code](#claude-code-plugin) you do not run any of that. The plugin's
+own monitor registers the session's working tree and delivers each new CI
+failure, review comment, and stale action pin as a notification when it happens
+— with the failing step's logs, or the comment's diff hunk, already in the
+event. Anything the tree cannot imply — another checkout's PR, one you are
+waiting on — goes on the list with `shuck monitor watch <target>`. See
+[Background monitor](#background-monitor).
 
 The command set — the monitor above, and everything else one shot, no daemon:
 
@@ -194,7 +195,14 @@ shuck setup                                     # install the Claude Code skill 
 shuck version [--check] | shuck upgrade         # version / self-update
 ```
 
-Authentication uses `GITHUB_TOKEN` (or `GH_TOKEN`), or pass `--token`. A local
+Authentication uses `GITHUB_TOKEN` (or `GH_TOKEN`), `--token`, or — last — a
+logged-in `gh`, whose token is read with `gh auth token --hostname github.com`
+(shuck talks to github.com and nothing else, so the host is named rather than
+left to gh's default — an enterprise credential is not one to send there). That
+fallback exists
+because an environment variable only reaches a process that was started with it,
+so a long-running session (and the monitor it starts) can never pick up a token
+exported after the fact. A local
 cache under `~/.cache/shuck` makes repeat runs cheap — on the same commit, logs
 already downloaded are re-parsed locally instead of re-fetched.
 
@@ -286,8 +294,10 @@ thing on stdout. Combine with `--exit-code` for a scriptable verdict
 shuck --watch --watch-timeout 30m --json <pr-url>
 ```
 
-For a loop you don't have to sit in front of, use the
-[background monitor](#background-monitor) instead.
+This is for a shell script or a CI job — something with nobody to notify. Any
+loop you would otherwise sit in front of belongs to the
+[background monitor](#background-monitor), which tells you instead of making you
+hold a terminal open.
 
 ### JSON output
 
@@ -400,40 +410,35 @@ Needs a token with `security_events` (or `repo`) scope for most sources.
 ## Claude Code plugin
 
 shuck ships as a [Claude Code](https://claude.com/claude-code) plugin: a
-`/shuck` skill, a plugin monitor that streams the background monitor's events
-into the session, and the hooks that do the same job wherever that monitor
-cannot run. Install the `shuck` binary first (the plugin runs it from your
-`PATH`), then:
+`/shuck` skill, and a plugin monitor that streams the background monitor's
+events into the session. Install the `shuck` binary first (the plugin runs it
+from your `PATH`), then:
 
 ```
 /plugin marketplace add justanotherspy/claude-plugins
 /plugin install shuck@justanotherspy
 ```
 
-There is no polling and no tool call either way. What differs is only how the
-events arrive.
+**The plugin monitor is the channel.** Claude Code starts `shuck monitor stream`
+for the lifetime of the session; it registers the session's working tree and
+prints each new event, and every line it prints reaches the session as a
+notification. There is no polling and no tool call. A source the working tree
+cannot imply is added from the session with `shuck monitor watch <target>` and
+retired with `shuck monitor unwatch`, and its events arrive on the same stream.
 
-**The plugin monitor is the primary channel.** Claude Code starts
-`shuck monitor stream` for the lifetime of the session; it registers the
-session's working tree and prints each new event, and every line it prints
-reaches the session as a notification. Plugin monitors are experimental: they
-run only in interactive CLI sessions, and a host without the Monitor tool skips
-them without saying so. That is why the hooks stay — they are the fallback, and
-`Stop` is the finish gate in both worlds:
+Two hooks sit beside the stream, and neither of them delivers — each does
+something a monitor process structurally cannot:
 
-| Hook | What it does |
-| --- | --- |
-| `SessionStart` | Checks the binary and token, registers the session's working tree, and fast-forwards the session's cursor so it hears what happens next, not the last hour of history. Says where events will arrive: as notifications when a stream is already following this tree, in the conversation otherwise. |
-| `UserPromptSubmit` | Delivers what is new as a `<shuck-monitor>` block — unless a live stream already serves this working tree, in which case it delivers nothing rather than say a second time what the notification just said. It consumes nothing when it stands down, so the session's own cursor keeps every event. |
-| `PostToolUse` (Bash) | After a `git push` (or `gh pr create` / `gh run rerun` / …) asks the monitor to re-check now instead of at the next interval. |
-| `Stop` | Hands the batch over and asks for one more turn when something in it is actionable: red CI, or a reviewer's comment or change request. An approval, a stale pin, and a failed poll are informational — they still reach the session, but never hold a turn open. It reads the session's own cursor, which the stream never touches, so "do not finish on a red build" holds whether the stream is running, dead, or never started. |
-| `SessionEnd` | Retires the session's cursor. |
+| Hook | What it does | Why a monitor cannot |
+| --- | --- | --- |
+| `PostToolUse` (Bash) | After a `git push` (or `gh pr create` / `gh run rerun` / …) asks the monitor to re-check now instead of at the next interval. | A separate process cannot see the session's tool calls; without this the push waits out an interval. |
+| `Stop` | Hands the batch over and asks for one more turn when something in it is actionable: red CI, or a reviewer's comment or change request. An approval, a stale pin, and a failed poll are informational — they still reach the session, but never hold a turn open. | A notification tells an agent; only a hook can stop it finishing on a red build. It reads the session's own cursor, which the stream never touches, so the gate holds whether the stream is running, dead, or never started. |
 
 All the logic lives in the binary (`shuck monitor stream` and
 `shuck monitor hook <event>`); the shell shims only exist so a session without
-shuck installed degrades to silence. Every path exits 0 — a background
-convenience must never be why a prompt is rejected, and a stack trace in a
-notification is worse than no notification. Opt out with
+shuck installed degrades to one line saying so. Every path exits 0 — a
+background convenience must never be why a prompt is rejected, and a stack trace
+in a notification is worse than no notification. Opt out with
 `SHUCK_MONITOR_DISABLE=1`, or just the `Stop` hook with
 `SHUCK_MONITOR_NO_STOP=1`. The stream reads `SHUCK_MONITOR_DISABLE` once, when
 it starts, so exporting it mid-session stops the hooks but not a stream that is

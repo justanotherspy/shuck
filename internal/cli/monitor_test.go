@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -240,15 +241,49 @@ func TestMonitorWatchNeedsAToken(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GH_TOKEN", "")
 
-	// The daemon a client starts inherits this environment, so a missing token
-	// is reported here — in front of the person who can fix it — rather than
-	// silently inside a background process.
+	// With nothing listening, this command has to start the daemon, and the
+	// daemon it starts inherits this environment — so a missing token is
+	// reported here, in front of the person who can fix it, rather than
+	// silently inside a background process. It is also reported in place of
+	// the connection failure, because it is the half that can be acted on.
 	code, _, stderr := runCLI("monitor", "watch", "o/r#1")
 	if code != 2 {
 		t.Errorf("exit = %d, want 2", code)
 	}
 	if !strings.Contains(stderr, "no GitHub token") {
 		t.Errorf("stderr = %q, want the missing token named", stderr)
+	}
+}
+
+// TestMonitorWatchNeedsNoTokenWhenADaemonIsRunning is the other half of that
+// rule, and a bug that was observed rather than imagined: a running daemon
+// polls with the token it was started with, so a client that only wants to
+// register a watch needs no credential of its own. Demanding one refused the
+// registration while a perfectly healthy monitor was polling GitHub.
+func TestMonitorWatchNeedsNoTokenWhenADaemonIsRunning(t *testing.T) {
+	d := startFakeDaemon(t, func(req monitor.Request) monitor.Response {
+		stored := *req.Watch
+		stored.ID = "pr:o/r#1"
+		return monitor.Response{OK: true, Watch: &stored}
+	})
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	code, stdout, stderr := runCLI("monitor", "watch", "o/r#1")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "watching") {
+		t.Errorf("stdout = %q, want the registration confirmed", stdout)
+	}
+	if n := len(d.seen()); n != 1 {
+		t.Errorf("made %d calls, want the one watch", n)
+	}
+	// Nothing about the client's own credentials reaches a daemon that is
+	// already running; asserting it stayed empty is what keeps a future change
+	// from quietly making the token load-bearing here again.
+	if got := d.seen()[0].Op; got != monitor.OpWatch {
+		t.Errorf("op = %q, want %q", got, monitor.OpWatch)
 	}
 }
 
@@ -1106,6 +1141,30 @@ func TestMonitorStreamRespectsTheGlobalOptOut(t *testing.T) {
 	}
 }
 
+// TestMonitorStreamNeedsNoTokenWhenADaemonIsRunning is the failure this change
+// was written for: a session's plugin monitor stood down saying "no GitHub
+// token found" while the daemon it was about to connect to was polling GitHub
+// quite happily. The daemon holds the credential; the stream only reads from
+// it, and a stand-down costs the session every notification it would have had.
+func TestMonitorStreamNeedsNoTokenWhenADaemonIsRunning(t *testing.T) {
+	streamDaemon(t, []monitor.Event{
+		{ID: 1, Kind: monitor.KindCIFailed, Target: "o/r#7", Title: "build failed", Body: "boom"},
+	})
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+
+	code, stdout, stderr := runCLI("monitor", "stream")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	}
+	if strings.Contains(stdout, "no GitHub token") {
+		t.Errorf("the stream stood down over a token the daemon already has:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "build failed") {
+		t.Errorf("the event never reached the session:\n%s", stdout)
+	}
+}
+
 // TestMonitorStreamStandsDownOnAStartupFailure covers every way the command can
 // fail before it has anything to stream. Each one is a sentence and exit 0: a
 // notification is no place for a stack trace, and a session whose stream never
@@ -1154,8 +1213,8 @@ func TestMonitorStreamStandsDownOnAStartupFailure(t *testing.T) {
 			if !strings.Contains(stdout, tt.want) {
 				t.Errorf("stdout = %q, want it to name the problem (%q)", stdout, tt.want)
 			}
-			if !strings.Contains(stdout, "hooks") {
-				t.Errorf("stdout = %q, want it to say what still delivers", stdout)
+			if !strings.Contains(stdout, "shuck logs") {
+				t.Errorf("stdout = %q, want it to say what to do instead", stdout)
 			}
 			if names := streamMarkers(t); len(names) != 0 {
 				t.Errorf("a stream that never started claimed %v, which would silence the hooks as well", names)
@@ -1599,5 +1658,117 @@ func TestEventsWithinStopsOnInterrupt(t *testing.T) {
 	}
 	if n := len(d.seen()); n != 1 {
 		t.Errorf("made %d reads, want 1 — an interrupted wait must not re-ask", n)
+	}
+}
+
+// TestMonitorStreamRecordsWhereTheSessionBegan is the stream's half of the
+// contract the Stop hook depends on.
+//
+// No hook runs at session start any more, so the first one to see a session id
+// can be an hour into the conversation — and a cursor seeded *then* steps over
+// whatever landed during the first turn, which is precisely what the Stop gate
+// exists to catch. The stream is started and killed with the session, so where
+// it began reading is where the session began; recording that on its marker is
+// the only durable trace of the moment, and the hooks read it back through
+// monitor.StreamOrigin.
+//
+// The marker is read while the stream is still live, since it retires it on the
+// way out.
+func TestMonitorStreamRecordsWhereTheSessionBegan(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "test-token")
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var (
+		mu     sync.Mutex
+		origin uint64
+		known  bool
+	)
+	startFakeDaemon(t, func(req monitor.Request) monitor.Response {
+		switch req.Op {
+		case monitor.OpWatch:
+			stored := *req.Watch
+			return monitor.Response{OK: true, Watch: &stored}
+		case monitor.OpSeek:
+			// The journal was at 41 when this session opened.
+			return monitor.Response{OK: true, Cursor: 41}
+		default:
+			mu.Lock()
+			origin, known = monitor.StreamOrigin(cwd)
+			mu.Unlock()
+			return monitor.Response{Error: "the monitor went away"}
+		}
+	})
+
+	if code, _, stderr := runCLI("monitor", "stream"); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %q", code, stderr)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !known {
+		t.Fatal("the stream recorded no origin; a hook seeding this session later would seed it to the present and lose the turn's own failure")
+	}
+	if origin != 41 {
+		t.Errorf("origin = %d, want the cursor the stream started from (41)", origin)
+	}
+}
+
+// TestMonitorStreamScopesItsReadsToThisTree pins the client half of per-session
+// scoping. The daemon filters by Request.Scope and a stream that sends none is
+// handed every watch's events — which is exactly the reported defect: a session
+// in one worktree receiving three other worktrees' CI and pin findings. Nothing
+// the stream prints reveals whether the field was sent, so only the request log
+// can tell.
+func TestMonitorStreamScopesItsReadsToThisTree(t *testing.T) {
+	d := streamDaemon(t)
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if code, _, stderr := runCLI("monitor", "stream"); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+
+	reads := 0
+	for _, r := range d.seen() {
+		if r.Op != monitor.OpEvents {
+			continue
+		}
+		reads++
+		if r.Scope != cwd {
+			t.Errorf("scope = %q, want this working tree %q", r.Scope, cwd)
+		}
+	}
+	if reads == 0 {
+		t.Fatal("the stream made no reads to check")
+	}
+	// The watch has to carry the same tree, or the daemon has nothing to match
+	// the scope against.
+	if w := d.seen()[0].Watch; w == nil || !slices.Contains(w.Scopes, cwd) {
+		t.Errorf("registered %+v, want it scoped to %q", w, cwd)
+	}
+}
+
+// TestMonitorEventsSendsNoScope is the other half of the same contract, and it
+// is deliberate rather than an omission: `shuck monitor events` is how somebody
+// debugging the monitor sees the whole feed, so it must stay unfiltered.
+func TestMonitorEventsSendsNoScope(t *testing.T) {
+	d := startFakeDaemon(t, func(monitor.Request) monitor.Response {
+		return monitor.Response{OK: true, Cursor: 1}
+	})
+
+	if code, _, stderr := runCLI("monitor", "events"); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr)
+	}
+	reqs := d.seen()
+	if len(reqs) != 1 {
+		t.Fatalf("made %d calls, want exactly 1", len(reqs))
+	}
+	if reqs[0].Scope != "" {
+		t.Errorf("scope = %q, want the CLI read left unfiltered", reqs[0].Scope)
 	}
 }

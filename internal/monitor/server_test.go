@@ -844,3 +844,175 @@ func TestOpsThatRefreshWatches(t *testing.T) {
 		})
 	}
 }
+
+// scopedDaemon builds a daemon watching two working trees for two different
+// sessions, plus one watch a daemon of an older build left behind with no scope
+// at all. It returns the two tree paths.
+func scopedDaemon(t *testing.T) (d *Daemon, mine, theirs string) {
+	t.Helper()
+	d, _ = newTestDaemon(t, newFakeClient())
+	mine, theirs = t.TempDir(), t.TempDir()
+
+	d.watches.Add(Watch{
+		ID: TreeWatchID(mine), Kind: WatchTree, Path: mine,
+		Owner: "o", Repo: "r", Number: 1, Scopes: []string{mine},
+	})
+	d.watches.Add(Watch{
+		ID: TreeWatchID(theirs), Kind: WatchTree, Path: theirs,
+		Owner: "o", Repo: "r", Number: 2, Scopes: []string{theirs},
+	})
+	d.watches.Add(Watch{ID: PRWatchID("o", "r", 3), Kind: WatchPR, Owner: "o", Repo: "r", Number: 3})
+	return d, mine, theirs
+}
+
+// TestDaemonDrainScopesEventsToTheSession is the defect this scoping exists
+// for: two sessions in two worktrees each received the other's CI, because the
+// journal is global and the cursor was the only thing standing between them.
+func TestDaemonDrainScopesEventsToTheSession(t *testing.T) {
+	tests := []struct {
+		name  string
+		scope func(mine, theirs string) string
+		want  []string
+	}{
+		{
+			name:  "a session sees its own tree's events and nobody else's",
+			scope: func(mine, _ string) string { return mine },
+			// The unscoped watch and the orphan are the fail-toward-delivery
+			// cases. The other tree's CI and pins are what must not be here —
+			// and neither is its note: an event stamped with another watch's id
+			// is that session's news even though it names no target, and a note
+			// about a tree this session has never heard of is the cross-talk
+			// this scoping exists to end.
+			want: []string{"my ci", "a pin", "my pin", "legacy", "an orphan"},
+		},
+		{
+			name:  "and the other session sees the mirror image",
+			scope: func(_, theirs string) string { return theirs },
+			want:  []string{"their ci", "a pin", "legacy", "a note", "an orphan"},
+		},
+		{
+			// `shuck monitor events` sets no scope, which is what keeps it a
+			// view of the whole feed for anyone debugging the monitor itself.
+			name:  "an empty scope filters nothing",
+			scope: func(string, string) string { return "" },
+			want: []string{
+				"my ci", "their ci", "a pin", "my pin",
+				"legacy", "a note", "an orphan",
+			},
+		},
+		{
+			name:  "a tree nothing is watching gets only what nobody claims",
+			scope: func(string, string) string { return t.TempDir() },
+			want:  []string{"legacy", "an orphan"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, mine, theirs := scopedDaemon(t)
+			publishScopedEvents(d, mine, theirs)
+			got := titles(d.drain(Request{Consumer: "sess", Scope: tt.scope(mine, theirs)}))
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("drain returned %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// scopedEvents is the fixture the scoping table reads: one of everything an
+// event's Target can be. Published fresh per subtest so a consuming read in one
+// case cannot change another's.
+func publishScopedEvents(d *Daemon, mine, theirs string) {
+	d.publish([]Event{
+		{Kind: KindCIFailed, Target: "o/r#1", Title: "my ci"},
+		{Kind: KindCIFailed, Target: "o/r#2", Title: "their ci"},
+		// A pin finding names the repository, not a pull request and not the
+		// worktree that happened to scan it: it is deduplicated per repository,
+		// so the one event is the only one either worktree will ever get, and
+		// both of them want it.
+		{Kind: KindPinsStale, Target: "o/r", Title: "a pin"},
+		// The checkout with no GitHub remote to name falls back to the tree,
+		// and is one session's alone — as is a pin event a daemon of an older
+		// build left in the journal.
+		{Kind: KindPinsStale, Target: mine, Title: "my pin"},
+		// A watch persisted before scoping existed: it belongs to everyone, or
+		// its events would vanish from every feed until it expired.
+		{Kind: KindCIFailed, Target: "o/r#3", Title: "legacy"},
+		// A note about a tree that would not resolve names no target at all.
+		{Kind: KindTarget, Watch: TreeWatchID(theirs), Title: "a note"},
+		// And a target no watch claims any more — a branch somebody switched
+		// off a second ago. Delivered too widely rather than lost.
+		{Kind: KindCIFailed, Target: "o/r#404", Title: "an orphan"},
+	})
+}
+
+// TestDaemonScopedDrainAdvancesPastWhatItFiltered is the invariant a filtered
+// feed lives or dies by. The cursor follows what was *scanned*, so an event
+// this session does not own is behind the cursor the moment it is skipped: ask
+// again and it must neither come back nor block what is behind it.
+func TestDaemonScopedDrainAdvancesPastWhatItFiltered(t *testing.T) {
+	d, mine, theirs := scopedDaemon(t)
+	d.publish([]Event{
+		{Kind: KindCIFailed, Target: "o/r#2", Title: "their first"},
+		{Kind: KindPinsStale, Target: theirs, Title: "their pin"},
+	})
+
+	req := Request{Consumer: "sess", Scope: mine}
+	if got := titles(d.drain(req)); len(got) != 0 {
+		t.Fatalf("drain returned %v, want nothing — none of it is this session's", got)
+	}
+	if cursor := d.journal.Cursor("sess", 0); cursor != 2 {
+		t.Fatalf("cursor = %d after skipping two events, want 2 — a cursor left behind redelivers forever", cursor)
+	}
+
+	// The same read again: still nothing, and still not the same nothing twice.
+	if got := titles(d.drain(req)); len(got) != 0 {
+		t.Fatalf("the second read returned %v, want nothing", got)
+	}
+
+	// And the feed is not stalled behind what it skipped.
+	d.publish([]Event{{Kind: KindCIFailed, Target: "o/r#1", Title: "mine"}})
+	if got := titles(d.drain(req)); !slices.Equal(got, []string{"mine"}) {
+		t.Fatalf("drain returned %v, want [mine] — the skipped events must not block what follows", got)
+	}
+	if got := titles(d.drain(req)); len(got) != 0 {
+		t.Errorf("drain returned %v a second time, want nothing — delivery is at-most-once", got)
+	}
+}
+
+// TestDaemonScopedDrainIsNotStarvedByAnotherScope covers the interaction
+// between the filter and the cap. The journal keeps the newest of what it
+// scans, so a read capped before filtering can spend its whole batch on the
+// three worktrees this session does not care about and report "nothing new"
+// with a failure sitting behind them.
+func TestDaemonScopedDrainIsNotStarvedByAnotherScope(t *testing.T) {
+	d, mine, theirs := scopedDaemon(t)
+	d.publish([]Event{{Kind: KindCIFailed, Target: "o/r#1", Title: "mine"}})
+	for i := range 25 {
+		d.publish([]Event{{Kind: KindPinsStale, Target: theirs, Title: fmt.Sprintf("theirs %d", i)}})
+	}
+
+	got := titles(d.drain(Request{Consumer: "sess", Scope: mine, Limit: 2}))
+	if !slices.Equal(got, []string{"mine"}) {
+		t.Errorf("drain returned %v, want [mine] — the cap belongs to what survives the filter", got)
+	}
+}
+
+// TestDaemonScopedPeekLeavesTheCursorAlone: the Stop hook peeks, so scoping it
+// must not consume anything — including the events it filtered out, which stay
+// pending for the session that owns them.
+func TestDaemonScopedPeekLeavesTheCursorAlone(t *testing.T) {
+	d, mine, theirs := scopedDaemon(t)
+	publishScopedEvents(d, mine, theirs)
+
+	got := titles(d.drain(Request{Consumer: "sess", Scope: mine, Peek: true}))
+	if !slices.Contains(got, "my ci") || slices.Contains(got, "their ci") {
+		t.Fatalf("peek returned %v, want this session's CI and not the other's", got)
+	}
+	if cursor := d.journal.Cursor("sess", 0); cursor != 0 {
+		t.Errorf("a peek moved the cursor to %d", cursor)
+	}
+	if again := titles(d.drain(Request{Consumer: "sess", Scope: mine, Peek: true})); !slices.Equal(again, got) {
+		t.Errorf("the same peek returned %v the second time, want %v", again, got)
+	}
+}

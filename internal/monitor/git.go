@@ -65,6 +65,30 @@ func ReadCheckout(dir string) (Checkout, error) {
 	return Checkout{Owner: owner, Repo: repo, Branch: branch, Head: head}, nil
 }
 
+// WorkTreeRoot reports the working tree dir belongs to — the nearest enclosing
+// directory holding a .git — and whether there is one. A linked worktree is its
+// own root, since that is where its .git file sits.
+//
+// It is what lets a watch registered from a subdirectory still belong to the
+// session working in the checkout: scopes are matched exactly, and the only
+// directory a session's hooks and stream ever ask with is the one it opened in.
+func WorkTreeRoot(dir string) (string, bool) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", false
+	}
+	for cur := abs; ; {
+		if _, err := os.Stat(filepath.Join(cur, ".git")); err == nil {
+			return cur, true
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return "", false
+		}
+		cur = parent
+	}
+}
+
 // resolveGitDir walks up from dir to the enclosing repository and returns its
 // git directory plus the "common" directory that holds the shared config. For
 // an ordinary clone the two are the same; for a linked worktree the git

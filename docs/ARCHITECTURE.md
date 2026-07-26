@@ -39,9 +39,9 @@ go-github, `yaml.v3`).
   shuck logs      │         ▸ render             │
                   │                              │
                   │    the same fetch + distil   │
-  subscription    │                              │      ┌─────────┐  · CLI
-  shuck monitor ─▶│ watch ▸ poll ▸ diff ▸ event  │─────▶│ journal │─▸· stream
-                  └──────────────────────────────┘      └─────────┘  · hooks
+  subscription    │                              │      ┌─────────┐  · stream
+  shuck monitor ─▶│ watch ▸ poll ▸ diff ▸ event  │─────▶│ journal │─▸· Stop hook
+                  └──────────────────────────────┘      └─────────┘  · CLI
                                  │
                                  ▼
                         GitHub REST + GraphQL
@@ -53,8 +53,8 @@ report commands. Nothing persists but the cache.
 
 **By subscription (the monitor).** You register a working tree once. A local
 daemon follows it, notices what changed, and hands each change to whoever asks
-next. This is `shuck monitor`, the Claude Code plugin monitor that streams from
-it, and the hooks that deliver the same events wherever that stream cannot run.
+next. This is `shuck monitor`, and the Claude Code plugin monitor that streams
+from it into a session.
 
 They are not two implementations. The monitor calls the same `internal/gh`
 client, the same `internal/distil` core, the same `internal/pins` audit, and the
@@ -162,6 +162,10 @@ can reserve a goroutine and a connection indefinitely. That cap is the daemon's
 business, not the caller's: `shuck monitor events --wait 30m` re-asks until the
 half hour it was given has actually elapsed, because an early "nothing new" is
 indistinguishable — same text, same exit code — from a genuinely quiet wait.
+Nothing in a session waits like that any more (the stream is a follow, and an
+agent is told about events rather than blocking for them), but a shell script or
+a CI job still can, and the re-ask is what makes `--wait 30m` mean 30 minutes
+for them.
 
 Three of the eight ops refresh a watch's last-seen time, and the split is the
 point. `status`, `events` and `poke` — the ones that ask how things stand — call
@@ -172,10 +176,12 @@ watch refreshes that one, and only that one. `ping`, `seek`, `unwatch` and
 `stop` refresh nothing — a liveness probe is a client deciding whether there is
 a daemon at all, and the other three are a session on its way out.
 
-In a Claude Code session something is therefore touching the watch throughout:
-where the plugin monitor runs it is the stream's own `events` read, once a
-follow interval; where it does not, it is the `UserPromptSubmit` hook reading
-the event feed on every prompt. `TestOpsThatRefreshWatches` pins the whole
+In a Claude Code session the stream is what keeps the watch alive: its own
+`events` read, once a follow interval, for as long as the session lasts. That
+makes the refresh the stream's responsibility alone — a session whose stream
+never started (an older Claude Code, or the Monitor tool unavailable) registers
+no watch to expire in the first place, and the `PostToolUse` poke refreshes
+whatever is registered when it fires. `TestOpsThatRefreshWatches` pins the whole
 table, in both directions.
 
 ### Watches and targets are different things
@@ -316,9 +322,8 @@ the monitor's own problem, and a network blip must not hold a finished turn
 open. `pins.stale` is repo hygiene in a checkout nobody mentioned — telling an
 agent mid-task to go fix something it did not break is not what it was asked to
 do. Nothing is lost by any of the three: delivery does not filter on severity —
-the plugin monitor streams every event, and where it is not running the
-`UserPromptSubmit` hook delivers every event — so all of them still reach the
-session. They just cannot block a finish.
+the plugin monitor streams every event — so all of them still reach the session.
+They just cannot block a finish.
 
 Repeat suppression lives in the per-target state: reported job keys, reported
 review and comment ids (bounded at 200 each — they exist to suppress duplicates
@@ -369,13 +374,38 @@ Two properties matter:
   worse than losing the tail of a batch nobody read. Consumers that need to look
   before committing use `Peek`.
 
-A consumer starting fresh should call `Seek` first — its cursor then sits at the
-present, and it hears what happens next rather than the last hour of another
-session's history. That is what the `SessionStart` hook does, but only for a
-session that is genuinely starting: `SessionStart` also fires on resume and on
-compaction, and seeking then would discard events the ongoing conversation has
-not been shown yet — the exact moment a CI failure is most likely to be waiting
-(`isNewSession`).
+A Claude Code session id is a derived identity in the same sense, and is seeded
+the same way. `SeekNew` moves a cursor **only** if the consumer has never been
+seen, which makes seeding idempotent: nobody has to know whether this is the
+first call, so both hooks that still run can do it, and whichever fires first
+wins.
+
+That both of them do it is deliberate. `Stop` has to, because it is the only
+reader of the session's cursor and an unseeded peek would block the first finish
+on history. `PostToolUse` has to as well, because a `Stop`-only seed lands *after*
+the turn: a turn that pushes and keeps working is exactly when a `ci.failed` is
+published mid-turn, and a cursor created at the end of it would be seeded past
+the failure the gate exists for. Seeding on the first Bash call puts the cursor
+before anything the push can cause, and `SeekNew` makes the second call a no-op.
+
+**Where** the seed lands is the other half, and it is not "now". With no
+`SessionStart` hook, the first hook of a session can fire an hour in — or, for a
+first turn that runs no Bash tool at all, at that turn's `Stop`. Seeding at that
+moment would step over everything the turn had already been notified about,
+including the `ci.failed` the gate exists to hold: the skill's promise that
+*seeing a failure is delivery, not acknowledgement* would be false for the first
+turn of every session, which is the longest one and the one most likely to be
+catching up on the previous session's push.
+
+The stream supplies the missing moment. Claude Code starts it at session start
+and kills it at session end, so the journal position it started reading from
+*is* the session's start; `monitor stream` records that on its marker
+(`origin`), and `seedSessionCursor` reads it back with `StreamOrigin` and seeds
+the session there rather than at the present (`SeekNewAt`, which takes the
+position literally — zero included, since a journal can be empty when a session
+opens). Only a tree nothing is streaming falls back to seeding at the present,
+and there the exposure ends at the first hook rather than at the end of the
+first turn.
 
 Cursors that fall more than a journal-length behind the retained window are
 dropped on the next save, so sessions coming and going do not grow the file
@@ -452,10 +482,11 @@ what it recorded a second ago.
 ## The Claude Code integration
 
 Nothing here polls, and nothing here is a tool call. The plugin
-(`plugins/shuck/`) ships two delivery routes into a session, and which one is
-carrying the events depends on the host.
+(`plugins/shuck/`) ships **one** delivery route into a session — its own monitor
+— plus two hooks that exist only to do what a monitor process structurally
+cannot.
 
-### The plugin monitor, where it can run
+### The plugin monitor: the delivery channel
 
 `monitors/monitors.json` declares one monitor, `shuck-monitor`, whose command is
 a one-line shim that execs `shuck monitor stream`. Claude Code starts it in the
@@ -463,6 +494,17 @@ session's working directory for the lifetime of the session, and every line it
 writes to stdout is handed to the session as a notification — lines emitted
 within 200ms arrive as one, so a whole event block lands as one notification
 rather than a dozen.
+
+The stream is what registers the session's tree, so the working directory it is
+started in *is* the inferred source: `streamRegister` resolves `os.Getwd()` to a
+watch and hands it to the daemon, starting one if nothing is listening. That is
+also the only path in a session that starts a daemon, and the only one that
+needs a GitHub token — a daemon already listening polls with the token it was
+started with, and a client that reaches one connects without resolving anything
+(`cli.watchWithToken`). Every other source is explicit: `shuck monitor watch
+<target>` from inside the session adds a PR or another checkout to the same
+daemon, and its events come back down the same stream, since the journal is one
+feed rather than one per watch.
 
 That inverts the usual rule about stdout. `monitor stream` writes *only* event
 bodies there: it renders each batch with `FormatFeed` in a single write, and
@@ -476,33 +518,64 @@ line-delimited JSON (`{"schema_version":…,"streaming":false,"reason":…}`), f
 the same reason `monitor status --json` reports "not running" as a document: the
 line a consumer most needs to branch on cannot be the one its decoder rejects.
 
+Because the monitor is the only voice the plugin has left, the checks that used
+to run as a `SessionStart` hook are now said in it. A `shuck` that is not on
+`PATH` is one plain line from the shim, naming the install command; a `shuck`
+that is there but cannot stream — no token, an unusable cache directory, a
+binary too old for the subcommand — is one plain line from the stand-down above.
+Either way it is one line and exit 0, because the alternative is a user waiting
+on a feed that was never going to come.
+
 Plugin monitors are experimental. They run only in interactive CLI sessions,
 unsandboxed at hook trust level, and a host without the Monitor tool skips them
-without saying so — so the stream cannot be the only route, and the hooks below
-are not legacy but the other half. Their lifetime is the session's, not the
-plugin's: disabling the plugin mid-session leaves a running monitor running, and
-it stops when the session does.
+without saying so — as does the `shuck setup` install, which writes the skill
+and no plugin at all. Nothing picks up the delivery when that happens — the
+hooks below deliver nothing, by design — so such a session simply hears nothing
+until it asks. That is the one case the skill has to name, and does ("When
+nothing is streaming, close the loop yourself": register the tree with `shuck
+monitor watch`, then block once on `shuck monitor events --wait`); the managed
+CLAUDE.md note `shuck setup` writes beside it says the same, because a note that
+recommended waiting while the skill forbade it would leave one command
+installing two contradictory instructions. That is the accepted cost of having exactly one channel: two routes
+that can each carry the same CI failure are two routes that can deliver it
+twice, and the machinery to stop them doing so is more failure surface than the
+fallback was worth. Their lifetime is the session's, not the plugin's:
+disabling the plugin mid-session leaves a running monitor running, and it stops
+when the session does.
 
-### The hooks, everywhere else
+### The two hooks, and why only these two
 
-The plugin registers five monitor hooks — plus its prereq check at
-`SessionStart` — each a one-line shim that runs `shuck monitor hook <event>`.
-All the logic is in the binary, which reads the hook payload on stdin and writes
-the hook response on stdout; the shim exists only so a session without shuck
-installed degrades to silence instead of a hook error on every prompt.
+The plugin registers `PostToolUse` and `Stop`, each a one-line shim that runs
+`shuck monitor hook <event>`. All the logic is in the binary, which reads the
+hook payload on stdin and writes the hook response on stdout; the shim exists
+only so a session without shuck installed degrades to silence instead of a hook
+error on every turn.
+
+The test for a hook is whether a monitor process could do the job instead.
+`PostToolUse` passes it because a separate process cannot see the session's tool
+calls, so nothing else can know a push just happened. `Stop` passes it because a
+notification tells an agent something while only a hook can stop it finishing.
+`SessionStart`, `UserPromptSubmit` and `SessionEnd` failed it — registering the
+tree, seeding a cursor and delivering a batch are all things the stream does for
+itself, the seed by recording the position it started reading from (see "The
+journal and cursors") rather than by running at session start — and were
+unwired. Their handlers stay in the binary: an installed copy
+of an older `hooks.json` still calls them, every path already exits 0, and
+deleting them would break those sessions to save nothing.
 
 | Hook | Reads from the payload | What it does | Writes |
 | --- | --- | --- | --- |
-| `SessionStart` | `cwd` (or `CLAUDE_PROJECT_DIR`, or the process cwd), `session_id`, `source` | Registers the tree as a watch — starting the daemon if this is the first session — then seeks the session's cursor to the present, but only when `source` says the session is genuinely new: a resume or a compaction fires `SessionStart` too, and seeking there would discard events the conversation has not been shown. | `hookSpecificOutput.additionalContext`: what the monitor is watching and what will arrive unasked — as notifications when a stream already serves this tree, in the conversation otherwise. |
-| `UserPromptSubmit` | `session_id`, `cwd` | Drains that session's pending events — unless a live stream already serves this working tree, in which case it delivers nothing and, crucially, consumes nothing. Never starts a daemon — a prompt is not the moment. | `additionalContext`: a `<shuck-monitor>` block, or nothing at all when the batch is empty or a stream is carrying it. |
-| `PostToolUse` | `tool_name`, `tool_input.command` | On a Bash call matching `git push`, `gh pr create`, `gh pr ready`, `gh workflow run`, or `gh run rerun`, pokes the monitor. | nothing |
-| `Stop` | `session_id`, `stop_hook_active` | Peeks at pending events; if any are actionable, seeks past them and blocks. | `{"decision":"block","reason":…}`, top level only — never also in `hookSpecificOutput`, because a response carrying the reason in both shapes risks the same CI failure being injected into the session twice. |
-| `SessionEnd` | `session_id` | Retires the session's cursor. | nothing |
+| `PostToolUse` | `session_id`, `cwd`, `tool_name`, `tool_input.command` | Seeds the session's cursor at the stream's origin (`SeekNewAt`, else `SeekNew`), then — on a Bash call matching `git push`, `gh pr create`, `gh pr ready`, `gh workflow run`, or `gh run rerun` — pokes the monitor. | nothing |
+| `Stop` | `session_id`, `cwd`, `stop_hook_active` | Seeds the session's cursor the same way, peeks at pending events, and if any are actionable seeks past them and blocks. | `{"decision":"block","reason":…}`, top level only — never also in `hookSpecificOutput`, because a response carrying the reason in both shapes risks the same CI failure being injected into the session twice. |
 
-The `Stop` hook is deliberately untouched by any of this. It reads the
-*session's* cursor, and the stream reads its own, so the two never race and the
-gate holds whether the stream is running, dead, or was never started. Three
-properties make it safe rather than a trap. It stands down the instant
+Neither may start a daemon: both set `AutoStart = false`, so a hook can never be
+the thing that spawns a background process, and a session with no stream has no
+monitor rather than one nobody asked for.
+
+The `Stop` hook is what makes the whole arrangement safe to build on. It reads
+the *session's* cursor, and the stream reads its own, so the two never race and
+the gate holds whether the stream is running, dead, or was never started. Three
+properties make it a gate rather than a trap. It stands down the instant
 `stop_hook_active` is set, so it can never loop. It blocks only on events that
 actually ask for something, so a passing build never delays a finish. And it
 peeks rather than drains before deciding, so events it chooses not to act on are
@@ -510,23 +583,22 @@ still there afterwards. Notifications are delivery, not acknowledgement: a
 failure the agent saw as a notification and did nothing about still stops it
 finishing.
 
-### How the two routes stay out of each other's way
+### The stream marker
 
-Sending the same CI failure twice — once as a notification, once as injected
-context — is the failure mode worth engineering against, so a running stream
-leaves a marker under `monitor/streams/` naming the watch, the tree, its
-consumer, its pid and a heartbeat it refreshes as it reads. `StreamServes` is
-the predicate the prompt hook asks, and it is deliberately conservative in the
-direction that costs least: a marker counts as live only on a *fresh* heartbeat
-**and** a pid that still exists, and tree matching resolves symlinks and accepts
-containment either way, so a session sitting in a subdirectory of the streamed
-tree is still recognised. A marker wrongly read as live means events reach
-nobody; one wrongly read as dead means one duplicate. The first is worse.
+A running stream leaves a marker under `monitor/streams/` naming the watch, the
+tree, its consumer, its pid and a heartbeat it refreshes as it reads.
+`StreamServes` reads it, and is deliberately conservative in the direction that
+costs least: a marker counts as live only on a *fresh* heartbeat **and** a pid
+that still exists, and tree matching resolves symlinks and accepts containment
+either way, so a session sitting in a subdirectory of the streamed tree is still
+recognised.
 
-The stand-down is a stand-down, not a drain: the prompt hook returns without
-touching the session's cursor, so nothing is consumed and nothing is lost. If
-the stream is SIGKILLed, its marker reads live until the heartbeat goes stale
-and the prompt hook then hands over the whole backlog — a delay, never a hole.
+The marker has two readers left. One is `StreamIdentity` below. The other is
+`hookUserPrompt`, which no longer runs in the shipped wiring and matters only to
+an installed copy of an older `hooks.json`: it stands down while a stream serves
+its tree, and consumes nothing when it does, so the double delivery that route
+could cause is avoided without the standing-down costing an event. Read the
+marker as vestigial for delivery and load-bearing for identity.
 
 Two sessions in one directory are ordinary — two terminals on the same repo —
 and both halves of the scheme are keyed to survive it. The marker is one file per
@@ -544,10 +616,13 @@ on every path — no daemon, no token, a malformed payload, an unknown event —
 writes nothing when it has nothing to say; `monitor stream` holds itself to the
 same bar. A background convenience must never be the reason a session stalls or
 a prompt is rejected. The only thing a broken monitor should cost you is the
-monitoring. Injected context is capped at 3.5 KB (Claude Code truncates a large
-`additionalContext` silently, so shuck does the cut itself and points at
-`shuck monitor events --all` for the rest), and a whole hook interaction is
-bounded at 3 seconds.
+monitoring. The one thing a hook still injects — the `Stop` hook's block — is
+capped at 3.5 KB (Claude Code truncates a large response silently, so shuck does
+the cut itself and points at `shuck monitor events --all` for the rest), and a
+whole hook interaction is bounded at 3 seconds. That budget is also why token
+resolution stays off hook paths: `resolveToken`'s `gh auth token` fallback may
+spend 2 of those 3 seconds on a keyring, and `RunHook` builds a client with no
+token precisely because it never needs one.
 
 Two environment variables opt out: `SHUCK_MONITOR_DISABLE` (any value) turns
 every hook into a no-op and makes `monitor stream` a silent no-op;
@@ -626,11 +701,17 @@ request, not here.
   in CI is also the enforcement mechanism: a binary with no cloud SDK in its
   import graph cannot quietly grow one.
 - **The GitHub token comes from the environment** (`GITHUB_TOKEN` / `GH_TOKEN`,
-  or `--token`) and is never written to disk. A daemon started by a client
-  inherits the parent's environment, which is also why the *client* resolves the
-  token: a missing one is reported by the command the person just ran, rather
-  than failing silently inside a background process. `shuck monitor status`
-  reports quota headroom, never the token.
+  or `--token`, or last a logged-in `gh` via `gh auth token --hostname
+  github.com` — the host is named because shuck speaks to api.github.com alone,
+  and gh's own default host may be an enterprise instance whose credential must
+  not be sent there) and is never written to disk. A daemon started by a client inherits the parent's
+  environment, which is also why the *client* resolves the token: a missing one
+  is reported by the command the person just ran, rather than failing silently
+  inside a background process. That resolution happens **only** on the path that
+  has to start a daemon — one already listening polls with the token it was
+  started with, and demanding one from a client that is merely connecting stood
+  a session's notifications down over a credential nothing was about to use.
+  `shuck monitor status` reports quota headroom, never the token.
 - **The IPC is local and unauthenticated by filesystem permission.** A unix
   socket in a `0700` directory says who may connect; there is no credential to
   manage or leak. The loopback fallback, where any local process could reach the

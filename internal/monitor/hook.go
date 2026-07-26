@@ -255,9 +255,8 @@ func sessionStartContext(ctx context.Context, c *Client, w *Watch, streaming boo
 	} else {
 		b.WriteString("as <shuck-monitor> blocks in the conversation")
 	}
-	b.WriteString(" — you do not need to poll for them. To ask it something directly, run " +
-		"`shuck monitor status`, or `shuck monitor events --wait 10m` to block until there is " +
-		"something to know.")
+	b.WriteString(" — you do not need to poll for them, or to wait for them in a shell. " +
+		"To ask it something directly, run `shuck monitor status`.")
 
 	if st, err := c.Status(ctx, ""); err == nil && len(st.Targets) > 1 {
 		fmt.Fprintf(&b, "\nIt is also watching: %s.", otherTargets(st, w))
@@ -293,7 +292,8 @@ func hookUserPrompt(ctx context.Context, c *Client, in hookInput) *hookOutput {
 		// cannot identify is one it stays out of.
 		return nil
 	}
-	if dir, ok := hookTree(in); ok && StreamServes(dir) {
+	dir, _ := hookTree(in)
+	if dir != "" && StreamServes(dir) {
 		// A `shuck monitor stream` is already turning this tree's events into
 		// notifications. Delivering them here as well would hand the agent the
 		// same CI failure twice, which is the one thing a second channel must
@@ -307,7 +307,11 @@ func hookUserPrompt(ctx context.Context, c *Client, in hookInput) *hookOutput {
 		return nil
 	}
 	c.AutoStart = false // a prompt is not the moment to start a daemon
-	events, _, err := c.Events(ctx, Request{Consumer: in.SessionID})
+	// Scoped to this session's tree, like the stream: this is the same feed by
+	// the other channel, and it must not hand a session another worktree's CI
+	// either. A payload with no directory in it leaves the scope empty, which
+	// is the unfiltered behavior it had before.
+	events, _, err := c.Events(ctx, Request{Consumer: in.SessionID, Scope: dir})
 	if err != nil || len(events) == 0 {
 		return nil
 	}
@@ -320,20 +324,67 @@ func hookUserPrompt(ctx context.Context, c *Client, in hookInput) *hookOutput {
 var pushPattern = regexp.MustCompile(`(?m)\b(git\s+push|gh\s+pr\s+create|gh\s+pr\s+ready|gh\s+workflow\s+run|gh\s+run\s+rerun)\b`)
 
 // hookPostToolUse pokes the monitor after a push so the new run is picked up
-// immediately.
+// immediately, and takes the first chance in the session to seed its cursor.
 func hookPostToolUse(ctx context.Context, c *Client, in hookInput) *hookOutput {
 	if !strings.EqualFold(in.ToolName, "Bash") {
 		return nil
 	}
+	c.AutoStart = false // a tool call is not the moment to start a daemon
+
+	// Seed here as well as in Stop, and before the push is even recognized,
+	// because the seed has to land *before* whatever the turn is about to
+	// cause. A turn that pushes and then keeps working is exactly when a
+	// failure lands mid-turn, and a session first seeded at the end of that
+	// turn would seed straight past the failure it was meant to gate on.
+	seedSessionCursor(ctx, c, in)
+
 	var input struct {
 		Command string `json:"command"`
 	}
 	if json.Unmarshal(in.ToolInput, &input) != nil || !pushPattern.MatchString(input.Command) {
 		return nil
 	}
-	c.AutoStart = false
 	_, _ = c.Poke(ctx, "")
 	return nil
+}
+
+// seedSessionCursor starts a session the daemon has never seen where that
+// session began.
+//
+// A consumer with no cursor is served from the head of the retained journal, so
+// something has to seed it, or the first read of every session hands over hours
+// of history — most of it another branch's, none of it this session's doing.
+// SessionStart used to do that at the one moment that is unambiguously the
+// start; it is no longer wired, so it falls to whichever hook sees the session
+// id first, which can be an hour into the conversation.
+//
+// Seeding *at that moment* would be the bug this exists to avoid, in reverse: a
+// failure that landed during the first turn would be seeded straight past, and
+// the Stop gate would never see the very event it exists for — the case the
+// skill promises is covered ("seeing a ci.failed is delivery, not
+// acknowledgement"). So the position comes from the session's own stream, whose
+// lifetime is the session's: StreamOrigin is where the delivery channel for
+// this tree started reading, which is where the session opened. Only a tree
+// nothing is streaming falls back to the present, and there the exposure ends
+// at the first hook rather than at the end of the first turn.
+//
+// IfNew is what makes this safe to call from more than one place and on every
+// event: a session that already has a cursor keeps it, including one Stop has
+// deliberately seeked forward.
+//
+// A failure is nothing to report. It means no daemon is reachable, and the read
+// that follows fails the same way.
+func seedSessionCursor(ctx context.Context, c *Client, in hookInput) {
+	if in.SessionID == "" {
+		return
+	}
+	if dir, ok := hookTree(in); ok {
+		if origin, known := StreamOrigin(dir); known {
+			_, _ = c.SeekNewAt(ctx, in.SessionID, origin)
+			return
+		}
+	}
+	_, _ = c.SeekNew(ctx, in.SessionID)
 }
 
 // hookStop is the hook that closes the loop. When the agent is about to finish
@@ -345,13 +396,24 @@ func hookPostToolUse(ctx context.Context, c *Client, in hookInput) *hookOutput {
 // actually ask for something, so a passing build never delays a finish. And it
 // peeks rather than drains, so events it decides not to act on are still there
 // for the next prompt.
+//
+// It is also, for a session that has run no Bash tool at all, the first hook to
+// see the session id — so it seeds the cursor before reading, or the peek below
+// would be served from the head of the retained journal. The seed lands where
+// the session began (see seedSessionCursor), not here, or the first turn of
+// every session would end by seeding past whatever it was about to be gated on.
 func hookStop(ctx context.Context, c *Client, in hookInput) *hookOutput {
 	if in.StopHookActive || in.SessionID == "" || os.Getenv("SHUCK_MONITOR_NO_STOP") != "" {
 		return nil
 	}
 	c.AutoStart = false
+	seedSessionCursor(ctx, c, in)
 
-	events, _, err := c.Events(ctx, Request{Consumer: in.SessionID, Peek: true})
+	// Scoped, so a session is never held back from finishing by a build it has
+	// nothing to do with. The peek moves no cursor, so the events another
+	// worktree owns simply stay pending rather than being seeked past here.
+	dir, _ := hookTree(in)
+	events, _, err := c.Events(ctx, Request{Consumer: in.SessionID, Peek: true, Scope: dir})
 	if err != nil || len(events) == 0 {
 		return nil
 	}

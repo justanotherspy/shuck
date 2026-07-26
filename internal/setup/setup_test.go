@@ -349,3 +349,26 @@ func TestRefreshNoteUpToDate(t *testing.T) {
 		t.Errorf("expected up-to-date note, got %q", out.String())
 	}
 }
+
+// TestClaudeNoteScopesWaitingToASessionWithNoStream keeps the two files this
+// one command writes from contradicting each other.
+//
+// `shuck setup` installs the skill *and* this note. The skill is written for
+// the plugin — a `shuck monitor stream` delivers, and blocking a turn on a wait
+// flag is forbidden — while setup installs no plugin, so the note is also the
+// only place a session without one is told how to close the loop by hand. Both
+// halves have to be here, in that order: the note is what an agent reads first,
+// and a note that recommends waiting in a shell with no word about the plugin
+// is the guidance the skill beside it forbids.
+func TestClaudeNoteScopesWaitingToASessionWithNoStream(t *testing.T) {
+	before, _, ok := strings.Cut(claudeNote, "--wait")
+	if !ok {
+		// A note that never mentions waiting cannot contradict the skill.
+		return
+	}
+	for _, want := range []string{"plugin", "Without it"} {
+		if !strings.Contains(before, want) {
+			t.Errorf("the note recommends `--wait` without first scoping it (%q missing before it):\n%s", want, before)
+		}
+	}
+}

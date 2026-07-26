@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -85,10 +86,14 @@ type Daemon struct {
 	paths  paths
 	poller *poller
 
-	mu       sync.Mutex
-	watches  *registry
-	targets  map[string]*prState
+	mu      sync.Mutex
+	watches *registry
+	targets map[string]*prState
+	// pins paces each watched tree's audit; pinRepos remembers what has
+	// already been said about each repository, which is a different key
+	// because several worktrees can share one repository.
 	pins     map[string]*pinState
+	pinRepos map[string]*repoPinState
 	notifyCh chan struct{}
 
 	journal   *journal
@@ -150,6 +155,7 @@ func newDaemon(dir string, opts Options) (*Daemon, error) {
 		watches:   loadRegistry(p),
 		targets:   map[string]*prState{},
 		pins:      map[string]*pinState{},
+		pinRepos:  map[string]*repoPinState{},
 		notifyCh:  make(chan struct{}),
 		journal:   j,
 		startedAt: time.Now(),
@@ -365,12 +371,27 @@ func (d *Daemon) setNote(w *Watch, kind Kind, note string, now time.Time) []Even
 	}
 	w.Note = note
 	return []Event{{
-		Time:   now,
-		Kind:   kind,
-		Watch:  w.ID,
-		Target: w.Target(),
+		Time:  now,
+		Kind:  kind,
+		Watch: w.ID,
+		// The working tree, not the watch's target. A watch that cannot name a
+		// PR has "owner/repo" for a target, and every worktree of that
+		// repository has the same one — so targeting it would hand each of them
+		// the others' "no open PR for <branch>" notes, naming a tree and a
+		// branch they have nothing to do with. The path is the one thing about
+		// this note that is not shared.
+		Target: noteTarget(*w),
 		Title:  fmt.Sprintf("%s: %s", w.Path, note),
 	}}
+}
+
+// noteTarget is the subject of a note about a watch: the working tree it is
+// about, falling back to the watch's target for a watch with no tree.
+func noteTarget(w Watch) string {
+	if w.Path != "" {
+		return w.Path
+	}
+	return w.Target()
 }
 
 // updateWatch mutates a watch under the lock and journals whatever events the
@@ -401,6 +422,42 @@ func (d *Daemon) expire(now time.Time) {
 	}
 	if len(dropped) > 0 {
 		d.pruneTargets(now)
+		d.prunePins()
+	}
+}
+
+// prunePins drops the per-tree pin scan state of trees no watch points at any
+// more. A workflow that makes a git worktree per task registers a tree watch,
+// gets a pinState keyed by its path, and then deletes the directory: without
+// this the entry outlives the watch, the daemon, and the tree itself, and is
+// re-marshaled into pins.json every time any tree's deadline moves.
+//
+// Only the per-tree half is reclaimed. d.pinRepos is deliberately longer-lived
+// than any watch — it is the memory that stops an unfixed unpinned action being
+// announced again after every expiry and every restart — and its keys are
+// repositories, bounded by the repositories worked in rather than by paths.
+//
+// A pruned tree that comes back is simply scanned again on the next round; the
+// per-repository dedupe is what decides whether that scan has anything to say.
+func (d *Daemon) prunePins() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	watched := make(map[string]bool, d.watches.Len())
+	for _, w := range d.watches.List() {
+		if w.Kind == WatchTree && w.Path != "" {
+			watched[w.Path] = true
+		}
+	}
+	changed := false
+	for path := range d.pins {
+		if !watched[path] {
+			delete(d.pins, path)
+			changed = true
+		}
+	}
+	if changed {
+		d.savePinsLocked()
 	}
 }
 
@@ -566,18 +623,33 @@ func (d *Daemon) targetsPath() string { return filepath.Join(d.paths.dir, "targe
 
 func (d *Daemon) pinsPath() string { return filepath.Join(d.paths.dir, "pins.json") }
 
+// pinReposPath holds the per-repository half of the pin state. It is a second
+// file rather than a field on the first because the two are keyed differently —
+// one per tree, one per repository — and a daemon upgrading from the per-tree
+// dedupe simply finds it missing and reports each still-unfixed finding once
+// more, as the informational event it always was.
+func (d *Daemon) pinReposPath() string { return filepath.Join(d.paths.dir, "pinrepos.json") }
+
 // loadPins restores what the daemon already knows about each watched tree's
-// pins: when the tree is next due a scan, and which findings it has already
-// reported.
+// pins: when the tree is next due a scan, and which findings its repository has
+// already reported.
 func (d *Daemon) loadPins() {
 	var stored []pinState
-	if readJSONFile(d.pinsPath(), &stored) != nil {
-		return
+	if readJSONFile(d.pinsPath(), &stored) == nil {
+		for i := range stored {
+			st := stored[i]
+			if st.Path != "" {
+				d.pins[st.Path] = &st
+			}
+		}
 	}
-	for i := range stored {
-		st := stored[i]
-		if st.Path != "" {
-			d.pins[st.Path] = &st
+	var repos []repoPinState
+	if readJSONFile(d.pinReposPath(), &repos) == nil {
+		for i := range repos {
+			st := repos[i]
+			if st.Repo != "" {
+				d.pinRepos[st.Repo] = &st
+			}
 		}
 	}
 }
@@ -593,25 +665,52 @@ func (d *Daemon) auditPins(ctx context.Context, now time.Time) {
 		return
 	}
 	d.mu.Lock()
-	var trees []string
+	var watched []Watch
 	for _, w := range d.watches.List() {
 		if w.Kind == WatchTree && w.Path != "" {
-			trees = append(trees, w.Path)
-		}
-	}
-	states := make(map[string]pinState, len(trees))
-	for _, path := range trees {
-		if st, ok := d.pins[path]; ok {
-			states[path] = *st
-		} else {
-			states[path] = pinState{Path: path}
+			watched = append(watched, w)
 		}
 	}
 	d.mu.Unlock()
 
-	for _, path := range trees {
-		previous := states[path]
-		updated, events := d.scanPins(ctx, previous, now)
+	// Each watched tree carries the repository it belongs to, because that —
+	// not the directory — is what a finding is deduplicated under. Resolving it
+	// happens outside the lock: a watch registered between this round's
+	// retarget and now has no owner yet, and reading its checkout here is what
+	// stops that first audit being filed under the path and then reported all
+	// over again under the repository ten minutes later.
+	type pinTree struct{ path, repo string }
+	trees := make([]pinTree, 0, len(watched))
+	// A repository's reported set is shared by every worktree filed under it,
+	// and worktrees sit on different branches, so their findings are different
+	// keys. One maxRemembered between them would be each tree's scan evicting
+	// the other's live findings, and both re-reporting them every scan; the
+	// budget is per tree for that reason.
+	budgets := make(map[string]int, len(watched))
+	for _, w := range watched {
+		repo := d.claimPinRepo(w)
+		trees = append(trees, pinTree{path: w.Path, repo: repo})
+		budgets[repo] += maxRemembered
+	}
+
+	d.mu.Lock()
+	states := make(map[string]pinState, len(trees))
+	reported := make(map[string][]string, len(trees))
+	for _, t := range trees {
+		if st, ok := d.pins[t.path]; ok {
+			states[t.path] = *st
+		} else {
+			states[t.path] = pinState{Path: t.path}
+		}
+		if st, ok := d.pinRepos[t.repo]; ok {
+			reported[t.repo] = st.Reported
+		}
+	}
+	d.mu.Unlock()
+
+	for _, t := range trees {
+		previous, was := states[t.path], reported[t.repo]
+		updated, nowReported, events := d.scanPins(ctx, previous, t.repo, budgets[t.repo], was, now)
 		// Storing unconditionally would marshal the whole pin map and rewrite
 		// pins.json once a second per watched tree for the whole life of a
 		// session, to record what it recorded a second ago. The overwhelmingly
@@ -621,10 +720,20 @@ func (d *Daemon) auditPins(ctx context.Context, now time.Time) {
 		// re-read on every tick after all.
 		if !updated.same(previous) {
 			d.mu.Lock()
-			d.pins[path] = &updated
+			d.pins[t.path] = &updated
 			d.savePinsLocked()
 			d.mu.Unlock()
 		}
+		if !slices.Equal(was, nowReported) {
+			d.mu.Lock()
+			d.pinRepos[t.repo] = &repoPinState{Repo: t.repo, Reported: nowReported}
+			d.saveRepoPinsLocked()
+			d.mu.Unlock()
+		}
+		// Carry what was just said into the rest of this round, so a second
+		// worktree of the same repository — the case this keying exists for —
+		// sees it without waiting for the next tick to reload the map.
+		reported[t.repo] = nowReported
 		d.publish(events)
 	}
 }
@@ -636,6 +745,15 @@ func (d *Daemon) savePinsLocked() {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	_ = writeJSONFile(d.pinsPath(), out)
+}
+
+func (d *Daemon) saveRepoPinsLocked() {
+	out := make([]repoPinState, 0, len(d.pinRepos))
+	for _, st := range d.pinRepos {
+		out = append(out, *st)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Repo < out[j].Repo })
+	_ = writeJSONFile(d.pinReposPath(), out)
 }
 
 // sweepCache reclaims entries of shuck's inspection cache that nothing has

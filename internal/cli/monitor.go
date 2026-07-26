@@ -39,11 +39,11 @@ Usage:
 A target is a directory to follow, or a pull request — owner/repo#42, a PR URL,
 "owner/repo 42", or a bare number for the local repository.
 
-In Claude Code the monitor needs none of this: the shuck plugin registers the
-session's working tree on start and delivers events as they arrive — as
-notifications where it can run "shuck monitor stream", and into the conversation
-through its hooks everywhere else. That command and "shuck monitor hook <event>"
-are the integration's entry points and are not meant to be run by hand.
+In Claude Code the monitor needs none of this: the plugin's own monitor runs
+"shuck monitor stream", which registers the session's working tree and turns
+each new event into a notification as it happens. Use "watch" to add a PR the
+working tree cannot imply. That command and "shuck monitor hook <event>" are the
+integration's entry points and are not meant to be run by hand.
 
 Flags:
 `
@@ -260,18 +260,7 @@ func monitorWatch(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "shuck:", err)
 		return 2
 	}
-	// The daemon a client starts inherits this process's environment, so it
-	// polls with whatever token resolved here — and a missing token is
-	// reported now, by the command the person just ran, rather than silently
-	// inside a background process.
-	token, err := resolveToken("")
-	if err != nil {
-		fmt.Fprintln(stderr, "shuck:", err)
-		return 2
-	}
-	client.Token = token
-
-	watch, err := client.Watch(context.Background(), spec)
+	watch, err := watchWithToken(context.Background(), client, spec)
 	if err != nil {
 		fmt.Fprintln(stderr, "shuck:", err)
 		return 2
@@ -540,8 +529,10 @@ const streamBatchLimit = 20
 // Nothing that can go wrong here is worth a stack trace in a notification. A
 // monitor that exits is simply a monitor that is not running, so every start-up
 // failure — no token, an unusable cache directory, no daemon — is one plain
-// sentence on stdout and exit 0. The session then falls back to the hooks,
-// which deliver the same events into the conversation.
+// sentence on stdout and exit 0. That sentence is the whole of what the session
+// gets: the two hooks that remain do not deliver, and the causes above stand
+// them down as well, so a stand-down is a total loss of delivery and says so
+// rather than implying a fallback (see streamStandDown).
 func monitorStream(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("shuck monitor stream", flag.ContinueOnError)
 	var jsonOut bool
@@ -605,9 +596,23 @@ func monitorStream(args []string, stdout, stderr io.Writer) int {
 	// something to address now. Only a *new* identity is moved, so a restarted
 	// stream still resumes. A daemon that will not answer this is not worth
 	// standing down over: the read that follows fails the same way and says so.
-	_, _ = client.SeekNew(ctx, consumer)
+	//
+	// Where that cursor lands is also recorded on the marker, because it is the
+	// only durable trace of when this session began. Nothing else knows: the
+	// hooks are the only part of the plugin that learns the session id, and the
+	// first of them can fire an hour in. Without this they would seed the
+	// session's cursor to whenever they happened to run, and a failure that
+	// arrived during the first turn would be seeded past rather than gated on.
+	cursor, err := client.SeekNew(ctx, consumer)
+	if err == nil {
+		stream.SetOrigin(cursor)
+	}
 
-	req := monitor.Request{Consumer: consumer, Limit: streamBatchLimit}
+	// Scope the feed to this session's own working tree. Without it every
+	// stream on the machine is handed every watch's events, so two sessions in
+	// two worktrees each get the other's CI and pin findings — observed, and
+	// the reason the scope exists.
+	req := monitor.Request{Consumer: consumer, Limit: streamBatchLimit, Scope: spec.Path}
 	err = followEvents(ctx, client, req, func(events []monitor.Event) error {
 		stream.Beat()
 		return emitStream(stdout, events, jsonOut)
@@ -633,18 +638,52 @@ func streamRegister(ctx context.Context) (monitor.Watch, *monitor.Client, error)
 	if err != nil {
 		return monitor.Watch{}, nil, err
 	}
-	// The daemon this client starts inherits this process's environment, so it
-	// polls with whatever token resolves here — and a missing one is the single
-	// most likely reason a stream never says anything.
-	token, err := resolveToken("")
-	if err != nil {
-		return monitor.Watch{}, nil, err
-	}
-	client.Token = token
-	if _, err := client.Watch(ctx, spec); err != nil {
+	if _, err := watchWithToken(ctx, client, spec); err != nil {
 		return monitor.Watch{}, nil, err
 	}
 	return spec, client, nil
+}
+
+// watchWithToken registers a watch, resolving a GitHub token only on the path
+// that has to start a daemon to hold it.
+//
+// The token belongs to the daemon, never to the client: a daemon that is
+// already listening polls with the token it was started with, and nothing a
+// client sends changes that. Demanding one up front therefore stood a session's
+// notifications down over a credential nothing was about to use — an observed
+// failure, with a perfectly healthy monitor polling GitHub at the time.
+//
+// The order is what makes this race-free. Asking "is a daemon running?" and
+// then resolving on the answer leaves a window in which the daemon exits
+// between the two, and the spawn that follows goes ahead tokenless: the caller
+// is then told the monitor did not come up in 1.5s, naming a socket, when the
+// actionable problem was the missing token. Attempting the watch first and
+// resolving only once the daemon has said it is not there cannot get that
+// wrong.
+func watchWithToken(ctx context.Context, client *monitor.Client, spec monitor.Watch) (*monitor.Watch, error) {
+	// Whether this client may start a daemon at all is the caller's decision;
+	// the first attempt only borrows it, so that a daemon that is already
+	// listening is reached without a token in hand.
+	autoStart := client.AutoStart
+	defer func() { client.AutoStart = autoStart }()
+
+	client.AutoStart = false
+	watch, err := client.Watch(ctx, spec)
+	if !errors.Is(err, monitor.ErrNotRunning) {
+		return watch, err
+	}
+
+	// Nothing was listening, so this second attempt is the one that starts a
+	// daemon, and the token resolved here is the one it will poll with. Its
+	// absence is reported in place of the connection error because it is the
+	// half a person can do something about.
+	token, tokenErr := resolveToken("")
+	if tokenErr != nil {
+		return nil, tokenErr
+	}
+	client.Token = token
+	client.AutoStart = autoStart
+	return client.Watch(ctx, spec)
 }
 
 // standDownDocument is the --json form of a stand-down: the one line a consumer
@@ -681,7 +720,8 @@ func streamStandDown(stdout io.Writer, jsonOut bool, err error) int {
 		return 0
 	}
 	fmt.Fprintf(stdout, "The shuck monitor is not streaming into this session (%v). "+
-		"CI and review feedback will arrive through the session's hooks instead, if they are installed.\n", err)
+		"Nothing will tell you about CI failures or review comments as they happen; "+
+		"run `shuck <pr>` or `shuck logs <pr>` when you need to know.\n", err)
 	return 0
 }
 

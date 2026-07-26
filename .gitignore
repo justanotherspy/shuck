@@ -46,3 +46,6 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Per-machine Claude Code overrides (local plugin testing, etc.)
+.claude/settings.local.json

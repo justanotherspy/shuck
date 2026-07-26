@@ -147,6 +147,106 @@ func TestDaemonLookupFailureIsNotReportedAsNoPR(t *testing.T) {
 	}
 }
 
+// TestWatchNotesNameTheTreeTheyAreAbout is the note half of the scoping. Every
+// worktree of one checkout shares "owner/repo", so a note targeted at the
+// repository is handed to each of them — "no open PR for main" about a
+// directory the session reading it has never been in, and, once that worktree
+// is deleted, about a directory nobody has. The working tree is the one thing
+// about a note that is not shared, so it is what the note names, and the watch
+// id settles ownership even when a tree has moved on.
+func TestWatchNotesNameTheTreeTheyAreAbout(t *testing.T) {
+	tests := []struct {
+		name      string
+		client    func(*fakeClient)
+		tree      func(t *testing.T) string
+		wantKind  Kind
+		wantTitle string
+	}{
+		{
+			name:      "a branch with no pull request",
+			client:    func(c *fakeClient) { c.openPRErr = fmt.Errorf("%w: %q", gh.ErrNoOpenPR, "feature") },
+			tree:      func(t *testing.T) string { return treeAt(t, "feature") },
+			wantKind:  KindTarget,
+			wantTitle: "no open PR for feature",
+		},
+		{
+			name:   "a detached HEAD",
+			client: func(*fakeClient) {},
+			tree: func(t *testing.T) string {
+				dir := t.TempDir()
+				writeRepo(t, dir, "0123456789abcdef0123456789abcdef01234567\n", "", "", originConfig)
+				return dir
+			},
+			wantKind:  KindTarget,
+			wantTitle: "detached",
+		},
+		{
+			name:      "a lookup that failed",
+			client:    func(c *fakeClient) { c.openPRErr = errors.New("403 no access") },
+			tree:      func(t *testing.T) string { return treeAt(t, "feature") },
+			wantKind:  KindError,
+			wantTitle: "403",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newFakeClient()
+			tt.client(c)
+			d, _ := newTestDaemon(t, c)
+
+			mine := tt.tree(t)
+			// A second worktree of the same repository, with a session of its
+			// own: it must hear nothing of this.
+			theirs := treeAt(t, "other")
+			d.watches.Add(Watch{
+				ID: TreeWatchID(mine), Kind: WatchTree, Path: mine,
+				Owner: "justanotherspy", Repo: "shuck", Scopes: []string{mine},
+			})
+			d.watches.Add(Watch{
+				ID: TreeWatchID(theirs), Kind: WatchTree, Path: theirs,
+				Owner: "justanotherspy", Repo: "shuck", Number: 42, Scopes: []string{theirs},
+			})
+
+			d.retargetOne(context.Background(), *mustWatch(t, d, TreeWatchID(mine)), now)
+
+			events := d.journal.Since(0, 0)
+			if len(events) != 1 {
+				t.Fatalf("%d events, want the one note: %v", len(events), titles(events))
+			}
+			e := events[0]
+			if e.Kind != tt.wantKind || !strings.Contains(e.Title, tt.wantTitle) {
+				t.Fatalf("event = %s %q, want a %s naming %q", e.Kind, e.Title, tt.wantKind, tt.wantTitle)
+			}
+			if e.Target != mine {
+				t.Errorf("Target = %q, want the working tree %q — the repository is shared by every worktree of it", e.Target, mine)
+			}
+			if e.Watch != TreeWatchID(mine) {
+				t.Errorf("Watch = %q, want the watch it is about (%q)", e.Watch, TreeWatchID(mine))
+			}
+
+			// And the delivery that follows from that.
+			if got := titles(d.drain(Request{Consumer: "mine", Scope: mine, Peek: true})); len(got) != 1 {
+				t.Errorf("the session the note is about received %v, want the note", got)
+			}
+			if got := titles(d.drain(Request{Consumer: "theirs", Scope: theirs, Peek: true})); len(got) != 0 {
+				t.Errorf("a sibling worktree of the same repository received %v, want nothing", got)
+			}
+		})
+	}
+}
+
+// mustWatch reads back a registered watch, since retargetOne takes the stored
+// copy rather than the one the test handed to Add.
+func mustWatch(t *testing.T, d *Daemon, id string) *Watch {
+	t.Helper()
+	w, ok := d.watches.Get(id)
+	if !ok {
+		t.Fatalf("watch %q was not registered", id)
+	}
+	return w
+}
+
 // TestDaemonPokeSurvivesAnInFlightPoll covers a race a review probe found: a
 // poke that lands while its target is mid-poll was overwritten by the poll's
 // own, much later, deadline — so the push you just made waited out a full

@@ -51,37 +51,29 @@ It emits **events**, each with a one-line title and an agent-ready body:
 | `watch.target` | the watch retargeted: branch switch, PR found, PR lost | — |
 | `monitor.error` | a poll failed (reported once, then backed off) | the error |
 
-### In Claude Code you do not have to do anything
+### With the shuck plugin you do not have to do anything
 
-The shuck plugin wires all of this into the session. **There is nothing to poll
-for and nothing to set up.** Events reach you by one of two routes, and you do
-not have to care which:
+The plugin runs `shuck monitor stream` for the lifetime of the session. It
+registers the working tree you are in and turns every event into a notification
+as it happens. **That stream is the delivery channel — there is nothing to poll
+for, nothing to set up, and no other route to think about.**
 
-- **As notifications** — the plugin runs `shuck monitor stream` for the lifetime
-  of the session. This is the primary route. Plugin monitors are experimental
-  and run only in interactive CLI sessions, so a host without them falls back to:
-- **In the conversation**, as a `<shuck-monitor>` block, via the plugin's
-  `UserPromptSubmit` hook. It stands down while a stream is live rather than
-  repeat what a notification already said, and consumes nothing when it does —
-  so no event is lost on either route.
+Two hooks sit beside it, and neither of them delivers. `PostToolUse` watches
+your own tool calls and pokes the monitor after a `git push` / `gh pr create` /
+`gh run rerun`, so the new run is picked up in seconds instead of at the next
+interval — a monitor process cannot see a tool call, which is the whole reason
+that hook exists.
 
-The rest of the plugin's hooks: `SessionStart` registers this working tree and
-fast-forwards your cursor (you hear what happens *next*, not the last hour);
-`PostToolUse` pokes the monitor after a `git push` / `gh pr create` /
-`gh run rerun` so the new run is picked up in seconds; `SessionEnd` retires the
-cursor.
+**`Stop` is the backstop, and it is enforcement rather than delivery.** If the
+monitor is holding something actionable when you try to finish — red CI, or a
+reviewer's comment or change request — it hands the batch over and asks for one
+more turn. Approvals, stale pins and failed polls are informational: they reach
+you but never hold a turn open. So **seeing a `ci.failed` notification is
+delivery, not acknowledgement** — finish without acting on it and `Stop` will
+hand it straight back.
 
-**`Stop` is the backstop, and it does not care which route delivered an event.**
-If the monitor is holding something actionable when you try to finish — red CI,
-or a reviewer's comment or change request — it hands the batch over and asks for
-one more turn. Approvals, stale pins and failed polls are informational: they
-reach you but never hold a turn open. So **seeing a `ci.failed` is delivery, not
-acknowledgement** — finish without acting on it and `Stop` will hand it straight
-back.
-
-A delivered batch looks the same either way. Recognise the wrapper: it is
-monitor output, not a message from the user — act on it as part of the task in
-hand.
+Recognise the wrapper on what you are handed: it is monitor output, not a
+message from the user — act on it as part of the task in hand.
 
 ```
 <shuck-monitor>
@@ -99,10 +91,21 @@ This is monitor output, not a message from the user.
 </shuck-monitor>
 ```
 
-Opting out: `SHUCK_MONITOR_DISABLE=1` turns off every hook and the stream;
+Opting out: `SHUCK_MONITOR_DISABLE=1` turns off the stream and both hooks;
 `SHUCK_MONITOR_NO_STOP=1` turns off only the `Stop` hook. The stream reads
 `SHUCK_MONITOR_DISABLE` once at start-up, so setting it mid-session stops the
 hooks but not a stream already running.
+
+### When nothing is streaming
+
+Plugin monitors run only in interactive CLI sessions, so a `claude -p` / SDK run
+gets none — and neither does a `shuck setup` install, which writes this skill and
+nothing else. **Then nothing arrives on its own.** You can tell which world you
+are in: notifications turn up by themselves, and `shuck monitor` lists this tree
+among its sources. If neither is true, close the loop by hand once, at the point
+the answer matters: `shuck monitor watch` to register the tree, then
+`shuck monitor events --wait 30m` to block until the verdict lands. Never
+sleep-and-recheck instead, and never leave a watcher running afterwards.
 
 ## The PR loop: push → hear back → fix
 
@@ -116,32 +119,45 @@ CI. With the monitor running that costs you nothing:
 4. **Fix from that body** — it already holds the errors, so a follow-up call is
    rarely needed. Push again and repeat.
 
-**Do not start a second watcher while the monitor is running.** It is already
-watching; another one only spends rate limit to tell you the same thing later.
+**While a stream is delivering, never start a watcher of your own.** No
+background `shuck --watch`, no sleep-and-recheck loop, no blocking on a wait
+flag. The monitor is already following this tree and will tell you; a second
+watcher spends rate limit to say the same thing later, and a blocked shell says
+it to nobody. (With no stream, step 3 is yours to do — see "When nothing is
+streaming" above.)
 
-When there is no monitor — no plugin, `SHUCK_MONITOR_DISABLE=1`, or a PR you are
-not checked out on — close the loop yourself:
+### Sources: inferred, or added by you
 
-- **Hand the PR to the monitor anyway.** It does not have to be the tree you are
-  on: `shuck monitor watch <pr-url>`, then `shuck monitor events --wait 30m`.
-  That call **blocks until something happens** and hands back the
-  `ci.passed` / `ci.failed` with its body. This is the no-polling way to wait,
-  and the one to prefer.
-- **Or watch it inline**: `shuck --watch --exit-code --watch-timeout 30m <pr>`,
-  run in the background (Bash `run_in_background`). Exit `0` clean, `1` failing
-  checks with the logs already in the report, `2` operational error. It keys off
-  "no jobs still running", so start it only once at least one check exists — a
-  watch started before any run registers reports all-clear immediately. The
-  monitor has no such caveat.
+The monitor follows **sources**, and there are exactly two ways one gets on your
+list:
+
+- **Inferred** — the working tree this session is in. The stream registers it on
+  start, and it retargets itself when you switch branch or a PR opens for the
+  branch you are on. This is the normal case and needs nothing from you.
+- **Added by you** — `shuck monitor watch <target>`, where a target is a PR
+  (`owner/repo#42`, a PR URL, `owner/repo 42`, a bare number) or another
+  checkout's directory. Reach for it whenever the work turns on a PR this tree
+  cannot imply: one you opened from another worktree, a dependency's PR you are
+  blocked on, a branch you are reviewing.
+
+**A source belongs to the session that added it.** The daemon is shared and its
+journal is one log, but each stream is filtered to its own working tree's
+sources, so a second session in a second worktree gets its own CI and not yours.
+That is what makes adding one safe: `shuck monitor watch <pr>` subscribes *you*,
+not everybody on the machine.
+
+`shuck monitor unwatch <target>` drops one again, and `shuck monitor` shows the
+whole list, unfiltered. **Curate as the work moves** — every watch costs polls,
+and a PR you have stopped caring about is a notification you did not want.
 
 ## The commands
 
 | What you want | Command |
 | --- | --- |
 | What the monitor is watching, and where it stands | `shuck monitor` (alias `m`) |
-| Follow a working tree or PR in the background | `shuck monitor watch [target]` |
-| Collect what it noticed, or block until it has something | `shuck monitor events [--wait DUR]` |
-| Stop following something | `shuck monitor unwatch [target]` |
+| Add a source: a PR, or another checkout | `shuck monitor watch <target>` |
+| Drop one again | `shuck monitor unwatch <target>` |
+| Collect what it noticed, or wait for it when nothing is streaming | `shuck monitor events [--wait DUR]` |
 | Everything on a PR (CI + reviews + security) | `shuck [target]` / `shuck all [target]` |
 | Failing CI step logs | `shuck logs [target]` (alias `l`) |
 | Logs for a single Actions run | `shuck logs --run <id\|url>` |
@@ -172,32 +188,28 @@ Rules that bite:
 - A PR "Checks" tab link resolves to the one Actions job behind that check;
   a non-Actions check falls back to the PR-wide report.
 
-The monitor takes a **watch target** instead: a directory, or a PR
-(`owner/repo#42`, a URL, `owner/repo 42`, a bare number). No argument means the
-current working tree, which is the normal case.
-
 ## Monitor subcommands
 
 | Command | What it does | Flags |
 | --- | --- | --- |
 | `shuck monitor` | status: what is watched, and where it stands | `--json`, `--no-start` |
-| `shuck monitor watch [target]` | follow something (default: this working tree) | `--json` |
-| `shuck monitor unwatch [target]` | stop following it | |
-| `shuck monitor events` | hand over what is new | `--json`, `--all`, `--follow`, `--consumer ID`, `--limit N`, `--wait DUR` |
+| `shuck monitor watch [target]` | add a source (default: this working tree) | `--json` |
+| `shuck monitor unwatch [target]` | drop one again | |
+| `shuck monitor events` | hand over what is new | `--json`, `--all`, `--consumer ID`, `--limit N` |
 | `shuck monitor stream` | the plugin's monitor: follow this tree, one block per event, until killed | `--json` |
 | `shuck monitor poke [target]` | re-check now, without waiting for the interval | |
 | `shuck monitor stop` | shut the monitor down | |
 | `shuck monitor run` | run it in the foreground | `--detached`, `--stay`, `--no-pins`, `--watch-ttl DUR`, `--token T` |
 | `shuck monitor log` | print the daemon's own log — where a misbehaving monitor explains itself | |
 
-- **`--wait DUR` is how you wait for CI**: it blocks until an event lands rather
-  than returning "nothing new" — never sleep-and-recheck in a loop instead. It
-  **cannot be combined with `--follow`** (that pair exits `2`): a follow already
-  blocks until interrupted.
-- `--consumer ID` names whose cursor advances. Events are delivered **once** per
-  consumer, so a session and the CLI never steal each other's news. The CLI
-  defaults to `cli`; each session uses its own ID; the stream derives one from
-  the tree.
+- `events` also takes `--follow` and `--wait DUR`, and the report commands take
+  `--watch`. **While a stream is delivering they are not for you**: blocking a
+  turn open buys you what the stream was about to hand you anyway. They are for
+  shell scripts, CI jobs, and the session nothing is streaming into — where
+  `--wait DUR` is the right way to wait (it blocks until an event lands rather
+  than returning "nothing new", and cannot be combined with `--follow`).
+- `--consumer ID` names whose cursor advances; events are delivered **once** per
+  consumer, so a session and the CLI never steal each other's news.
 - `shuck monitor` (status) **auto-starts** the daemon; the read commands do not,
   so they can never report a false all-clear from a monitor that has seen
   nothing. `--no-start` suppresses it.
@@ -218,15 +230,14 @@ whole), `--tail N` (default 100 — when a long log has no match).
 
 **`shuck pins [dir]`** audits a checkout for `uses:` references that are **not
 SHA-pinned** or whose pin has **gone stale** — `@v4` runs whatever commit that
-tag points at today, and a SHA left alone falls behind. **Every finding comes
-with the exact corrected line.** Reach for it right after writing or editing a
-workflow, and before opening a PR that touches one. (The monitor audits the
-watched tree too and raises `pins.stale`.) It scans `.github/workflows/*.y{a,}ml`,
-the repo's own `action.y{a,}ml`, and `.github/actions/*/action.y{a,}ml`. The
-suggested pin **stays on the major you chose** — a newer major goes in the note,
-never in the line. A pin with no `# <tag>` comment cannot be checked for
-staleness; the finding asks you to add one. `./…` and `docker://` refs are
-skipped: shuck audits Action refs, not container images.
+tag points at today, and a SHA left alone falls behind. **Every finding carries
+the corrected line.** Reach for it right after editing a workflow and before
+opening a PR that touches one; the monitor audits the watched tree too and
+raises `pins.stale`. It scans `.github/workflows/*.y{a,}ml`, the repo's own
+`action.y{a,}ml`, and `.github/actions/*/action.y{a,}ml`. The suggested pin
+**stays on the major you chose** — a newer major goes in the note, never the
+line. A pin with no `# <tag>` comment cannot be checked for staleness; the
+finding asks you to add one. `./…` and `docker://` refs are skipped.
 
 **`shuck security [repo]`** summarizes code scanning (rule, severity,
 `file:line`), secret scanning (type and location — the **raw secret value is
@@ -246,13 +257,12 @@ outdated threads to one line.
 
 Shared flags: `--json`, `--exit-code`, `--refresh` (rebuild the cache — use when
 a job was re-run), `--no-cache`, `--offline` (render from cache only; needs an
-explicit PR, skips security), `--token T`, and on the default path `--watch` /
-`--interval D` / `--watch-timeout D`.
+explicit PR, skips security), `--token T`.
 
 ```sh
 shuck                                    # this branch's PR: CI + reviews + security
 shuck monitor                            # what the monitor is watching
-shuck monitor events --wait 15m          # block until it has something
+shuck monitor watch owner/repo#42        # add a PR this tree cannot imply
 shuck logs justanotherspy/shuck 42       # just the failing CI logs
 shuck logs --run 123 owner/repo --download-artifacts ./artifacts
 shuck pins --exit-code                   # gate CI on unpinned or stale pins
@@ -287,36 +297,26 @@ Every report takes `--json` and returns a stable, versioned document.
   **line-delimited** — one object per event, each line carrying its own version,
   so a consumer tailing the feed sees it wherever it starts reading.
 
-If `summary.running > 0` the snapshot is **incomplete**. Don't conclude from it —
-let the monitor tell you (`shuck monitor events --wait 30m`).
+If `summary.running > 0` the snapshot is **incomplete**. Don't conclude from it,
+and don't re-run it in a loop: the monitor is watching the same PR — let its
+event tell you when the run lands (or wait for one, if nothing is streaming).
 
-## Prerequisites
+## Prerequisites and notes
 
-- **The `shuck` binary on PATH** — the plugin's monitor, its hooks and this
-  skill all run it. The plugin does not install it:
-
-  ```sh
-  curl -fsSL https://raw.githubusercontent.com/justanotherspy/shuck/main/install.sh | bash
-  # or: go install github.com/justanotherspy/shuck@latest
-  ```
-
-  Keep it current with `shuck upgrade` (check with `shuck version --check`).
-- **A GitHub token** in `GITHUB_TOKEN` or `GH_TOKEN` (the daemon reads it from
-  its environment; the CLI also takes `--token`). `pins` and `action` work
-  unauthenticated against public repos; a token lifts the rate limit.
-
-The plugin's prereq check stays quiet when both are satisfied, and warns without
-blocking when the binary is missing, too old to run the event stream, or has no
-token. **Nothing the plugin does can cost you anything**: every hook exits `0`
-whatever goes wrong and writes nothing that changes what you do, and the stream
-holds itself to the same bar — if it cannot start it says so in one plain
-sentence and stops, leaving the hooks to deliver.
-
-## Notes
-
-- Results are cached under `~/.cache/shuck`, keyed by job + run attempt, so
-  repeats are cheap; `--refresh` when a job has been re-run. The monitor keeps
-  its journal, cursors and watches under `~/.cache/shuck/monitor`.
+- **The `shuck` binary on PATH** — the plugin runs it but does not install it:
+  `curl -fsSL https://raw.githubusercontent.com/justanotherspy/shuck/main/install.sh | bash`
+  (or `go install github.com/justanotherspy/shuck@latest`). Keep it current with
+  `shuck upgrade`.
+- **A GitHub token** in `GITHUB_TOKEN` or `GH_TOKEN`, or a logged-in `gh` —
+  shuck falls back to `gh auth token`, which is how a session that started
+  before the token was exported still works. `--token` overrides both. `pins`
+  and `action` work unauthenticated against public repos.
+- Both are reported in the monitor's own voice, since it is the plugin's only
+  channel: each becomes **one plain line** and then nothing further. **Nothing
+  the plugin does can cost you anything** — the stream and both hooks exit `0`
+  whatever goes wrong.
+- Results are cached under `~/.cache/shuck`, keyed by job + run attempt;
+  `--refresh` when a job has been re-run. The monitor's own state lives under
+  `~/.cache/shuck/monitor`.
 - Non-Actions checks (external statuses) are listed by name only — no logs exist
   for them via the API. The monitor still reports them red.
-- If shuck reports no token, ask the user to set `GITHUB_TOKEN` / `GH_TOKEN`.

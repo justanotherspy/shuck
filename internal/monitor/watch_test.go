@@ -4,6 +4,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -362,4 +364,329 @@ func TestRegistryIgnoresUnreadableState(t *testing.T) {
 	if r := loadRegistry(p); r.Len() != 0 {
 		t.Errorf("Len = %d, want an empty registry", r.Len())
 	}
+}
+
+// TestParseWatchSpecScopesToTheRegisteringSession pins the half of scoping that
+// happens on the client: a watch has to carry the working tree of whoever asked
+// for it, or the daemon has nothing to filter the feed by and every session
+// sees every other session's CI.
+func TestParseWatchSpecScopesToTheRegisteringSession(t *testing.T) {
+	tree := t.TempDir()
+	other := t.TempDir()
+
+	tests := []struct {
+		name string
+		args []string
+		cwd  string
+		// want is the set of scopes, as absolute paths resolved from the
+		// fixtures above.
+		want []string
+	}{
+		{
+			name: "the working tree scopes itself",
+			cwd:  tree,
+			want: []string{tree},
+		},
+		{
+			// The case that makes "sources added by agents explicitly" belong
+			// to the agent that added them: the PR names no directory, so the
+			// only thing that can scope it is where the command was run.
+			name: "an explicit PR belongs to the tree it was added from",
+			args: []string{"o/r#42"},
+			cwd:  tree,
+			want: []string{tree},
+		},
+		{
+			// Both, because either could be the session that wants the news:
+			// the tree being followed, and the tree the person was standing in
+			// when they said so.
+			name: "a directory argument scopes to itself and to the caller",
+			args: []string{other},
+			cwd:  tree,
+			want: []string{other, tree},
+		},
+		{
+			name: "a caller with no directory leaves the watch unscoped",
+			args: []string{"o/r#42"},
+			want: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseWatchSpec(tt.args, tt.cwd)
+			if err != nil {
+				t.Fatalf("ParseWatchSpec: %v", err)
+			}
+			want := make([]string, 0, len(tt.want))
+			for _, p := range tt.want {
+				abs, _ := filepath.Abs(p)
+				want = append(want, abs)
+			}
+			if len(got.Scopes) != len(want) {
+				t.Fatalf("Scopes = %v, want %v", got.Scopes, want)
+			}
+			for i := range want {
+				if got.Scopes[i] != want[i] {
+					t.Errorf("Scopes[%d] = %q, want %q", i, got.Scopes[i], want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestParseWatchSpecScopesAPRToTheCheckoutRoot covers the completely ordinary
+// thing an agent does: `cd internal/cli && shuck monitor watch owner/repo#42`.
+// Scopes are matched exactly, and the only directory a session ever asks with
+// is the one it opened in — so a watch scoped to the subdirectory alone is
+// claimed by nobody and its CI failures reach no session at all.
+func TestParseWatchSpecScopesAPRToTheCheckoutRoot(t *testing.T) {
+	root := t.TempDir()
+	writeRepo(t, root, "ref: refs/heads/main\n", "refs/heads/main", "abc\n", originConfig)
+	sub := filepath.Join(root, "internal", "cli")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	loose := t.TempDir() // no repository above it at all
+
+	tests := []struct {
+		name string
+		cwd  string
+		want []string
+		// asks are the directories a reader may later filter with; each must
+		// find the watch in scope.
+		asks []string
+	}{
+		{
+			name: "a subdirectory of the checkout scopes the checkout too",
+			cwd:  sub,
+			want: []string{sub, root},
+			asks: []string{sub, root},
+		},
+		{
+			name: "the checkout root is already the root",
+			cwd:  root,
+			want: []string{root},
+			asks: []string{root},
+		},
+		{
+			name: "a directory in no repository has only itself to offer",
+			cwd:  loose,
+			want: []string{loose},
+			asks: []string{loose},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w, err := ParseWatchSpec([]string{"o/r#42"}, tt.cwd)
+			if err != nil {
+				t.Fatalf("ParseWatchSpec: %v", err)
+			}
+			if !slices.Equal(w.Scopes, tt.want) {
+				t.Fatalf("Scopes = %v, want %v", w.Scopes, tt.want)
+			}
+			for _, ask := range tt.asks {
+				if !w.InScope(ask) {
+					t.Errorf("InScope(%q) = false; the PR this session asked to follow would report to nobody", ask)
+				}
+			}
+		})
+	}
+}
+
+// TestParseWatchSpecKeepsTheWatchIdentity guards the one thing scoping must not
+// change: a watch is still keyed by what it names, so the same session
+// re-registering the same tree updates its watch rather than duplicating it.
+func TestParseWatchSpecKeepsTheWatchIdentity(t *testing.T) {
+	tree := t.TempDir()
+	abs, _ := filepath.Abs(tree)
+
+	first, err := ParseWatchSpec(nil, tree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := ParseWatchSpec([]string{tree}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID != TreeWatchID(abs) || second.ID != first.ID {
+		t.Errorf("ids = %q and %q, want both %q", first.ID, second.ID, TreeWatchID(abs))
+	}
+}
+
+func TestWatchInScope(t *testing.T) {
+	root := t.TempDir()
+	tree := filepath.Join(root, "repo")
+	// The layout that makes containment matching wrong: this repository keeps
+	// its git worktrees inside the main checkout.
+	worktree := filepath.Join(tree, ".claude", "worktrees", "feature")
+	for _, dir := range []string{tree, worktree} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tests := []struct {
+		name   string
+		scopes []string
+		ask    string
+		want   bool
+	}{
+		{
+			// The compatibility direction, and the one that must never drop an
+			// event: a watch a daemon of an older build persisted has no scope
+			// at all, and belongs to everyone until a registration teaches it
+			// otherwise.
+			name: "a watch with no scopes belongs to every session",
+			ask:  tree,
+			want: true,
+		},
+		{
+			name:   "its own tree",
+			scopes: []string{tree},
+			ask:    tree,
+			want:   true,
+		},
+		{
+			name:   "one of several",
+			scopes: []string{worktree, tree},
+			ask:    tree,
+			want:   true,
+		},
+		{
+			name:   "an unrelated tree",
+			scopes: []string{worktree},
+			ask:    tree,
+			want:   false,
+		},
+		{
+			// Containment would say yes here, and saying yes is the observed
+			// bug: a session in the main checkout was handed the worktree's CI.
+			name:   "a worktree nested inside the checkout is not the checkout",
+			scopes: []string{tree},
+			ask:    worktree,
+			want:   false,
+		},
+		{
+			name:   "an unresolvable question matches nothing scoped",
+			scopes: []string{tree},
+			ask:    "",
+			want:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := Watch{ID: "w", Scopes: tt.scopes}
+			if got := w.InScope(tt.ask); got != tt.want {
+				t.Errorf("InScope(%q) = %v, want %v", tt.ask, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRegistryAddMergesScopes covers the upgrade and the second-session paths
+// at once. Add keeps the stored watch and discards the incoming one, which is
+// right for everything the poller has resolved and wrong for the registrant:
+// without the merge, a watch first seen without a scope — or first registered
+// by another tree — would filter its own session out of the feed forever.
+func TestRegistryAddMergesScopes(t *testing.T) {
+	p := newPaths(t.TempDir())
+	r := loadRegistry(p)
+
+	// A watch as a daemon that predates scoping left it: no scope at all.
+	r.Add(Watch{ID: "pr:o/r#42", Kind: WatchPR, Owner: "o", Repo: "r", Number: 42})
+	r.Add(Watch{ID: "pr:o/r#42", Kind: WatchPR, Owner: "o", Repo: "r", Number: 42, Scopes: []string{"/one"}})
+	r.Add(Watch{ID: "pr:o/r#42", Kind: WatchPR, Owner: "o", Repo: "r", Number: 42, Scopes: []string{"/two"}})
+	// The same session again: a scope it already has is not a new one.
+	r.Add(Watch{ID: "pr:o/r#42", Kind: WatchPR, Owner: "o", Repo: "r", Number: 42, Scopes: []string{"/one"}})
+
+	w, ok := r.Get("pr:o/r#42")
+	if !ok {
+		t.Fatal("the watch disappeared")
+	}
+	// Both registrants, once each — and the one that registered again is the
+	// most recent, so it is the last thing the cap would displace.
+	if len(w.Scopes) != 2 || w.Scopes[0] != "/two" || w.Scopes[1] != "/one" {
+		t.Fatalf("Scopes = %v, want both registrants once each, least recent first", w.Scopes)
+	}
+
+	// And it survives the daemon, or a restart would leave both sessions
+	// unfiltered again.
+	reloaded, ok := loadRegistry(p).Get("pr:o/r#42")
+	if !ok {
+		t.Fatal("the watch did not survive a reload")
+	}
+	if len(reloaded.Scopes) != 2 {
+		t.Errorf("Scopes = %v after a reload, want both", reloaded.Scopes)
+	}
+}
+
+// TestAddScopeIsBounded keeps a persisted set from growing without limit: the
+// id is stable, so a PR watch would otherwise accumulate an entry for every
+// directory anyone ever registered it from.
+func TestAddScopeIsBounded(t *testing.T) {
+	tests := []struct {
+		name string
+		// add is the sequence of registrations, in order.
+		add []string
+		// keep and drop are what must and must not survive the cap.
+		keep []string
+		drop []string
+	}{
+		{
+			name: "the oldest registrant is what a new one displaces",
+			add:  scopeSeq(0, maxWatchScopes*2),
+			keep: []string{"/tree/" + strconv.Itoa(maxWatchScopes*2-1)},
+			drop: []string{"/tree/0"},
+		},
+		{
+			// The finding: nothing re-registers a PR watch on its own, so a
+			// session that keeps asking for one is the only evidence it is
+			// still there. Evicting in arrival order would unsubscribe it from
+			// a PR it explicitly asked to follow, with nothing in the status
+			// output to say so.
+			name: "a session that registers again is not the oldest any more",
+			add:  append(append([]string{"/keeps/asking"}, scopeSeq(0, maxWatchScopes-1)...), "/keeps/asking", "/tree/new"),
+			keep: []string{"/keeps/asking", "/tree/new"},
+			drop: []string{"/tree/0"},
+		},
+		{
+			name: "registering the same scope twice does not spend two slots",
+			add:  []string{"/a", "/a", "/b", "/b"},
+			keep: []string{"/a", "/b"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var w Watch
+			for _, scope := range tt.add {
+				w.addScope(scope)
+			}
+			if len(w.Scopes) > maxWatchScopes {
+				t.Fatalf("kept %d scopes, want the set capped at %d", len(w.Scopes), maxWatchScopes)
+			}
+			for _, scope := range tt.keep {
+				if !slices.Contains(w.Scopes, scope) {
+					t.Errorf("Scopes = %v, want %q kept — that session is filtered out of its own feed without it", w.Scopes, scope)
+				}
+			}
+			for _, scope := range tt.drop {
+				if slices.Contains(w.Scopes, scope) {
+					t.Errorf("Scopes = %v, want %q displaced by a more recent registrant", w.Scopes, scope)
+				}
+			}
+		})
+	}
+}
+
+// scopeSeq builds a run of distinct registrant directories.
+func scopeSeq(from, to int) []string {
+	out := make([]string, 0, to-from)
+	for i := from; i < to; i++ {
+		out = append(out, "/tree/"+strconv.Itoa(i))
+	}
+	return out
 }

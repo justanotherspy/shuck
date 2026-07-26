@@ -76,13 +76,27 @@ type streamRecord struct {
 	Consumer  string    `json:"consumer"`
 	PID       int       `json:"pid"`
 	Heartbeat time.Time `json:"heartbeat"`
+	// Origin is the id of the first event this stream will deliver — the
+	// journal position it started from, plus one. Zero means no stream has
+	// recorded one, which is how the hooks tell "the session opened here" from
+	// "nobody knows where the session opened".
+	//
+	// It is what stands in for the SessionStart hook that no longer exists. A
+	// stream's lifetime *is* the session's lifetime — Claude Code starts it at
+	// session start and kills it at session end — so where it started reading
+	// is where the session started, and a hook that first sees the session id
+	// an hour later can still seed its cursor to the moment it opened rather
+	// than to now.
+	Origin uint64 `json:"origin,omitempty"`
 }
 
 // BeginStream records that this process is streaming w's events, replacing
 // whatever an earlier run of this process left behind. It fails only when the
 // marker cannot be written at all, which the caller must treat as a reason not
-// to stream: without the marker the hooks keep delivering, and the session gets
-// everything twice.
+// to stream: without the marker an installed older `hooks.json` — the only
+// wiring in which UserPromptSubmit still delivers — keeps delivering, and that
+// session gets everything twice. It is also, now, the record of where the
+// session began (see Origin).
 //
 // The marker is one file per process, not per watch. Two streams can be live on
 // one tree, and a shared file would let either of them revoke the other's claim
@@ -113,6 +127,61 @@ func BeginStream(w Watch, consumer string) (*Stream, error) {
 		return nil, fmt.Errorf("record the stream marker: %w", err)
 	}
 	return s, nil
+}
+
+// SetOrigin records the journal position the stream is reading from, so the
+// hooks can seed this session's own cursor to where the session began instead
+// of to whenever they first ran. Call it once, as soon as the position is
+// known.
+//
+// A failure is deliberately silent, like Beat's: the marker keeps whatever it
+// last held, and a hook with no origin to read falls back to seeding at the
+// present — later than ideal, never wrong in a way that costs a delivery twice.
+func (s *Stream) SetOrigin(at uint64) {
+	if s == nil {
+		return
+	}
+	s.rec.Origin = at + 1
+	_ = writeJSONFile(s.path, s.rec)
+}
+
+// StreamOrigin reports the id of the first event a live stream serving dir will
+// deliver — in effect, the journal position the session in dir opened at.
+//
+// The earliest of the live streams wins when a tree has more than one (two
+// terminals in one checkout). Nothing correlates a session id with a stream, so
+// the choice is between seeding a session slightly before it opened and
+// slightly after, and only one of those loses an event.
+func StreamOrigin(dir string) (uint64, bool) {
+	if dir == "" {
+		return 0, false
+	}
+	sdir, err := streamsDir()
+	if err != nil {
+		return 0, false
+	}
+	entries, err := os.ReadDir(sdir)
+	if err != nil {
+		return 0, false
+	}
+	now := time.Now()
+	origin, found := uint64(0), false
+	for _, entry := range entries {
+		var rec streamRecord
+		if readJSONFile(filepath.Join(sdir, entry.Name()), &rec) != nil {
+			continue
+		}
+		if rec.Origin == 0 || !rec.live(now) || !sameTree(rec.Path, dir) {
+			continue
+		}
+		if !found || rec.Origin < origin {
+			origin, found = rec.Origin, true
+		}
+	}
+	if !found {
+		return 0, false
+	}
+	return origin - 1, true
 }
 
 // Beat refreshes the heartbeat. A failure is deliberately silent: the marker
@@ -219,12 +288,46 @@ func streamFile(watchID string, pid int) string {
 }
 
 // sameTree reports whether two working-tree paths name the same piece of work.
+//
+// Containment is the first test and not the last one. A session started in a
+// subdirectory of the tree a stream registered is plainly the same work, but a
+// git worktree in this repository lives at <repo>/.claude/worktrees/<name> —
+// inside the main checkout, and the same path shape — while being a different
+// branch, a different PR and a different session. Containment alone would make
+// the two each other's stream: the worktree's session would stand its prompt
+// hook down for a stream that is not delivering its events, and seed its cursor
+// from an origin belonging to a session that opened yesterday, replaying that
+// tree's whole retained history into its first Stop gate.
+//
+// What separates them is git identity, which is what a checkout actually is: a
+// subdirectory shares the enclosing tree's git directory, and a linked worktree
+// has one of its own. Two paths neither of which is in a repository at all fall
+// back to containment, which is all there is to go on.
 func sameTree(a, b string) bool {
 	ra, rb := resolveTree(a), resolveTree(b)
 	if ra == "" || rb == "" {
 		return false
 	}
-	return ra == rb || within(ra, rb) || within(rb, ra)
+	if ra == rb {
+		return true
+	}
+	if !within(ra, rb) && !within(rb, ra) {
+		return false
+	}
+	return sameCheckout(ra, rb)
+}
+
+// sameCheckout reports whether two nested paths are governed by the same git
+// directory. Neither path being in a repository counts as the same, so the
+// containment match still holds for the directories git knows nothing about;
+// one of the two being in a repository the other is not does not.
+func sameCheckout(a, b string) bool {
+	ga, _, aerr := resolveGitDir(a)
+	gb, _, berr := resolveGitDir(b)
+	if aerr != nil || berr != nil {
+		return aerr != nil && berr != nil
+	}
+	return resolveTree(ga) == resolveTree(gb)
 }
 
 // resolveTree canonicalizes a path as far as the filesystem allows. A path that
