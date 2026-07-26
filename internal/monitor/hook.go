@@ -170,6 +170,7 @@ func hookSessionStart(ctx context.Context, c *Client, in hookInput) *hookOutput 
 	if err != nil {
 		return nil
 	}
+	spec.AddSessionScope(in.SessionID)
 	watch, err := c.Watch(ctx, spec)
 	if err != nil {
 		// No daemon and none could be started — most often a missing GitHub
@@ -189,6 +190,39 @@ func hookSessionStart(ctx context.Context, c *Client, in hookInput) *hookOutput 
 	}
 
 	return context_(HookSessionStart, sessionStartContext(ctx, c, watch, StreamServes(dir)))
+}
+
+// registerSessionTree registers the directory a hook payload arrived from as a
+// watch belonging to this session, and reports the watch when there is one.
+//
+// This is what makes the monitor follow a session that moves. A plugin monitor
+// is spawned once, in the directory the session opened in, and a long-running
+// process cannot see the agent change directory afterwards — that happens inside
+// Claude Code, not in any process the monitor owns. The hooks are the only part
+// of the integration handed the session's *current* directory, on every payload,
+// so registering here is the only way a session that opened outside a repository
+// and then moved into one is ever watched at all. Tagging the watch with the
+// session id is what lets the already-running stream pick it up without
+// restarting: it is reading with that same id as its scope.
+//
+// Failure is silence by design, like every other path in this file. A session
+// whose watch cannot be registered gets no notifications, which is the cost of
+// the feature, never the cost of the turn.
+func registerSessionTree(ctx context.Context, c *Client, in hookInput) (*Watch, string, bool) {
+	dir, ok := hookTree(in)
+	if !ok {
+		return nil, "", false
+	}
+	spec, err := ParseWatchSpec(nil, dir)
+	if err != nil {
+		return nil, dir, false
+	}
+	spec.AddSessionScope(in.SessionID)
+	watch, err := c.Watch(ctx, spec)
+	if err != nil {
+		return nil, dir, false
+	}
+	return watch, dir, true
 }
 
 // hookTree resolves the working tree a hook payload is about, reporting whether
@@ -307,11 +341,14 @@ func hookUserPrompt(ctx context.Context, c *Client, in hookInput) *hookOutput {
 		return nil
 	}
 	c.AutoStart = false // a prompt is not the moment to start a daemon
-	// Scoped to this session's tree, like the stream: this is the same feed by
-	// the other channel, and it must not hand a session another worktree's CI
-	// either. A payload with no directory in it leaves the scope empty, which
-	// is the unfiltered behavior it had before.
-	events, _, err := c.Events(ctx, Request{Consumer: in.SessionID, Scope: dir})
+	// Re-register before reading, so a session that has moved is watched from
+	// the prompt it moved on rather than from the next tool call.
+	registerSessionTree(ctx, c, in)
+	// Scoped to this session, like the stream: this is the same feed by the
+	// other channel, and it must not hand a session another worktree's CI
+	// either. A payload with neither a session id nor a directory leaves the
+	// scope empty, which is the unfiltered behavior it had before.
+	events, _, err := c.Events(ctx, Request{Consumer: in.SessionID, Scope: dir, Session: in.SessionID})
 	if err != nil || len(events) == 0 {
 		return nil
 	}
@@ -326,10 +363,22 @@ var pushPattern = regexp.MustCompile(`(?m)\b(git\s+push|gh\s+pr\s+create|gh\s+pr
 // hookPostToolUse pokes the monitor after a push so the new run is picked up
 // immediately, and takes the first chance in the session to seed its cursor.
 func hookPostToolUse(ctx context.Context, c *Client, in hookInput) *hookOutput {
+	c.AutoStart = false // a tool call is not the moment to start a daemon
+
+	// Re-register the session's directory before anything else, and for every
+	// tool rather than only for Bash. This is the hook that fires most often, so
+	// it is the one that notices a moved session soonest — and the move that
+	// matters most is the agent entering a git worktree, which it does with a
+	// dedicated tool and not with a shell command. Registering an unchanged
+	// directory is what the daemon already does on every prompt; it costs one
+	// socket round trip and keeps the watch alive.
+	if _, _, ok := registerSessionTree(ctx, c, in); !ok {
+		return nil
+	}
+
 	if !strings.EqualFold(in.ToolName, "Bash") {
 		return nil
 	}
-	c.AutoStart = false // a tool call is not the moment to start a daemon
 
 	// Seed here as well as in Stop, and before the push is even recognized,
 	// because the seed has to land *before* whatever the turn is about to
@@ -413,7 +462,7 @@ func hookStop(ctx context.Context, c *Client, in hookInput) *hookOutput {
 	// nothing to do with. The peek moves no cursor, so the events another
 	// worktree owns simply stay pending rather than being seeked past here.
 	dir, _ := hookTree(in)
-	events, _, err := c.Events(ctx, Request{Consumer: in.SessionID, Peek: true, Scope: dir})
+	events, _, err := c.Events(ctx, Request{Consumer: in.SessionID, Peek: true, Scope: dir, Session: in.SessionID})
 	if err != nil || len(events) == 0 {
 		return nil
 	}

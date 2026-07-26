@@ -86,8 +86,8 @@ fi
 echo "✘ the plugin monitor never started." >&2
 echo "  Check, in order: that .claude/settings.local.json enables shuck@shuck;" >&2
 echo "  that plugins/shuck/monitors/monitors.json is valid" >&2
-echo "  (.github/plugin-validate/validate-monitors.sh); and that" >&2
-echo "  plugins/shuck/scripts/monitor-stream.sh is executable and finds shuck on PATH." >&2
+echo "  (.github/plugin-validate/validate-monitors.sh); and that shuck is on PATH," >&2
+echo "  since monitors.json now execs the binary directly." >&2
 echo "  Session transcript tail:" >&2
 tail -20 "$WORK/session.log" >&2
 exit 1

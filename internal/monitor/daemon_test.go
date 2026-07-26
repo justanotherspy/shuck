@@ -28,12 +28,20 @@ func newTestDaemon(t *testing.T, c prClient) (*Daemon, *bytes.Buffer) {
 	newPRClient = func(string) prClient { return c }
 	t.Cleanup(func() { newPRClient = original })
 
-	d, err := newDaemon(t.TempDir(), Options{Log: &log, Version: "test", NoPins: true})
+	d, err := newDaemon(t.TempDir(), Options{Log: &log, Version: "test", NoPins: true, PinSubscribed: alwaysSubscribed})
 	if err != nil {
 		t.Fatalf("newDaemon: %v", err)
 	}
 	return d, &log
 }
+
+// alwaysSubscribed stands in for the git check that decides whether a branch
+// has opted into pin findings. The pin tests build workflow trees with `write`
+// rather than real branches, so the real check would answer "not subscribed"
+// for every one of them and the tests would assert on the gate instead of on
+// the audit and the dedupe they are about. The gate has its own tests, against
+// real checkouts, in workflowdiff_test.go.
+func alwaysSubscribed(context.Context, string) bool { return true }
 
 // treeAt lays out a git checkout the daemon can read and returns its path.
 func treeAt(t *testing.T, branch string) string {

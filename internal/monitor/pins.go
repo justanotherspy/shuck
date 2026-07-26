@@ -115,6 +115,15 @@ func (d *Daemon) claimPinRepo(w Watch) string {
 	return pinRepoKey(w)
 }
 
+// pinSubscribed reports whether dir's branch has opted into pin findings by
+// editing a workflow, using the injected seam when there is one.
+func (d *Daemon) pinSubscribed(ctx context.Context, dir string) bool {
+	if d.opts.PinSubscribed != nil {
+		return d.opts.PinSubscribed(ctx, dir)
+	}
+	return branchTouchesWorkflows(ctx, dir)
+}
+
 // scanPins audits a working tree's workflow files and returns the events for
 // findings its repository has not already reported. It returns the updated
 // state and the updated reported set whether or not it audited, so the caller
@@ -139,6 +148,12 @@ func (d *Daemon) scanPins(ctx context.Context, st pinState, repo string, budget 
 	// costing a directory walk a second just as an audited one does — and those
 	// are the trees most likely to be watched for hours.
 	st.NextScan = now.Add(pinScanInterval)
+
+	// Only a branch that has touched a workflow subscribes to this checkout's
+	// pin findings. See workflowdiff.go for why the default is silence.
+	if !d.pinSubscribed(ctx, st.Path) {
+		return st, reported, nil
+	}
 
 	files, err := pins.WorkflowFiles(st.Path)
 	if err != nil || len(files) == 0 {

@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "shuck plugins: the background CI/review monitor and failing-CI-log inspection tools",
-    "version": "1.0.2"
+    "version": "1.2.0"
   },
   "plugins": [
     {

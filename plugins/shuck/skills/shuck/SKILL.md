@@ -47,7 +47,7 @@ It emits **events**, each with a one-line title and an agent-ready body:
 | `review.comment` | a new inline review comment | the diff hunk, ±10 lines of the file at the PR head, and earlier thread comments when it is a reply |
 | `review.submitted` | a review was submitted: approved, changes requested, or commented | the review and its inline comments |
 | `pr.state` | the PR was opened, merged, closed, or marked ready for review | — |
-| `pins.stale` | a workflow action is not SHA-pinned, or its pin is behind the latest release | the corrected `uses:` line |
+| `pins.stale` | a workflow action is not SHA-pinned, or its pin is behind the latest release — **only on a branch that has itself changed a workflow file** | the corrected `uses:` line |
 | `watch.target` | the watch retargeted: branch switch, PR found, PR lost | — |
 | `monitor.error` | a poll failed (reported once, then backed off) | the error |
 
@@ -58,11 +58,23 @@ registers the working tree you are in and turns every event into a notification
 as it happens. **That stream is the delivery channel — there is nothing to poll
 for, nothing to set up, and no other route to think about.**
 
-Two hooks sit beside it, and neither of them delivers. `PostToolUse` watches
-your own tool calls and pokes the monitor after a `git push` / `gh pr create` /
+The stream follows the **session**, not the directory it was started in. That
+distinction is the whole reason a session opened outside a repository still
+works: Claude Code spawns the monitor once, in the directory the session opened
+in, and a long-running process cannot see you `cd` afterwards. So the hooks —
+which are handed the session's current directory on every payload — register it,
+and because both they and the stream are tagged with the same session id, the
+already-running stream picks up the new tree on its next tick. Open a session in
+a parent directory, move into a checkout, switch worktrees or switch branches:
+it retargets with nothing to restart and no PR number to give it.
+
+Three hooks sit beside the stream, and none of them delivers. `SessionStart` and
+`UserPromptSubmit` register the directory the session is in — the second is what
+catches a session that has moved. `PostToolUse` does the same on every tool call
+and additionally pokes the monitor after a `git push` / `gh pr create` /
 `gh run rerun`, so the new run is picked up in seconds instead of at the next
-interval — a monitor process cannot see a tool call, which is the whole reason
-that hook exists.
+interval — a monitor process can see none of these, which is the whole reason
+those hooks exist.
 
 **`Stop` is the backstop, and it is enforcement rather than delivery.** If the
 monitor is holding something actionable when you try to finish — red CI, or a
@@ -233,7 +245,9 @@ SHA-pinned** or whose pin has **gone stale** — `@v4` runs whatever commit that
 tag points at today, and a SHA left alone falls behind. **Every finding carries
 the corrected line.** Reach for it right after editing a workflow and before
 opening a PR that touches one; the monitor audits the watched tree too and
-raises `pins.stale`. It scans `.github/workflows/*.y{a,}ml`, the repo's own
+raises `pins.stale` — but only for a branch that has itself changed a workflow
+file, so pins you did not touch stay out of the way. Run `shuck pins` by hand
+when you want the whole checkout audited regardless. It scans `.github/workflows/*.y{a,}ml`, the repo's own
 `action.y{a,}ml`, and `.github/actions/*/action.y{a,}ml`. The suggested pin
 **stays on the major you chose** — a newer major goes in the note, never the
 line. A pin with no `# <tag>` comment cannot be checked for staleness; the

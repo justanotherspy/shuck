@@ -265,7 +265,7 @@ func TestDaemonAuditPinsAcrossWatchedTrees(t *testing.T) {
 		t.Errorf("persisted %+v, want the audited tree", stored)
 	}
 
-	restarted, err := newDaemon(d.paths.dir, Options{NoPins: false, Version: "test"})
+	restarted, err := newDaemon(d.paths.dir, Options{NoPins: false, Version: "test", PinSubscribed: alwaysSubscribed})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,9 +352,10 @@ func TestAuditPinsReportsARepositoryOnceAcrossWorktrees(t *testing.T) {
 	// And it survives the daemon: the reported set is persisted under the
 	// repository, so a restart does not start the spam over.
 	restarted, err := newDaemon(d.paths.dir, Options{
-		NoPins:      false,
-		Version:     "test",
-		PinResolver: &stubResolver{tag: "v4.2.2", sha: "abc"},
+		NoPins:        false,
+		Version:       "test",
+		PinResolver:   &stubResolver{tag: "v4.2.2", sha: "abc"},
+		PinSubscribed: alwaysSubscribed,
 	})
 	if err != nil {
 		t.Fatal(err)

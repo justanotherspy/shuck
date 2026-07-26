@@ -57,6 +57,18 @@ type Request struct {
 	// events` a view of the whole journal for anyone debugging the monitor
 	// itself.
 	Scope string `json:"scope,omitempty"`
+	// Session narrows OpEvents to the watches a Claude Code session owns, and
+	// widens the Scope above rather than replacing it: an event matches when
+	// either names it.
+	//
+	// Both are needed because the two answer different questions. Scope is where
+	// the caller is, which is the only thing a watch added by hand ("shuck
+	// monitor watch owner/repo#42") is ever tagged with. Session is who the
+	// caller is, which is the only thing that survives that caller moving to a
+	// different directory. Matching on either means a session that has moved
+	// still hears the PR it explicitly asked to follow, and a session that never
+	// moved keeps behaving exactly as it did.
+	Session string `json:"session,omitempty"`
 	// Limit caps how many events OpEvents returns (0 = no cap).
 	Limit int `json:"limit,omitempty"`
 	// Wait blocks OpEvents for up to this long when nothing is pending, so an
