@@ -216,6 +216,9 @@ func classifyJobs(run *github.WorkflowRun, jobs []*github.WorkflowJob) (failed, 
 				Name:         job.GetName(),
 				Status:       job.GetStatus(),
 				WorkflowName: job.GetWorkflowName(),
+				RunID:        run.GetID(),
+				RunAttempt:   int(job.GetRunAttempt()),
+				RunStartedAt: run.GetRunStartedAt().Time,
 			})
 			continue
 		}
@@ -240,6 +243,8 @@ func jobResult(run *github.WorkflowRun, job *github.WorkflowJob) model.JobResult
 		WorkflowName: job.GetWorkflowName(),
 		WorkflowPath: run.GetPath(),
 		CheckRunID:   checkRunID(job.GetCheckRunURL()),
+		CompletedAt:  job.GetCompletedAt().Time,
+		RunStartedAt: run.GetRunStartedAt().Time,
 	}
 	for _, st := range job.Steps {
 		jr.Steps = append(jr.Steps, model.StepOverview{

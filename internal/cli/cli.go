@@ -855,6 +855,7 @@ func buildExtractOptions(o options) (logs.Options, error) {
 		Context:        o.context,
 		Tail:           o.tail,
 		Pattern:        logs.DefaultPattern(),
+		Noise:          logs.DefaultNoisePattern(),
 	}
 	if o.pattern != "" {
 		re, err := regexp.Compile(o.pattern)
@@ -865,6 +866,10 @@ func buildExtractOptions(o options) (logs.Options, error) {
 	}
 	if o.full {
 		opts.ShortThreshold = math.MaxInt
+		// "Full" has to mean untouched. Collapsing the passing lines out of a
+		// log the caller explicitly asked to see whole would be the one place
+		// the trimming is not wanted.
+		opts.Noise = nil
 	}
 	return opts, nil
 }

@@ -166,6 +166,14 @@ type JobResult struct {
 	// problem matchers), fetched as cheap metadata when the job is drilled.
 	Annotations []Annotation `json:"annotations,omitempty"`
 	Inspected   bool         `json:"inspected"` // logs were drilled for this (id, attempt)
+	// CompletedAt and RunStartedAt time the job against its run. The monitor
+	// batches a run's failures until the run finishes, and the exception to
+	// that is a job that failed early enough to be worth interrupting for; the
+	// only way to tell is how far into the run it went red. Both are zero when
+	// the API did not say, which reads as "not an early failure" — the
+	// conservative direction, since it costs promptness rather than accuracy.
+	CompletedAt  time.Time `json:"completed_at,omitzero"`
+	RunStartedAt time.Time `json:"run_started_at,omitzero"`
 }
 
 // Artifact is a file bundle a workflow run uploaded (actions/upload-artifact).
@@ -201,10 +209,18 @@ type OtherCheck struct {
 }
 
 // RunningJob is a job not yet in a terminal state.
+//
+// RunID and RunAttempt are what let the monitor ask "is this run finished?"
+// rather than only "is anything finished?": a run's failures are held until
+// none of its own jobs are still going, so a slow unrelated workflow cannot sit
+// on them.
 type RunningJob struct {
-	Name         string `json:"name"`
-	Status       string `json:"status"`
-	WorkflowName string `json:"workflow_name"`
+	Name         string    `json:"name"`
+	Status       string    `json:"status"`
+	WorkflowName string    `json:"workflow_name"`
+	RunID        int64     `json:"run_id,omitempty"`
+	RunAttempt   int       `json:"run_attempt,omitempty"`
+	RunStartedAt time.Time `json:"run_started_at,omitzero"`
 }
 
 // RunInfo identifies a workflow-run inspection: shuck was pointed at a run URL

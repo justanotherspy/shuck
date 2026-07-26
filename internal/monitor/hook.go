@@ -27,19 +27,16 @@ const hookTimeout = 3 * time.Second
 // HookEvent names the Claude Code hook a shuck invocation is serving.
 type HookEvent string
 
-// The hooks shuck installs. Each maps to one Claude Code hook event, and
-// together they are the integration wherever a plugin monitor cannot run:
-// register on start, feed on every prompt, re-check right after a push, and
-// speak up if the agent tries to finish with a red build. Where one can, the
-// stream takes the feeding over — see StreamServes — and the rest of them
-// carry on unchanged.
+// The hooks shuck knows. Delivering events is not among their jobs any more —
+// `shuck monitor stream` is the one channel, and what is left here is the work
+// a separate process cannot do: see the session's current directory, notice its
+// tool calls, and stand in the way of it finishing on a red build.
 const (
 	// HookSessionStart registers the session's working tree and reports what
 	// the monitor is already watching.
 	HookSessionStart HookEvent = "session-start"
-	// HookUserPromptSubmit delivers whatever the monitor has noticed since the
-	// session last looked, unless a stream is already delivering it. This is
-	// the hook that makes the monitor feel live where no stream can run.
+	// HookUserPromptSubmit re-registers the session's working tree. It is no
+	// longer installed and no longer delivers; see hookUserPrompt.
 	HookUserPromptSubmit HookEvent = "user-prompt-submit"
 	// HookPostToolUse notices a push and asks the monitor to re-check now,
 	// instead of at the next interval.
@@ -259,13 +256,14 @@ func isNewSession(source string) bool {
 // sessionStartContext words the one paragraph a session gets at startup: what
 // the monitor is watching, and what will happen without anyone asking.
 //
-// streaming says which channel that will be. Both are automatic, so the
-// paragraph promises the same thing either way; naming the shape is what stops
-// an agent waiting for a <shuck-monitor> block that this session is never going
-// to see, or hunting for the notification that is not how it was told. A stream
-// that has not yet written its marker when this runs reads as the conversation
-// case, which is the harmless way round: the sentence is stale, the delivery is
-// not.
+// There is one delivery channel now, so the paragraph names it and stops
+// hedging. streaming only decides how confident that sentence is allowed to be:
+// with a marker present the feed is already running, and without one the honest
+// thing is to say events are being collected and name the command that reads
+// them, rather than promise notifications that arrive only if the plugin is
+// installed. A stream that has not yet written its marker reads as the
+// unconfirmed case, which is the harmless way round — the sentence undersells,
+// the delivery still happens.
 func sessionStartContext(ctx context.Context, c *Client, w *Watch, streaming bool) string {
 	var b strings.Builder
 	b.WriteString("The shuck background monitor is running. ")
@@ -282,15 +280,16 @@ func sessionStartContext(ctx context.Context, c *Client, w *Watch, streaming boo
 	b.WriteString(
 		"\nIt tracks whichever pull request the current branch belongs to and retargets itself " +
 			"when you switch branches or worktrees. New CI failures, review comments, and stale " +
-			"GitHub Action pins will reach you automatically — ")
+			"GitHub Action pins ")
 	if streaming {
-		b.WriteString("as monitor notifications, since a shuck monitor stream is already " +
-			"following this working tree")
+		b.WriteString("will reach you automatically, as monitor notifications — you do not need " +
+			"to poll for them, or to wait for them in a shell.")
 	} else {
-		b.WriteString("as <shuck-monitor> blocks in the conversation")
+		b.WriteString("are being collected for you. They are delivered by the shuck plugin " +
+			"monitor; if it is not running in this session, read them with " +
+			"`shuck monitor events` rather than waiting in a shell.")
 	}
-	b.WriteString(" — you do not need to poll for them, or to wait for them in a shell. " +
-		"To ask it something directly, run `shuck monitor status`.")
+	b.WriteString(" To ask it something directly, run `shuck monitor status`.")
 
 	if st, err := c.Status(ctx, ""); err == nil && len(st.Targets) > 1 {
 		fmt.Fprintf(&b, "\nIt is also watching: %s.", otherTargets(st, w))
@@ -315,44 +314,30 @@ func otherTargets(st *Status, w *Watch) string {
 	return strings.Join(others, ", ")
 }
 
-// hookUserPrompt delivers what the monitor has noticed since this session last
-// looked. Where no plugin monitor is running it is the hook that makes the
-// whole thing feel live: no polling, no tool call, the news simply arrives with
-// the next thing the user says.
+// hookUserPrompt keeps the session's watch alive. It no longer delivers
+// anything, and it is no longer installed: `monitors.json` is the channel, and
+// this stays in the binary only because an older installed hooks.json still
+// calls it.
+//
+// Delivering here as well was a duplicate waiting to happen, and it happened.
+// The stand-down it used to rely on asked StreamServes whether a stream was
+// following *this directory*, but a stream follows the *session* — so the
+// moment an agent entered a worktree the two disagreed: the stream carried on
+// delivering under the session's scope while the hook, seeing a directory no
+// marker named, decided nobody was serving it and delivered the same CI failure
+// a second time. Every event in that session arrived twice.
+//
+// The fix is not a better predicate. Two channels racing to be the one that
+// speaks is the bug; one channel is the design. The read is gone, so this
+// cannot duplicate however wrong any prediction about the other channel gets.
+//
+// Registering is kept because it costs one round trip and is the only thing
+// here that was ever this hook's own: a prompt is the earliest moment a session
+// that has moved can be re-watched, sooner than the tool call that follows it.
 func hookUserPrompt(ctx context.Context, c *Client, in hookInput) *hookOutput {
-	if in.SessionID == "" {
-		// Without an identity there is no cursor, and a cursorless read hands
-		// over the whole journal — every prompt, forever. A payload shuck
-		// cannot identify is one it stays out of.
-		return nil
-	}
-	dir, _ := hookTree(in)
-	if dir != "" && StreamServes(dir) {
-		// A `shuck monitor stream` is already turning this tree's events into
-		// notifications. Delivering them here as well would hand the agent the
-		// same CI failure twice, which is the one thing a second channel must
-		// never introduce.
-		//
-		// Standing down reads nothing and — deliberately — seeks nothing. The
-		// stream holds its own cursor, so this session's stays exactly where it
-		// was, and every event remains pending for the Stop hook to gate on.
-		// That is what keeps "do not finish on a red build" working if the
-		// stream dies, or if nobody reads its notifications.
-		return nil
-	}
 	c.AutoStart = false // a prompt is not the moment to start a daemon
-	// Re-register before reading, so a session that has moved is watched from
-	// the prompt it moved on rather than from the next tool call.
 	registerSessionTree(ctx, c, in)
-	// Scoped to this session, like the stream: this is the same feed by the
-	// other channel, and it must not hand a session another worktree's CI
-	// either. A payload with neither a session id nor a directory leaves the
-	// scope empty, which is the unfiltered behavior it had before.
-	events, _, err := c.Events(ctx, Request{Consumer: in.SessionID, Scope: dir, Session: in.SessionID})
-	if err != nil || len(events) == 0 {
-		return nil
-	}
-	return context_(HookUserPromptSubmit, capFeed(FormatFeed(events)))
+	return nil
 }
 
 // pushPattern matches the commands that change what CI will say. After one of

@@ -16,7 +16,7 @@ import (
 // Mirrors of unexported markers the fuzz invariants must recognize.
 var (
 	fuzzTSPrefix = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z `)
-	fuzzEllipsis = regexp.MustCompile(`^… \(\d+ lines omitted\) …$`)
+	fuzzEllipsis = regexp.MustCompile(`^… \(\d+ lines omitted\) …$|^… \(\d+ passing/progress lines? omitted\) …$`)
 )
 
 var fuzzConclusions = []string{"failure", "cancelled", "timed_out", "success", ""}

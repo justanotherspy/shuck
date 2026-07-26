@@ -17,19 +17,14 @@ Steps:
         ```
     error logs:
       ```
-      … (100 lines omitted) …
-      test tests::case_096 ... ok
-      test tests::case_097 ... ok
-      test tests::case_098 ... ok
-      test tests::case_099 ... ok
-      test tests::case_100 ... ok
-      test tests::case_101 ... ok
-      test tests::case_102 ... ok
-      test tests::case_103 ... ok
-      test tests::case_104 ... ok
-      test tests::parse_empty ... ok
+      … (1 passing/progress line omitted) …
+          Finished `test` profile [unoptimized + debuginfo] target(s) in 8.02s
+           Running unittests src/lib.rs (target/debug/deps/rustlib-9f3a1c2b4d5e6f70)
+      
+      running 108 tests
+      … (105 passing/progress lines omitted) …
       test tests::parse_nested ... FAILED
-      test tests::render_wide ... ok
+      … (1 passing/progress line omitted) …
       test tests::round_trip ... FAILED
       
       failures:

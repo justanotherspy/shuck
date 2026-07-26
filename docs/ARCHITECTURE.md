@@ -269,9 +269,8 @@ GitHub changed a field.
 
 | Kind | Fires when | Body |
 | --- | --- | --- |
-| `ci.failed` | a job newly failed or was cancelled | the distilled failing steps, capped at 12 KiB |
-| `ci.passed` | every check on the head commit reached a green terminal state | — |
-| `ci.started` | first sighting of checks for a head commit, with something still running | — |
+| `ci.failed` | a workflow run finished with red jobs — or one failed inside `fastFailWindow`, or the run passed `runStallAfter` | every newly-red job's distilled failing steps, capped at 12 KiB, plus a note of what the run cancelled or is still running |
+| `ci.passed` | every check on the head commit reached a terminal state with nothing red | the cancelled jobs, when there were any |
 | `review.comment` | a new inline comment | comment + diff hunk + ±10 lines of the file at the comment's commit + the thread it replies to |
 | `review.submitted` | a review was submitted | verdict + body, inline comments folded in |
 | `pr.state` | the PR changed lifecycle | — |
