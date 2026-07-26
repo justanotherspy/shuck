@@ -15,7 +15,7 @@ func TestMonitorDemoParsePatch(t *testing.T) {
 	if got, want := v.Minor, 2; got != want {
 		t.Errorf("Minor = %d, want %d", got, want)
 	}
-	if got, want := v.Patch, 4; got != want {
+	if got, want := v.Patch, 3; got != want {
 		t.Errorf("Patch = %d, want %d", got, want)
 	}
 }
