@@ -1,0 +1,82 @@
+name: Verify octo-sts federation
+
+# Manual smoke test for the credential the release workflow depends on.
+#
+# The release path pushes a Homebrew cask into justanotherspy/homebrew-tap with
+# a token minted by octo-sts rather than a PAT. That exchange only succeeds if
+# three things line up: the Octo STS App is installed on this account with
+# access to both repos, the tap holds .github/chainguard/shuck.sts.yaml, and
+# this job's OIDC subject matches the subject that policy trusts.
+#
+# Finding out at release time is expensive, so this reproduces the exchange on
+# demand and reports which of the three broke. It declares `environment:
+# release` for a reason: an environment overrides the ref in the OIDC subject,
+# so only a job in that environment produces the subject the policy expects.
+#
+# Read-only — it mints a token, reads the tap's metadata, and revokes it.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Federate a tap token and read the tap
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write # federate to octo-sts
+    steps:
+      # Print the subject this job actually presents. Trust policies match on
+      # it exactly, so when an exchange fails this is nearly always the answer.
+      - name: Show this job's OIDC subject
+        run: |
+          set -euo pipefail
+          jwt="$(curl --silent --show-error --fail-with-body \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=octo-sts.dev" | jq -r .value)"
+          # Decode the payload segment only; the signature is GitHub's problem.
+          payload="$(echo "$jwt" | cut -d. -f2)"
+          # base64url -> base64, then pad to a multiple of 4.
+          payload="$(echo "$payload" | tr '_-' '/+')"
+          while [ $(( ${#payload} % 4 )) -ne 0 ]; do payload="${payload}="; done
+          claims="$(echo "$payload" | base64 -d 2>/dev/null)"
+          sub="$(echo "$claims" | jq -r .sub)"
+          echo "sub    = ${sub}"
+          echo "issuer = $(echo "$claims" | jq -r .iss)"
+          {
+            echo "### OIDC subject"
+            echo
+            echo '```'
+            echo "${sub}"
+            echo '```'
+            echo
+            echo "The tap's \`shuck.sts.yaml\` must trust exactly this."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - uses: octo-sts/action@f603d3be9d8dd9871a265776e625a27b00effe05 # v1.1.1
+        id: tap-sts
+        with:
+          scope: justanotherspy/homebrew-tap
+          identity: shuck
+
+      # Proves the minted token is real and reaches the tap. Deliberately a
+      # read: this job must never write to the tap outside a release.
+      - name: Read the tap with the federated token
+        env:
+          GH_TOKEN: ${{ steps.tap-sts.outputs.token }}
+        run: |
+          set -euo pipefail
+          gh api repos/justanotherspy/homebrew-tap \
+            --jq '"ok: reached \(.full_name) (default branch \(.default_branch))"'
+          {
+            echo
+            echo "### Federation"
+            echo
+            echo "Exchanged the OIDC token for a tap-scoped token and read"
+            echo "\`justanotherspy/homebrew-tap\` with it. The release path's"
+            echo "credential works; the PAT can be retired."
+          } >> "${GITHUB_STEP_SUMMARY}"

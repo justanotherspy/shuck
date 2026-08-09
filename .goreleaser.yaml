@@ -65,8 +65,9 @@ changelog:
 
 # Generate a Homebrew cask and push it to the shared tap at
 # justanotherspy/homebrew-tap, so `brew install --cask justanotherspy/tap/shuck`
-# always tracks the latest release. Pushing to the tap needs a PAT
-# (HOMEBREW_TAP_GITHUB_TOKEN) since the default GITHUB_TOKEN only reaches this repo.
+# always tracks the latest release. The default GITHUB_TOKEN only reaches this
+# repo, so HOMEBREW_TAP_GITHUB_TOKEN carries the tap credential — minted per run
+# by octo-sts in release.yml, not a PAT.
 homebrew_casks:
   - name: shuck
     binaries:

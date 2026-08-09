@@ -33,16 +33,28 @@ jobs:
       # cosign signs checksums.txt; syft generates the per-archive SBOMs.
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+
+      # The default GITHUB_TOKEN only reaches this repo, so pushing the cask to
+      # justanotherspy/homebrew-tap needs a second credential. Rather than a
+      # long-lived PAT, federate this job's OIDC token for a token scoped to the
+      # tap alone, valid for the length of the run. The grant lives in the tap at
+      # .github/chainguard/shuck.sts.yaml and trusts exactly this job's subject,
+      # repo:justanotherspy/shuck:environment:release.
+      - uses: octo-sts/action@f603d3be9d8dd9871a265776e625a27b00effe05 # v1.1.1
+        id: tap-sts
+        with:
+          scope: justanotherspy/homebrew-tap
+          identity: shuck
+
       - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           version: "~> v2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # PAT with contents:write on justanotherspy/homebrew-tap so goreleaser
-          # can push the generated cask there. The default GITHUB_TOKEN only
-          # reaches this repo, so a separate token is required for the tap.
-          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          # Name kept: .goreleaser.yaml templates the cask push token as
+          # {{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}. Only the source changed.
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ steps.tap-sts.outputs.token }}
 
       # Generate SLSA build provenance covering every released artifact (one
       # attestation keyed off checksums.txt). Verify with:
