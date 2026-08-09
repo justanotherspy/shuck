@@ -80,13 +80,3 @@ jobs:
             echo "\`justanotherspy/homebrew-tap\` with it. The release path's"
             echo "credential works; the PAT can be retired."
           } >> "${GITHUB_STEP_SUMMARY}"
-
-      - name: Revoke the tap token
-        if: always() && steps.tap-sts.outputs.token != ''
-        env:
-          TAP_TOKEN: ${{ steps.tap-sts.outputs.token }}
-        run: |
-          curl --silent --show-error --fail-with-body -X DELETE \
-            -H "Authorization: Bearer ${TAP_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/installation/token

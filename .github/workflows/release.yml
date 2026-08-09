@@ -56,19 +56,6 @@ jobs:
           # {{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}. Only the source changed.
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ steps.tap-sts.outputs.token }}
 
-      # Hand the tap token back as soon as the cask is pushed rather than
-      # letting it idle until it expires. always() so a failed release does not
-      # leave a live credential behind.
-      - name: Revoke the tap token
-        if: always() && steps.tap-sts.outputs.token != ''
-        env:
-          TAP_TOKEN: ${{ steps.tap-sts.outputs.token }}
-        run: |
-          curl --silent --show-error --fail-with-body -X DELETE \
-            -H "Authorization: Bearer ${TAP_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/installation/token
-
       # Generate SLSA build provenance covering every released artifact (one
       # attestation keyed off checksums.txt). Verify with:
       #   gh attestation verify <archive> --repo justanotherspy/shuck
