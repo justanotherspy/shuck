@@ -47,7 +47,7 @@ RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
       -o /shuck .
 
 # ---- runtime stage ----------------------------------------------------------
-FROM cgr.dev/chainguard/static:latest@sha256:24dd7ff8788fdfadda39eeeaefefb6d1cec6002a545935a5f7e017484053734f
+FROM cgr.dev/chainguard/static:latest@sha256:bf639cba19ba56329e6907ac26a7afcdde57a80b6aa66d5100da6883196e6b82
 
 # OCI metadata: lets GHCR, `docker scout`, etc. link the image to its source.
 LABEL org.opencontainers.image.source="https://github.com/justanotherspy/shuck" \
