@@ -81,8 +81,6 @@ homebrew_casks:
     homepage: "https://github.com/justanotherspy/shuck"
     description: "Background monitor for GitHub PR CI failures, reviews, and action pins"
     license: MIT
-    url:
-      verified: "github.com/justanotherspy/shuck/"
     commit_author:
       name: github-actions[bot]
       email: 41898282+github-actions[bot]@users.noreply.github.com
@@ -93,12 +91,19 @@ homebrew_casks:
     skip_upload: "false"
     # The binary is unsigned, so strip the Gatekeeper quarantine flag on install
     # (macOS only; the cask also serves Homebrew on Linux, which has no xattr).
-    hooks:
-      post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/shuck"]
-          end
+    # Homebrew deprecated the `postflight` block in favour of the declarative
+    # `postflight_steps` stanza. goreleaser's cask template still hardcodes
+    # `postflight` for `hooks.post.install`, so the new stanza is injected via
+    # custom_block instead. goreleaser templates the whole rendered cask, so the
+    # braces of Homebrew's `{{staged_path}}` token are escaped to survive it.
+    custom_block: |
+      postflight_steps do
+        on_macos do
+          run "/usr/bin/xattr",
+              args:         ["-dr", "com.apple.quarantine", "{{ "{{" }}staged_path{{ "}}" }}/shuck"],
+              must_succeed: false
+        end
+      end
 
 release:
   # Publish straight away (not a draft). When a release for the tag already
