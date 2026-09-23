@@ -4,10 +4,12 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode"
 )
 
 // FuzzParseRemote exercises ParseRemote with arbitrary remote URLs. It must
-// never panic; on success the owner and repo are non-empty and contain no "/".
+// never panic; on success the owner and repo are non-empty and contain no "/"
+// and no control character.
 func FuzzParseRemote(f *testing.F) {
 	f.Add("git@github.com:owner/repo.git")
 	f.Add("https://github.com/owner/repo.git")
@@ -28,6 +30,9 @@ func FuzzParseRemote(f *testing.F) {
 		}
 		if strings.Contains(owner, "/") || strings.Contains(repo, "/") {
 			t.Fatalf("ParseRemote(%q): owner/repo contain a slash: %q/%q", raw, owner, repo)
+		}
+		if strings.ContainsFunc(owner+repo, unicode.IsControl) {
+			t.Fatalf("ParseRemote(%q): owner/repo contain a control character: %q/%q", raw, owner, repo)
 		}
 	})
 }
