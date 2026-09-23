@@ -101,10 +101,12 @@ func Extract(lines []string, opts Options) string {
 
 	if len(hits) == 0 {
 		start := max(len(lines)-opts.Tail, 0)
-		omitted := start
 		out := lines[start:]
-		if omitted > 0 {
-			return ellipsis(omitted) + "\n" + strings.Join(out, "\n")
+		if start > 0 {
+			// Prepend rather than concatenate: with Tail 0 the tail is empty,
+			// and "marker\n" + "" would end the excerpt in a blank line that
+			// is in neither the log nor the marker.
+			out = append([]string{ellipsis(start)}, out...)
 		}
 		return strings.Join(out, "\n")
 	}

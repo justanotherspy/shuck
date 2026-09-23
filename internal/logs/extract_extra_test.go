@@ -43,6 +43,16 @@ func TestExtractLongNoMatchTailCoversWhole(t *testing.T) {
 	}
 }
 
+// TestExtractLongNoMatchZeroTailIsOnlyTheMarker pins the Tail 0 edge found by
+// FuzzDistilCIFailure: with nothing to tail, the excerpt is the omission marker
+// alone, not the marker followed by a blank line the log never contained.
+func TestExtractLongNoMatchZeroTailIsOnlyTheMarker(t *testing.T) {
+	opts := Options{ShortThreshold: 0, Context: 0, Tail: 0, Pattern: DefaultPattern()}
+	if got, want := Extract([]string{"0"}, opts), "… (1 lines omitted) …"; got != want {
+		t.Errorf("Extract with Tail 0 = %q, want %q", got, want)
+	}
+}
+
 // TestExtractMatchAtStartNoLeadingEllipsis covers renderWindows' branch where the
 // first window starts at 0 (no leading ellipsis emitted).
 func TestExtractMatchAtStartNoLeadingEllipsis(t *testing.T) {
