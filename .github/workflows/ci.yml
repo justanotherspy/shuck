@@ -145,7 +145,10 @@ jobs:
       # permissions on the GITHUB_TOKEN. The exact-version `go install` is
       # checksum-verified by the Go module sumdb.
       - name: Install actionlint
-        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+        env:
+          # renovate: datasource=github-releases depName=rhysd/actionlint
+          ACTIONLINT_VERSION: v1.7.12
+        run: go install "github.com/rhysd/actionlint/cmd/actionlint@${ACTIONLINT_VERSION}"
       - name: Lint workflows (actionlint + shellcheck)
         run: actionlint -color
 

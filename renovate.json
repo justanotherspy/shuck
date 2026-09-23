@@ -2,5 +2,9 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "local>justanotherspy/renovate"
-  ]
+  ],
+  "pre-commit": {
+    "description": "Keep the hook revisions in .pre-commit-config.yaml current (the manager is opt-in)",
+    "enabled": true
+  }
 }
