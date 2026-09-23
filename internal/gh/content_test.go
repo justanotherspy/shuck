@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -156,6 +157,16 @@ func TestIsNotFoundVsFileNotFound(t *testing.T) {
 	ghErr := func(status int) error {
 		return &github.ErrorResponse{Response: &http.Response{StatusCode: status}}
 	}
+	ghErrAt := func(status int, rawURL string) error {
+		u, err := url.Parse(rawURL)
+		if err != nil {
+			t.Fatalf("parse %q: %v", rawURL, err)
+		}
+		return &github.ErrorResponse{
+			Response: &http.Response{StatusCode: status, Request: &http.Request{Method: http.MethodGet, URL: u}},
+			Message:  "nope",
+		}
+	}
 
 	tests := []struct {
 		name             string
@@ -167,6 +178,9 @@ func TestIsNotFoundVsFileNotFound(t *testing.T) {
 		{"a typed 404 wrapped by FileContent", fmt.Errorf("get x: %w", ghErr(http.StatusNotFound)), true, true},
 		{"a typed 403", ghErr(http.StatusForbidden), false, false},
 		{"a typed 500", ghErr(http.StatusInternalServerError), false, false},
+		// A typed status is authoritative: the "404" in this URL's port is not
+		// a status. httptest's random port made this flake in CI.
+		{"a typed 500 whose URL contains 404", ghErrAt(http.StatusInternalServerError, "http://127.0.0.1:40497/repos/acme/widgets/contents/x.go?ref=abc404"), false, false},
 		// The fallback's whole reason for existing, and its cost: an untyped
 		// error merely mentioning 404 reads as absent to FileNotFound only.
 		{"an untyped error mentioning 404", errors.New("unexpected status 404 from proxy"), false, true},
