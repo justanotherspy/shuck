@@ -139,6 +139,17 @@ benchstat: ## Install benchstat (benchmark comparison) if missing
 		echo ">> installing benchstat $(BENCHSTAT_VERSION)"; \
 		$(GO) install golang.org/x/perf/cmd/benchstat@$(BENCHSTAT_VERSION); }
 
+# The hash-pinned requirements the semgrep and zizmor workflows install. Keep
+# the flags exactly as written: Renovate's pip-compile manager re-runs the
+# command recorded in each .txt header and only understands --flag=value.
+.PHONY: requirements
+requirements: ## Recompile .github/requirements/*.txt at the latest versions (needs uv)
+	@set -e; for f in .github/requirements/*.in; do \
+		echo ">> $${f%.in}.txt"; \
+		uv pip compile --quiet --universal --generate-hashes --python-version=3.13 --upgrade \
+			"$$f" --output-file="$${f%.in}.txt"; \
+	done
+
 # ---- Quality ----------------------------------------------------------------
 .PHONY: fmt
 fmt: golangci-lint ## Format code (gofmt + goimports via golangci-lint)
