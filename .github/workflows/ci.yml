@@ -173,7 +173,7 @@ jobs:
         with:
           node-version: "24"
       # `npm ci` installs from the committed lockfile (integrity-hash pinned;
-      # kept current by the npm Dependabot ecosystem).
+      # kept current by Renovate's npm manager).
       #
       # The claude native binary ships in a platform-specific optionalDependency
       # (@anthropic-ai/claude-code-linux-x64), and npm swallows optional-dep

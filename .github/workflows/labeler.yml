@@ -1,7 +1,7 @@
 name: Labels
 
 # Keeps the repository's labels in sync with .github/labels.yml so the labels
-# referenced by dependabot.yml and release-drafter.yml always exist.
+# Renovate applies and release-drafter.yml reads always exist.
 on:
   push:
     branches: [main]

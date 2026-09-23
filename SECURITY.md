@@ -26,8 +26,9 @@ remediation progress. Once a fix ships we're happy to credit you.
 
 ## Hardening already in place
 
-- Dependencies and GitHub Actions are kept current by Dependabot; all actions
-  are pinned to commit SHAs.
+- Dependencies, GitHub Actions, the container base images and the CI tool
+  pins are kept current by Renovate (`renovate.json`, extending the shared
+  `justanotherspy/renovate` preset); all actions are pinned to commit SHAs.
 - CI runs CodeQL, Semgrep, and TruffleHog secret scanning; the GitHub Actions
   workflows themselves are audited by [zizmor][zizmor].
 - Release archives ship a `checksums.txt` signed with [cosign][cosign] (keyless

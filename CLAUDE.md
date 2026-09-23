@@ -372,7 +372,12 @@ what changed as events.
   are never touched.
 - Other automation: `scorecard.yml`, `semgrep.yml`, `secret-scan.yml`,
   `zizmor.yml` (workflow security), `labeler.yml`, `release-drafter.yml`, and
-  Dependabot.
+  Renovate (`renovate.json`, extending the shared `justanotherspy/renovate`
+  preset) as the single dependency updater. It covers Go modules, actions,
+  the Dockerfile digests, the plugin-validate npm lockfile, the
+  `.github/requirements/*.txt` pip-compile files (`make requirements`
+  regenerates them by hand), pre-commit hooks, and every `*_VERSION` pin that
+  carries a `# renovate:` comment.
 - The Claude Code plugin source lives under `plugins/shuck/` (manifest,
   `monitors/monitors.json` — which execs `shuck monitor stream` directly, with no
   shim — the `PostToolUse` hook, the only one still installed, and its
