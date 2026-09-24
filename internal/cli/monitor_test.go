@@ -993,7 +993,7 @@ func TestMonitorStreamJSON(t *testing.T) {
 		ID            uint64       `json:"id"`
 		Kind          monitor.Kind `json:"kind"`
 	}
-	line := strings.SplitN(stdout, "\n", 2)[0]
+	line, _, _ := strings.Cut(stdout, "\n")
 	if err := json.Unmarshal([]byte(line), &got); err != nil {
 		t.Fatalf("--json did not emit one object per line: %v\n%s", err, stdout)
 	}

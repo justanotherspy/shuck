@@ -127,7 +127,7 @@ what changed as events.
 | `internal/release` | Self-update: resolve the latest release, download + checksum-verify, replace the binary. Backs `version --check` / `upgrade`. |
 | `internal/setup` | `shuck setup`: install the embedded skill to `~/.claude/skills/shuck` and add a managed CLAUDE.md note. |
 | `internal/target` | Resolve owner/repo/PR from args or the local repo (go-git). |
-| `internal/gh` | go-github (v89) wrappers: PR head (`GetPR`), open-PR lookup by branch (`FindOpenPR`), Actions runs/jobs/logs, checks, the free `RateRemaining` quota probe, security alerts, and `content.go`'s `FileContent`/`FileNotFound` (the file at a PR head, for review-comment context). Plus one hand-rolled client: GraphQL for reviews (`reviews.go`). `reviewcomments.go` is the REST review feed the monitor polls (`PRReviewsSince`, `PRReviewCommentsSince`, `PRCommentThread`). |
+| `internal/gh` | go-github (v92) wrappers: PR head (`GetPR`), open-PR lookup by branch (`FindOpenPR`), Actions runs/jobs/logs, checks, the free `RateRemaining` quota probe, security alerts, and `content.go`'s `FileContent`/`FileNotFound` (the file at a PR head, for review-comment context). Plus one hand-rolled client: GraphQL for reviews (`reviews.go`). `reviewcomments.go` is the REST review feed the monitor polls (`PRReviewsSince`, `PRReviewCommentsSince`, `PRCommentThread`). |
 | `internal/cache` | On-disk cache under `~/.cache/shuck/…`: per-PR reports + whole raw job logs, action tag lists, security reports. `Purge(ttl, keep)` sweeps stale entries. An action/security entry ages by its one record file; a PR entry ages by the *newest* mtime across `cache.json` **and** its cached job logs, because the monitor writes logs there and never writes a report. Sweeping is a side effect of the paths that own a cache — `prReport` before it fetches a PR, `resolveAction` and `Security` before their TTL'd entries — plus the daemon (`monitor.Daemon.sweepCache`, hourly, 24h TTL), without which a machine whose only use of shuck is `shuck monitor` would never reclaim a byte. |
 | `internal/logs` | Parse a job log into `##[group]`-delimited sections; extract the high-signal error excerpt. |
 | `internal/distil` | The shared distillation core (`CIFailure`): raw job log + Actions-API step metadata → per-step failure detail (`FailedSteps`) + an agent-ready `Summary`. `CapSummary` byte-budgets a summary for delivery (UTF-8-safe line-prefix cut + caller's truncation note) — used for event bodies and for the text a hook injects. `ReviewComment` / `Review` format a review event for the monitor (goldens under `testdata/review/`); the CLI's reviews view is a separate GraphQL path. Pure — layers on `logs` / `classify` / `model`; backs `cli` and `monitor`. |
@@ -372,7 +372,12 @@ what changed as events.
   are never touched.
 - Other automation: `scorecard.yml`, `semgrep.yml`, `secret-scan.yml`,
   `zizmor.yml` (workflow security), `labeler.yml`, `release-drafter.yml`, and
-  Dependabot.
+  Renovate (`renovate.json`, extending the shared `justanotherspy/renovate`
+  preset) as the single dependency updater. It covers Go modules, actions,
+  the Dockerfile digests, the plugin-validate npm lockfile, the
+  `.github/requirements/*.txt` pip-compile files (`make requirements`
+  regenerates them by hand), pre-commit hooks, and every `*_VERSION` pin that
+  carries a `# renovate:` comment.
 - The Claude Code plugin source lives under `plugins/shuck/` (manifest,
   `monitors/monitors.json` — which execs `shuck monitor stream` directly, with no
   shim — the `PostToolUse` hook, the only one still installed, and its

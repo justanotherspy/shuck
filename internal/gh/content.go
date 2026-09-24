@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/google/go-github/v89/github"
+	"github.com/google/go-github/v92/github"
 )
 
 // FileContent fetches a single file's decoded contents from a repository at the
@@ -59,6 +59,15 @@ func IsNotFound(err error) bool {
 // the one that has been seen to surface a 404 the type assertion does not
 // reach; erring toward "not found" is the safe direction here, since the caller
 // degrades to less context rather than to a wrong answer.
+//
+// The fallback applies only when the type assertion does not reach a status.
+// A typed response carries the real one, and its message also carries the
+// request URL, where "404" can turn up in a port, a ref or a path: a 500 from
+// http://127.0.0.1:40497 must stay a broken fetch.
 func FileNotFound(err error) bool {
-	return IsNotFound(err) || strings.Contains(err.Error(), "404")
+	var ghErr *github.ErrorResponse
+	if errors.As(err, &ghErr) && ghErr.Response != nil {
+		return ghErr.Response.StatusCode == http.StatusNotFound
+	}
+	return strings.Contains(err.Error(), "404")
 }

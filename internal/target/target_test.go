@@ -16,6 +16,9 @@ func TestParseRemote(t *testing.T) {
 		{"ssh://git@github.com:22/justanotherspy/shuck.git", "justanotherspy", "shuck", false},
 		{"https://github.com/justanotherspy/shuck/", "justanotherspy", "shuck", false},
 		{"not-a-remote", "", "", true},
+		// Found by FuzzReadCheckoutGitFiles: a NUL in .git/config's url.
+		{"\x00/0", "", "", true},
+		{"https://github.com/own\ner/repo", "", "", true},
 	}
 	for _, c := range cases {
 		owner, repo, err := ParseRemote(c.in)

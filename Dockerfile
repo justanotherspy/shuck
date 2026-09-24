@@ -3,9 +3,9 @@
 # Multi-stage build producing a tiny, static, non-root image.
 #
 # The base images are Chainguard's (minimal, low/zero-CVE, continuously rebuilt).
-# They are pinned by digest (supply-chain integrity) and kept current by the
-# `docker` Dependabot ecosystem (.github/dependabot.yml), which bumps the digest
-# as :latest moves. Resolve the current digest manually with:
+# They are pinned by digest (supply-chain integrity) and kept current by
+# Renovate (renovate.json), which bumps the digest as :latest moves. Resolve the
+# current digest manually with:
 #
 #   docker buildx imagetools inspect cgr.dev/chainguard/go:latest \
 #     --format '{{.Manifest.Digest}}'

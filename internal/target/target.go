@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode"
 
 	git "github.com/go-git/go-git/v5"
 )
@@ -319,6 +320,10 @@ func localRepo() (owner, repo, branch string, err error) {
 
 // ParseRemote extracts owner and repo from a GitHub remote URL in scp-like
 // (git@github.com:owner/repo.git), HTTPS, or ssh:// form.
+//
+// A name carrying a control character (a NUL from a corrupt .git/config, say)
+// is refused: no GitHub owner or repository can contain one, and the pair ends
+// up in API paths and cache directories where a NUL is an error or worse.
 func ParseRemote(raw string) (owner, repo string, err error) {
 	s := strings.TrimSpace(raw)
 	s = strings.TrimSuffix(s, ".git")
@@ -337,5 +342,9 @@ func ParseRemote(raw string) (owner, repo string, err error) {
 	if len(parts) < 2 || parts[len(parts)-1] == "" || parts[len(parts)-2] == "" {
 		return "", "", fmt.Errorf("cannot parse owner/repo from remote %q", raw)
 	}
-	return parts[len(parts)-2], parts[len(parts)-1], nil
+	owner, repo = parts[len(parts)-2], parts[len(parts)-1]
+	if strings.ContainsFunc(owner+repo, unicode.IsControl) {
+		return "", "", fmt.Errorf("cannot parse owner/repo from remote %q: control character in name", raw)
+	}
+	return owner, repo, nil
 }
