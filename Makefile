@@ -29,7 +29,7 @@ LDFLAGS := -s -w -X github.com/justanotherspy/shuck/internal/cli.version=$(VERSI
 # Renovate keeps the annotated pins current (the shared preset's
 # customManagers:makefileVersions reads the `# renovate:` comment above each).
 # renovate: datasource=github-releases depName=golangci/golangci-lint
-GOLANGCI_LINT_VERSION := v2.13.2
+GOLANGCI_LINT_VERSION := v2.14.0
 # renovate: datasource=github-releases depName=goreleaser/goreleaser
 GORELEASER_VERSION    := v2.18.2
 # renovate: datasource=github-releases depName=gotestyourself/gotestsum
