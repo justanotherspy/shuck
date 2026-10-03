@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/monitor.sh post-tool-use",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/monitor.sh\" post-tool-use",
             "timeout": 10
           }
         ]
