@@ -31,7 +31,7 @@ LDFLAGS := -s -w -X github.com/justanotherspy/shuck/internal/cli.version=$(VERSI
 # renovate: datasource=github-releases depName=golangci/golangci-lint
 GOLANGCI_LINT_VERSION := v2.15.0
 # renovate: datasource=github-releases depName=goreleaser/goreleaser
-GORELEASER_VERSION    := v2.20.1
+GORELEASER_VERSION    := v2.20.2
 # renovate: datasource=github-releases depName=gotestyourself/gotestsum
 GOTESTSUM_VERSION     := v1.13.0
 GOVULNCHECK_VERSION   := latest
