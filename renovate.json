@@ -6,5 +6,20 @@
   "pre-commit": {
     "description": "Keep the hook revisions in .pre-commit-config.yaml current (the manager is opt-in)",
     "enabled": true
-  }
+  },
+  "packageRules": [
+    {
+      "description": "Hold the Semgrep job's Python below 3.15: semgrep supports Python up to 3.14, and on 3.15 its engine segfaults (semgrep-core exits -11), which fails the Semgrep check. Lift this once semgrep supports 3.15",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchFileNames": [
+        ".github/workflows/semgrep.yml"
+      ],
+      "matchDepNames": [
+        "python"
+      ],
+      "allowedVersions": "<3.15"
+    }
+  ]
 }
